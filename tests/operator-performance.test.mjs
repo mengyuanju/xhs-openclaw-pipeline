@@ -68,6 +68,26 @@ test('pagination sorts unknown rates last and exports literal user text safely',
   const csv=performanceCsv(report);assert.match(csv,/'=HYPERLINK\(""evil""\)/u);
   assert.match(csv,/报表时点/u);assert.match(csv,/Asia\/Shanghai/u);
 });
+test('account outcome columns sort by combined stage counts and rates in both directions',()=>{
+  const fact=(id,accountId,bucket,stage='COPY')=>event(id,{accountId,username:`worker-${accountId}`,kind:'ACCOUNT_QUALITY',bucket,stage});
+  const rows=[fact(101,11,'FIRST_PASS'),fact(102,11,'FIRST_PASS'),fact(103,11,'RETURNED'),
+    fact(201,22,'FIRST_PASS'),fact(202,22,'FIRST_PASS','IMAGE'),fact(203,22,'RETURNED'),fact(204,22,'DISCARDED'),
+    fact(301,33,'DISCARDED'),fact(302,33,'DISCARDED'),event(401,{accountId:44,username:'worker-44'})];
+  const report=buildPerformanceSnapshot(rows,[],[],normalizePerformanceFilters({},now),at(0));
+  assert.equal(report.people.find(person=>person.accountId===22).qualityOutcomes.judged,4);
+  assert.equal(report.people.find(person=>person.accountId===44).qualityOutcomes.firstPassRate,null);
+  for(const [sort,asc,desc] of [
+    ['judged',[44,33,11,22],[22,11,33,44]],
+    ['firstPassRate',[33,22,11,44],[11,22,33,44]],
+    ['returnRate',[33,22,11,44],[11,22,33,44]],
+    ['discardedRate',[11,22,33,44],[33,22,11,44]],
+  ]) {
+    for(const [order,expected] of [['asc',asc],['desc',desc]]) {
+      const filters=normalizePerformanceFilters({sort,order},now);
+      assert.deepEqual(performancePeoplePage(report,filters).items.map(person=>person.accountId),expected,`${sort} ${order}`);
+    }
+  }
+});
 test('invalid and oversized filters are rejected instead of silently broadening the report',()=>{
   for(const input of [{accountId:'-1'},{pageSize:'1000'},{stage:'SQL'},{sort:'random()'},{period:'forever'},{query:['a','b']},{unknown:'1'},
     {period:'custom',from:'2026-01-01',to:'2027-02-01'}]) assert.throws(()=>normalizePerformanceFilters(input,now));

@@ -866,6 +866,7 @@ const QA_ITEM_SQL = `
 export async function listCopyQaItems(pool, {
   itemPublicId = null,
   status = 'PENDING',
+  sampleKind = 'ALL',
   taskId: rawTaskId = null,
   queryPackageName: rawQueryPackageName = null,
   personName: rawPersonName = null,
@@ -876,6 +877,7 @@ export async function listCopyQaItems(pool, {
   const actor = normalizeActor(rawActor);
   const allowedStatuses = ['ALL', 'PENDING', 'PASSED', 'RETURNED', 'BATCH_AFFECTED', 'BATCH_RETURNED', 'RELEASED', 'SUPERSEDED', 'ADMIN_ESCALATED', 'ADMIN_DIRECT_PASSED'];
   if (!allowedStatuses.includes(status)) throw new TypeError('copy QA status is invalid');
+  if (!['ALL', 'RANDOM', 'MANDATORY_RECHECK'].includes(sampleKind)) throw new TypeError('copy QA sample kind is invalid');
   const adminDirectOnly = status === 'ADMIN_DIRECT_PASSED';
   if (adminDirectOnly && actor.role !== 'ADMIN') {
     throw new ControlPlaneAuthorizationError('只有管理员可以筛选单独通过的文案质检项');
@@ -904,6 +906,10 @@ export async function listCopyQaItems(pool, {
   const itemFilter = itemPublicId === null ? '' : (() => {
     values.push(normalizeUuid(itemPublicId, 'itemPublicId'));
     return `AND item.public_id = $${values.length}::uuid`;
+  })();
+  const sampleKindFilter = sampleKind === 'ALL' ? '' : (() => {
+    values.push(sampleKind);
+    return `AND COALESCE(item.sample_kind, 'RANDOM') = $${values.length}`;
   })();
   const packageFilter = queryPackageName === null ? '' : (() => {
     values.push(queryPackageName);
@@ -953,6 +959,7 @@ export async function listCopyQaItems(pool, {
       ))
       ${directApprovalFilter}
       ${itemFilter}
+      ${sampleKindFilter}
       ${taskFilter}
       ${packageFilter}
       ${personFilter}

@@ -18,6 +18,11 @@ import styles from './work-mode.module.css';
 
 const apiPath = (path: string) => `/api/control-plane${path}`;
 const PAGE_SIZE = 50;
+type CopyQaKindFilter = 'ALL' | 'RANDOM' | 'MANDATORY_RECHECK';
+const COPY_QA_KIND_LABELS: Record<CopyQaKindFilter, string> = {
+  ALL: '全部', MANDATORY_RECHECK: '强制复检', RANDOM: '第一次抽检',
+};
+const COPY_QA_KIND_OPTIONS: CopyQaKindFilter[] = ['ALL', 'MANDATORY_RECHECK', 'RANDOM'];
 
 export function WorkMode({ kinds: initialKinds, role, nodeId, username, accountId }: {
   kinds: WorkKind[]; role: string; nodeId: string; username: string; accountId: number;
@@ -33,6 +38,7 @@ export function WorkMode({ kinds: initialKinds, role, nodeId, username, accountI
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [query, setQuery] = useState('');
+  const [copyQaKind, setCopyQaKind] = useState<CopyQaKindFilter>('ALL');
   const [queueCollapsed, setQueueCollapsed] = useState(false);
   const queueContentsId = useId();
   const [history, setHistory] = useState<Array<{ key: string; label: string; kind: WorkKind; message: string }>>([]);
@@ -40,6 +46,7 @@ export function WorkMode({ kinds: initialKinds, role, nodeId, username, accountI
   const [navigating, setNavigating] = useState(false);
   const selectedRef = useRef<WorkItem | null>(null);
   const kindRef = useRef(kind);
+  const copyQaKindRef = useRef(copyQaKind);
   const itemsRef = useRef(items);
   const requestId = useRef(0);
   const completedKeys = useRef(new Set<string>());
@@ -69,14 +76,15 @@ export function WorkMode({ kinds: initialKinds, role, nodeId, username, accountI
   }, [positionKey]);
   const updateItems = useCallback((next: WorkItem[]) => { itemsRef.current = next; setItems(next); }, []);
 
-  const fetchPage = useCallback(async (requestedKind: WorkKind, offset = 0, itemId?: string) => {
-      const page = await apiRequest<WorkPage>(apiPath(`/v1/work-mode/items?kind=${requestedKind}&limit=${PAGE_SIZE}&offset=${offset}${itemId ? `&itemId=${encodeURIComponent(itemId)}` : ''}`));
+  const fetchPage = useCallback(async (requestedKind: WorkKind, offset = 0, itemId?: string, requestedCopyQaKind: CopyQaKindFilter = copyQaKindRef.current) => {
+      const page = await apiRequest<WorkPage>(apiPath(`/v1/work-mode/items?kind=${requestedKind}&limit=${PAGE_SIZE}&offset=${offset}${requestedKind === 'COPY_QA' ? `&sampleKind=${requestedCopyQaKind}` : ''}${itemId ? `&itemId=${encodeURIComponent(itemId)}` : ''}`));
       if (!page || page.kind !== requestedKind || !Array.isArray(page.items) || !Array.isArray(page.kinds)) throw new Error('中心返回的作业数据不完整，请更新中心服务后重试。');
       const rows = page.items.map(item => {
         if (item.kind !== requestedKind) throw new Error('中心返回了不同类型的作业，请刷新后重试。');
         if (item.kind === 'COPY_QA') {
           const qa = normalizeCopyQaItem(item.qa, { role });
           if (!qa) throw new Error('文案质检数据不完整');
+          if (requestedCopyQaKind !== 'ALL' && qa.sampleKind !== requestedCopyQaKind) throw new Error('中心返回了不同分类的文案质检项，请更新中心服务后重试。');
           return { ...item, qa, label: copyRevisionView(qa.approvedRevision.content).title || qa.anonymousCode };
         }
         if (item.kind === 'IMAGE_QA') {
@@ -91,14 +99,15 @@ export function WorkMode({ kinds: initialKinds, role, nodeId, username, accountI
 
   const load = useCallback(async (requestedKind: WorkKind, { append = false, autoSelect = false, selectId }: { append?: boolean; autoSelect?: boolean; selectId?: string } = {}) => {
     const sequence = ++requestId.current;
+    const requestedCopyQaKind = copyQaKindRef.current;
     const offset = append ? itemsRef.current.length : 0;
     setLoading(true); setError('');
     try {
-      const page = await fetchPage(requestedKind, offset);
+      const page = await fetchPage(requestedKind, offset, undefined, requestedCopyQaKind);
       const rows = page.items;
       const restored = selectId ? rows.find(row => row.id === selectId)
-        ?? (await fetchPage(requestedKind, 0, selectId)).items.find(row => row.id === selectId) : undefined;
-      if (sequence !== requestId.current || kindRef.current !== requestedKind) return;
+        ?? (await fetchPage(requestedKind, 0, selectId, requestedCopyQaKind)).items.find(row => row.id === selectId) : undefined;
+      if (sequence !== requestId.current || kindRef.current !== requestedKind || (requestedKind === 'COPY_QA' && copyQaKindRef.current !== requestedCopyQaKind)) return;
       const merged = append ? [...itemsRef.current, ...rows.filter(row => !itemsRef.current.some(old => workItemKey(old) === workItemKey(row)))] : rows;
       updateItems(merged); setHasMore(page.hasMore); setKinds(page.kinds);
       setCounts(old => ({ ...old, [requestedKind]: page.total === null ? `${merged.length}+` : String(page.total) }));
@@ -190,6 +199,15 @@ export function WorkMode({ kinds: initialKinds, role, nodeId, username, accountI
     });
   }
 
+  function switchCopyQaKind(next: CopyQaKindFilter) {
+    if (next === copyQaKind) return;
+    void navigate(() => {
+      copyQaKindRef.current = next; setCopyQaKind(next); updateItems([]); select(null); setQuery(''); setNotice(''); setHasMore(false);
+      setCounts(old => ({ ...old, COPY_QA: undefined }));
+      void load('COPY_QA', { autoSelect: true });
+    });
+  }
+
   function skip(item: WorkItem) {
     if (!selectedRef.current || workItemKey(selectedRef.current) !== workItemKey(item)) return;
     void navigate(() => {
@@ -231,7 +249,9 @@ export function WorkMode({ kinds: initialKinds, role, nodeId, username, accountI
       <Button unstyled className={styles.historyButton} onClick={() => setShowHistory(!showHistory)} aria-expanded={showHistory}><History size={16} />本次已提交 <strong>{history.length}</strong></Button>
     </header>
     <div className={styles.types} role="group" aria-label="作业类型">{kinds.map(value => <Button unstyled key={value} aria-pressed={kind === value} disabled={navigating}
-      onClick={() => switchKind(value)}>{WORK_LABELS[value]}{counts[value] !== undefined && <span>{counts[value]}</span>}</Button>)}</div>
+      onClick={() => switchKind(value)}>{WORK_LABELS[value]}{counts[value] !== undefined && <span>{value === 'COPY_QA' && copyQaKind !== 'ALL' ? `${COPY_QA_KIND_LABELS[copyQaKind]} ${counts[value]}` : counts[value]}</span>}</Button>)}</div>
+    {kind === 'COPY_QA' && <div className={styles.copyQaKinds} role="group" aria-label="文案质检分类"><span>分类</span>{COPY_QA_KIND_OPTIONS.map(value =>
+      <Button unstyled key={value} type="button" aria-pressed={copyQaKind === value} disabled={navigating} onClick={() => switchCopyQaKind(value)}>{COPY_QA_KIND_LABELS[value]}</Button>)}</div>}
     {notice && <div className={styles.notice} role="status">{notice}</div>}
     {error && <div className="notice error" role="alert">{error} <Button unstyled className="button small" disabled={loading} onClick={() => void load(kind)}>重试读取</Button></div>}
     {showHistory && <section className={styles.history}><h2>本次提交记录</h2>{!history.length && <p>保存草稿和暂跳过不计入已提交。</p>}{[...history].reverse().map(row => <div key={row.key}><strong>{row.label}</strong><span>{WORK_LABELS[row.kind]} · {row.message}</span></div>)}</section>}
@@ -252,7 +272,9 @@ export function WorkMode({ kinds: initialKinds, role, nodeId, username, accountI
           <label className={styles.search}><Search size={15} /><Input aria-label="筛选已加载待办" placeholder="筛选已加载待办" value={query} onChange={e => setQuery(e.target.value)} /></label>
           <div className={styles.list}>{visible.map(item => <Button unstyled className={styles.item} key={workItemKey(item)} disabled={navigating}
             aria-pressed={selected !== null && workItemKey(selected) === workItemKey(item)} onClick={() => { if (selected?.id !== item.id) void navigate(() => select(item)); }}>
-            <span className={styles.itemMeta}>{item.taskId ? `#${item.taskId}` : item.qa?.anonymousCode}{item.rework && <em>{item.kind.endsWith('QA') ? '强制复检' : '需要返工'}</em>}</span>
+            <span className={styles.itemMeta}>{item.taskId ? `#${item.taskId}` : item.qa?.anonymousCode}{item.kind === 'COPY_QA'
+              ? <em data-kind={item.qa?.sampleKind === 'MANDATORY_RECHECK' ? 'mandatory' : 'random'}>{item.qa?.sampleKind === 'MANDATORY_RECHECK' ? '强制复检' : '第一次抽检'}</em>
+              : item.rework && <em>{item.kind.endsWith('QA') ? '强制复检' : '需要返工'}</em>}</span>
             <strong>{item.label}</strong><small>{item.source || (item.qa?.blindReview ? '匿名内容' : '分配给我的作业')}</small>
             {item.taskId && <span className={styles.backgroundStates}>{backgroundTasks.filter(task => task.taskId === item.taskId
               && backgroundTaskGroup(task) !== 'history').map(task => <span key={task.id} data-state={backgroundTaskGroup(task)}>
@@ -260,7 +282,7 @@ export function WorkMode({ kinds: initialKinds, role, nodeId, username, accountI
               </span>)}</span>}
           </Button>)}</div>
           {loading && !items.length && <div className={styles.queueEmpty}><LoaderCircle className="animate-spin" size={18} />正在读取待办…</div>}
-          {!loading && !visible.length && <p className={styles.queueEmpty}>{query ? '没有匹配的已加载待办' : error ? '读取失败，请重试' : '当前暂无待办'}</p>}
+          {!loading && !visible.length && <p className={styles.queueEmpty}>{query ? '没有匹配的已加载待办' : error ? '读取失败，请重试' : kind === 'COPY_QA' && copyQaKind !== 'ALL' ? `当前没有待处理的${COPY_QA_KIND_LABELS[copyQaKind]}项` : '当前暂无待办'}</p>}
           {hasMore && <Button unstyled className={styles.loadMore} disabled={loading} onClick={() => void load(kind, { append: true })}>{loading ? '正在加载…' : '加载更多待办'}</Button>}
         </div>
       </aside>

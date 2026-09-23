@@ -132,7 +132,9 @@ export function WorkQualityEditor({ item, navigationGuardRef, onSkip, onComplete
   function showImage(index: number) { setSelectedImage(index); setMobilePane('content'); }
 
   return <section className={styles.quality} data-quality-kind={imageMode ? 'image' : 'copy'} data-returning={returning} aria-label="当前质检内容">
-    <header><div className={styles.qualityIdentity}><h2>{item.rework ? '返工强制复检' : WORK_LABELS[item.kind]}</h2><span>{qa.anonymousCode}</span>
+    <header><div className={styles.qualityIdentity}><h2>{!copyItem && item.rework ? '返工强制复检' : WORK_LABELS[item.kind]}</h2>
+      {copyItem && <span className={styles.qualityKind} data-kind={copyItem.sampleKind === 'MANDATORY_RECHECK' ? 'mandatory' : 'random'}>{copyItem.sampleKind === 'MANDATORY_RECHECK' ? '强制复检' : '第一次抽检'}</span>}
+      <span>{qa.anonymousCode}</span>
       {qa.blindReview && <span className={styles.blind}><EyeOff size={14} />盲评模式</span>}</div>
       {imageItem && <div className={styles.qualityToolbar} role="group" aria-label="图片质检快捷操作">
         {currentAsset && <span>当前第 {pageNumber(selectedImage)} 页 · 共 {assets.length} 页</span>}

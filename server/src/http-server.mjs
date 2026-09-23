@@ -1477,7 +1477,7 @@ function installRoutes(
     const actor = requestActor(ctx);
     json(ctx, 200, await loadWorkModePage(repository, {
       kind: ctx.query.kind, limit: ctx.query.limit, offset: ctx.query.offset,
-      itemId: ctx.query.itemId,
+      itemId: ctx.query.itemId, sampleKind: ctx.query.sampleKind,
     }, actor));
   });
   router.get('/v1/tasks', async (ctx) => {

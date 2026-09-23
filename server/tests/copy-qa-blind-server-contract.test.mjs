@@ -174,6 +174,21 @@ test('work mode copy lookup uses the shared queue while preserving self-review a
   assert.match(statement.sql, /task\.priority_paused = false/u);
 });
 
+test('copy QA type filter is parameterized before database pagination', async () => {
+  let statement;
+  const pool = { query: async (sql, values) => {
+    if (sql.includes('SELECT DISTINCT task.production_batch_id')) return { rows: [] };
+    if (sql.includes('SELECT id FROM app_users')) return { rows: [{ id: 91 }] };
+    statement = { sql: String(sql), values }; return { rows: [] };
+  } };
+  await listCopyQaItems(pool, { sampleKind: 'MANDATORY_RECHECK', actionableOnly: true, limit: 2 }, reviewer);
+  const parameter = statement.sql.match(/COALESCE\(item\.sample_kind, 'RANDOM'\) = \$(\d+)/u);
+  assert.ok(parameter);
+  assert.equal(statement.values[Number(parameter[1]) - 1], 'MANDATORY_RECHECK');
+  assert.ok(statement.sql.indexOf(parameter[0]) < statement.sql.indexOf('LIMIT $'));
+  await assert.rejects(listCopyQaItems(pool, { sampleKind: 'invalid' }, reviewer), TypeError);
+});
+
 test('admin receives action capabilities for their own final approval', async () => {
   const admin = { userId: 1, username: 'admin', role: 'ADMIN' };
   const pool = { query: async (sql) => {

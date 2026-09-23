@@ -40,6 +40,7 @@ const navigationGroups: NavigationGroup[] = [
     { href: '/copy-flow', label: '文案工作入口', icon: ShieldCheck },
     { href: '/copy-qa', label: '文案质检', icon: ShieldCheck },
     { href: '/image-qa', label: '图片质检', icon: ShieldCheck },
+    { href: '/reassignment', label: '待二次分配', icon: Users, adminOnly: true },
     { href: '/delivery-pool', label: '交付池', icon: PackageCheck },
   ] },
   {
@@ -52,7 +53,6 @@ const navigationGroups: NavigationGroup[] = [
   {
     label: '运营与系统',
     items: [
-      { href: '/reassignment', label: '待二次分配', icon: Users, adminOnly: true },
       { href: '/workbench-statistics', label: '数据统计', icon: BarChart3 },
       { href: '/settings', label: '生产配置', icon: Settings2 },
       { href: '/executors', label: '执行机管理', icon: ServerCog },

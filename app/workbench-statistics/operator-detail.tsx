@@ -3,6 +3,7 @@ import { useEffect,useId,useState } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Dialog,DialogContent,DialogTitle,DialogDescription } from '@/components/ui/dialog';
+import { Select,SelectContent,SelectItem,SelectTrigger,SelectValue } from '@/components/ui/select';
 import { apiRequest } from '../components/api-client';
 import { Chart,duration } from './shared';
 import { OPERATOR_API } from './use-operator-performance';
@@ -124,9 +125,9 @@ export function OperatorDetailDialog({report,selection,onClose}:{report:Operator
       }}>{label}</button>)}</div>
     <div className={ui.body} key={view} role="tabpanel" id={`${dialogId}-${view}-panel`} aria-labelledby={`${dialogId}-${view}-tab`} tabIndex={0}>
     {view==='events'&&<div className={ui.filters}>
-      <label>明细范围 <select aria-label="明细范围" className={styles.selector} value={metric} onChange={event=>{setMetric(event.target.value);setPage(1);setSampleSet('all');}}>{Object.entries(METRICS).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
-      <label>阶段 <select aria-label="明细阶段" className={styles.selector} value={stage} onChange={event=>{setStage(event.target.value);setPage(1);}}><option value="">全部阶段</option><option value="COPY">文案</option><option value="IMAGE">图片</option></select></label>
-      {['firstPass','recheck','firstRecheck','qa','qaRecheck'].includes(metric)&&<label>结论 <select aria-label="质检结论" className={styles.selector} value={sampleSet} onChange={event=>{setSampleSet(event.target.value);setPage(1);}}><option value="all">全部结论</option><option value="passed">通过样本</option><option value="failed">退回样本</option></select></label>}
+      <label>明细范围 <Select value={metric} onValueChange={value=>{setMetric(value);setPage(1);setSampleSet('all');}}><SelectTrigger aria-label="明细范围" className={styles.selector}><SelectValue /></SelectTrigger><SelectContent>{Object.entries(METRICS).map(([key,label])=><SelectItem key={key} value={key}>{label}</SelectItem>)}</SelectContent></Select></label>
+      <label>阶段 <Select value={stage||'ALL'} onValueChange={value=>{setStage(value==='ALL'?'':value);setPage(1);}}><SelectTrigger aria-label="明细阶段" className={styles.selector}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ALL">全部阶段</SelectItem><SelectItem value="COPY">文案</SelectItem><SelectItem value="IMAGE">图片</SelectItem></SelectContent></Select></label>
+      {['firstPass','recheck','firstRecheck','qa','qaRecheck'].includes(metric)&&<label>结论 <Select value={sampleSet} onValueChange={value=>{setSampleSet(value);setPage(1);}}><SelectTrigger aria-label="质检结论" className={styles.selector}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部结论</SelectItem><SelectItem value="passed">通过样本</SelectItem><SelectItem value="failed">退回样本</SelectItem></SelectContent></Select></label>}
     </div>}
     {error&&<div role="alert" className={`${styles.notice} ${styles.error}`}>{error}<Button variant="ghost" size="sm" onClick={()=>setRetry(value=>value+1)}>重试</Button></div>}
     {busy&&<p role="status" className={styles.muted}>正在读取对应任务和事件…</p>}

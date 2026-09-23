@@ -55,6 +55,16 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     approvedRevision: { content: { copy: { title: `匿名待检文案 ${i+1}`, body: '常用物品分类放在手边，给桌面留出写字和阅读的空间。'.repeat(24), tags: ['桌面收纳', '内容核验'] },
       imagePlan: [1, 2].map(page => ({ ...structuredClone(tasks[0].copyRevisions[0].content.imagePlan[0]), headline: `待检规划 ${page}` })) },
       contentSha256: 'a'.repeat(64), revisionToken: 'opaque-token-'+id } }));
+  qaItems.push(...Array.from({ length: 49 }, (_, index) => {
+    const id = randomUUID(), number = index + 3;
+    return { ...structuredClone(qaItems[0]), id, freezePublicId: randomUUID(), anonymousCode: `QA-${number}`,
+      sampleKind: number === 51 ? 'MANDATORY_RECHECK' : 'RANDOM',
+      capabilities: { canPass: true, canReturnSingle: number !== 51, canReturnBatch: false },
+      approvedRevision: { ...structuredClone(qaItems[0].approvedRevision),
+        content: { ...structuredClone(qaItems[0].approvedRevision.content),
+          copy: { ...qaItems[0].approvedRevision.content.copy, title: `匿名待检文案 ${number}` } },
+        revisionToken: 'opaque-token-'+id } };
+  }));
   const imageTask = { ...structuredClone(tasks[2]), id: 4, query: '图片初审测试', state: 'MANUAL_ARCHIVE',
     currentImageRunId: randomUUID() };
   imageTask.copyRevisions[0].approvedAt = new Date().toISOString();
@@ -94,7 +104,10 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
         const rows = kind === 'COPY' ? tasks.filter(t => t.state === 'COPY_REVIEW_PENDING').map(t => ({ id: String(t.id), taskId: t.id, kind, label: t.query,
           version: t.currentCopyRevisionId, state: t.state, source: '测试词包', rework: !!t.mandatoryCopyQc }))
           : kind === 'IMAGE' ? tasks.filter(t => ['MANUAL_ARCHIVE', 'IMAGE_REWORK_PENDING'].includes(t.state)).map(t => ({ id: String(t.id), taskId: t.id, kind, label: t.query, version: t.currentImageRunId }))
-          : (kind === 'COPY_QA' ? qaItems : imageQaItems).filter(q => q.status === 'PENDING').map(q => ({ id: q.id, kind, label: q.anonymousCode, source: null, rework: false, qa: q }));
+          : (kind === 'COPY_QA' ? qaItems : imageQaItems).filter(q => q.status === 'PENDING'
+            && (kind !== 'COPY_QA' || !url.searchParams.has('sampleKind') || url.searchParams.get('sampleKind') === 'ALL'
+              || q.sampleKind === url.searchParams.get('sampleKind'))).map(q => ({ id: q.id, kind, label: q.anonymousCode,
+            source: null, rework: q.sampleKind === 'MANDATORY_RECHECK', qa: q }));
         const filtered = url.searchParams.has('itemId') ? rows.filter(row => row.id === url.searchParams.get('itemId')) : rows;
         reply({ kind, kinds: ['COPY','IMAGE','COPY_QA','IMAGE_QA'], total: filtered.length, hasMore: filtered.length > offset+limit, items: filtered.slice(offset, offset+limit) }); return;
       }
@@ -293,6 +306,29 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     await page.setViewportSize({ width: 1360, height: 1040 });
     await page.getByRole('button', { name: '文案质检', exact: true }).click();
     await page.getByRole('heading', { name: '匿名待检文案 1' }).waitFor();
+    const copyQaKinds = page.getByRole('group', { name: '文案质检分类' });
+    const qaQueue = page.getByRole('complementary', { name: '待处理作业' });
+    assert.deepEqual(await copyQaKinds.getByRole('button').allTextContents(), ['全部', '强制复检', '第一次抽检']);
+    assert.match(await qaQueue.getByRole('button', { name: /匿名待检文案 1\b/u }).textContent(), /第一次抽检/u);
+    assert.equal(await qaQueue.getByRole('button', { name: /匿名待检文案 51/u }).count(), 0, 'last-page recheck is absent from the first unfiltered page');
+    await qaQueue.getByRole('button', { name: '加载更多待办' }).click();
+    await qaQueue.getByRole('button', { name: /匿名待检文案 51/u }).waitFor();
+    assert.match(await qaQueue.getByRole('button', { name: /匿名待检文案 51/u }).textContent(), /强制复检/u);
+    await copyQaKinds.getByRole('button', { name: '强制复检' }).click();
+    await page.getByRole('heading', { name: '匿名待检文案 51' }).waitFor();
+    assert.equal(await qaQueue.getByRole('button', { name: /匿名待检文案 1\b/u }).count(), 0);
+    assert.equal(await qaQueue.getByRole('button', { name: /匿名待检文案 51/u }).getAttribute('aria-pressed'), 'true');
+    assert.ok(requests.some(r => r.path.endsWith('/work-mode/items') && new URLSearchParams(r.search).get('sampleKind') === 'MANDATORY_RECHECK'
+      && new URLSearchParams(r.search).get('offset') === '0'), 'recheck filter is sent to the server before pagination');
+    await copyQaKinds.getByRole('button', { name: '第一次抽检' }).click();
+    await page.getByRole('heading', { name: '匿名待检文案 1' }).waitFor();
+    assert.equal(await qaQueue.getByRole('button', { name: /匿名待检文案 51/u }).count(), 0);
+    assert.ok(requests.some(r => r.path.endsWith('/work-mode/items') && new URLSearchParams(r.search).get('sampleKind') === 'RANDOM'));
+    await copyQaKinds.getByRole('button', { name: '全部' }).click();
+    await page.getByRole('heading', { name: '匿名待检文案 1' }).waitFor();
+    qaItems.splice(2);
+    await page.getByRole('button', { name: '刷新待办', exact: true }).click();
+    await qaQueue.getByRole('button', { name: /匿名待检文案 3\b/u }).waitFor({ state: 'detached' });
     assert.equal(await page.getByText('原始 Query', { exact: true }).count(), 0);
     const copyQaContent = page.getByRole('region', { name: '文案核对', exact: true });
     const copyQaActions = page.getByRole('complementary', { name: '文案质检操作', exact: true });
@@ -325,7 +361,7 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     await page.getByRole('button', { name: '通过并下一条', exact: true }).click();
     await page.getByRole('heading', { name: '匿名待检文案 2' }).waitFor();
     await page.getByRole('button', { name: '打回', exact: true }).click();
-    await page.getByPlaceholder('请说明需要修改的位置和内容').fill('需要核对事实依据');
+    await page.getByPlaceholder('可选：补充具体句子、页码或修改要求').fill('需要核对事实依据');
     await page.setViewportSize({ width: 1366, height: 768 });
     await assertViewportWorkspace();
     await page.screenshot({ path: join(directory, 'copy-quality-single-scroll-laptop.png'), fullPage: true });
@@ -333,11 +369,11 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     await page.getByRole('option', { name: '建议负责人废弃', exact: true }).click();
     await page.getByRole('button', { name: '暂跳过', exact: true }).click();
     await page.getByRole('button', { name: '继续填写', exact: true }).click();
-    assert.equal(await page.getByPlaceholder('请说明需要修改的位置和内容').inputValue(), '需要核对事实依据');
+    assert.equal(await page.getByPlaceholder('可选：补充具体句子、页码或修改要求').inputValue(), '需要核对事实依据');
     failQaSubmit = true;
     await page.getByRole('button', { name: '打回并下一条', exact: true }).click();
     await page.getByRole('alert').filter({ hasText: '测试质检提交失败' }).waitFor();
-    assert.equal(await page.getByPlaceholder('请说明需要修改的位置和内容').inputValue(), '需要核对事实依据');
+    assert.equal(await page.getByPlaceholder('可选：补充具体句子、页码或修改要求').inputValue(), '需要核对事实依据');
     assert.equal(qaItems[1].status, 'PENDING');
     failQaSubmit = false;
     await page.getByRole('button', { name: '打回并下一条', exact: true }).click();

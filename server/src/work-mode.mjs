@@ -18,6 +18,9 @@ export async function loadWorkModePage(repository, options, actor) {
   const kind = options.kind ?? kinds[0];
   if (!['COPY', 'IMAGE', 'COPY_QA', 'IMAGE_QA'].includes(kind)) throw new TypeError('请选择有效的作业类型');
   if (!kinds.includes(kind)) throw new ControlPlaneAuthorizationError('当前账号没有此作业权限');
+  const sampleKind = options.sampleKind ?? 'ALL';
+  if (!['ALL', 'RANDOM', 'MANDATORY_RECHECK'].includes(sampleKind)
+      || (kind !== 'COPY_QA' && sampleKind !== 'ALL')) throw new TypeError('请选择有效的文案质检类型');
   const itemId = options.itemId === undefined ? undefined : WORK_MODE_STATES[kind]
     ? normalizeTaskId(options.itemId) : normalizeUuid(options.itemId, 'itemId');
   const limit = pageInteger(options.limit, 50, 100), offset = pageInteger(options.offset, 0, 1_000_000);
@@ -38,7 +41,7 @@ export async function loadWorkModePage(repository, options, actor) {
   }
   const query = { status: 'PENDING', actionableOnly: true, limit: limit + 1, offset,
     ...(itemId === undefined ? {} : { itemPublicId: itemId }) };
-  const rows = kind === 'COPY_QA' ? await repository.listCopyQaItems(query, { actor })
+  const rows = kind === 'COPY_QA' ? await repository.listCopyQaItems({ ...query, sampleKind }, { actor })
     : (await repository.listImageQaItems(query, { actor })).items;
   const hasMore = rows.length > limit;
   return { kind, kinds, total: hasMore ? null : offset + rows.length, hasMore,

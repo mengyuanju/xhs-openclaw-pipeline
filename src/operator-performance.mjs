@@ -4,7 +4,7 @@ import { chinaDay, normalizeRange } from './web-statistics/summary.mjs';
 
 export const PERFORMANCE_VERSION = 5;
 export const PERFORMANCE_METRICS = Object.freeze(['judged','discarded','firstPassed','qualityReturned','reassigned','all','contributed','qaAll','qa','qaRecheck','qaBatch','qaSpecial','qaPending','qaBlocked','submitted','firstSubmitted','firstPass','recheck','firstRecheck','returned','reworked','reassign','released','delivered','batchAffected','excluded','pending']);
-export const PERFORMANCE_SORTS = Object.freeze(['contributed','qa','qaPending','submitted','released','copyRate','imageRate','returned','pending','copyMedian','imageMedian','copySubmitted','imageSubmitted','copyQa','imageQa','qaReviews','qaPassed','qaReturned','qaRecheck','reworked']);
+export const PERFORMANCE_SORTS = Object.freeze(['contributed','qa','qaPending','submitted','released','judged','firstPassRate','returnRate','discardedRate','copyRate','imageRate','returned','pending','copyMedian','imageMedian','copySubmitted','imageSubmitted','copyQa','imageQa','qaReviews','qaPassed','qaReturned','qaRecheck','reworked']);
 const ms = value => value == null ? NaN : Date.parse(value);
 const uniqueTasks = rows => new Set(rows.map(row => row.taskId)).size;
 const valid = row => !row.exclusion && row.accountId !== null;
@@ -201,7 +201,10 @@ export function buildPerformanceSnapshot(events,current,timeline,filters,asOf) {
 }
 
 export function performancePeoplePage(snapshot,filters) {
-  const value=(person,key)=>({contributed:person.contributed,qa:person.qa.reviews,qaPending:person.qa.pending,submitted:person.submitted,released:person.released,copyRate:person.COPY.qualityOutcomes.firstPassRate,
+  const value=(person,key)=>({contributed:person.contributed,qa:person.qa.reviews,qaPending:person.qa.pending,submitted:person.submitted,released:person.released,
+    judged:person.qualityOutcomes.judged,firstPassRate:person.qualityOutcomes.firstPassRate,
+    returnRate:person.qualityOutcomes.returnRate,discardedRate:person.qualityOutcomes.discardedRate,
+    copyRate:person.COPY.qualityOutcomes.firstPassRate,
     imageRate:person.IMAGE.qualityOutcomes.firstPassRate,returned:person.returned,pending:person.pending,
     copyMedian:person.COPY.duration.medianMs,imageMedian:person.IMAGE.duration.medianMs,
     copySubmitted:person.COPY.submitted,imageSubmitted:person.IMAGE.submitted,copyQa:person.qa.COPY.tasks,imageQa:person.qa.IMAGE.tasks,

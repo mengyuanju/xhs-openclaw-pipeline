@@ -80,7 +80,45 @@ test('quality work delegates redaction and shared-queue filtering to existing QA
     await loadWorkModePage(repository, { kind, itemId: publicId }, { ...actor, role: 'REVIEWER' });
     assert.equal(calls.at(-1).options.itemPublicId, publicId);
     assert.equal(calls.at(-1).options.actionableOnly, true);
+    if (kind === 'COPY_QA') assert.equal(calls.at(-1).options.sampleKind, 'ALL');
   }
+});
+
+test('copy QA kind is applied before pagination and is rejected for other work', async () => {
+  const reviewer = { ...user, role: 'REVIEWER', copyQcEnabled: true, imageQcEnabled: true };
+  const mixed = [
+    ...Array.from({ length: 51 }, (_, index) => ({ id: `random-${index}`, anonymousCode: `首次-${index}`, sampleKind: 'RANDOM' })),
+    ...Array.from({ length: 3 }, (_, index) => ({ id: `mandatory-${index}`, anonymousCode: `复检-${index}`, sampleKind: 'MANDATORY_RECHECK' })),
+  ];
+  const calls = [];
+  const repository = {
+    getUserByUsername: async () => reviewer,
+    listCopyQaItems: async options => {
+      calls.push(options);
+      const matching = mixed.filter(item => options.sampleKind === 'ALL' || item.sampleKind === options.sampleKind);
+      return matching.slice(options.offset, options.offset + options.limit);
+    },
+  };
+  const reviewerActor = { ...actor, role: 'REVIEWER' };
+  const first = await loadWorkModePage(repository, { kind: 'COPY_QA', sampleKind: 'MANDATORY_RECHECK', limit: 2 }, reviewerActor);
+  assert.deepEqual(first.items.map(item => item.id), ['mandatory-0', 'mandatory-1']);
+  assert.equal(first.hasMore, true);
+  assert.equal(first.total, null);
+  assert.equal(calls[0].sampleKind, 'MANDATORY_RECHECK');
+  const second = await loadWorkModePage(repository, { kind: 'COPY_QA', sampleKind: 'MANDATORY_RECHECK', limit: 2, offset: 2 }, reviewerActor);
+  assert.deepEqual(second.items.map(item => item.id), ['mandatory-2']);
+  assert.equal(second.hasMore, false);
+  assert.equal(second.total, 3);
+  const random = await loadWorkModePage(repository, { kind: 'COPY_QA', sampleKind: 'RANDOM', limit: 2 }, reviewerActor);
+  assert.deepEqual(random.items.map(item => item.id), ['random-0', 'random-1']);
+  assert.equal(calls.at(-1).sampleKind, 'RANDOM');
+  const all = await loadWorkModePage(repository, { kind: 'COPY_QA', limit: 2 }, reviewerActor);
+  assert.deepEqual(all.items.map(item => item.id), ['random-0', 'random-1']);
+  assert.equal(calls.at(-1).sampleKind, 'ALL');
+  for (const sampleKind of ['BOGUS', '', 'random']) {
+    await assert.rejects(loadWorkModePage(repository, { kind: 'COPY_QA', sampleKind }, reviewerActor), TypeError);
+  }
+  await assert.rejects(loadWorkModePage(repository, { kind: 'IMAGE_QA', sampleKind: 'RANDOM' }, reviewerActor), TypeError);
 });
 
 test('task query excludes paused and missing content before both the page and total SQL', async () => {
@@ -113,5 +151,25 @@ test('HTTP work endpoint ignores forged ownership, denies permission loss and un
     account.copyReviewEnabled = false;
     response = await fetch(base+'?kind=COPY', { headers }); assert.equal(response.status, 403);
     response = await fetch(base, { method: 'POST', headers }); assert.equal(response.status, 405);
+  } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+});
+
+test('HTTP work endpoint forwards copy quality type and rejects invalid values', async () => {
+  const reviewer = { ...user, role: 'REVIEWER', copyQcEnabled: true };
+  let filters;
+  const repository = { getUserByUsername: async () => reviewer,
+    listCopyQaItems: async options => { filters = options; return []; } };
+  const app = createControlPlaneApp({ repository, storageRoot: 'test-storage' });
+  const server = app.listen(0, '127.0.0.1'); await new Promise(resolve => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${server.address().port}/v1/work-mode/items`;
+  const headers = { 'X-Actor-User-Id': '8', 'X-Actor-Username': 'worker',
+    'X-Actor-Role': 'REVIEWER', 'X-Actor-Credential-Version': '2' };
+  try {
+    let response = await fetch(`${base}?kind=COPY_QA&sampleKind=RANDOM`, { headers });
+    assert.equal(response.status, 200); assert.equal(filters.sampleKind, 'RANDOM');
+    response = await fetch(`${base}?kind=COPY_QA&sampleKind=MANDATORY_RECHECK`, { headers });
+    assert.equal(response.status, 200); assert.equal(filters.sampleKind, 'MANDATORY_RECHECK');
+    response = await fetch(`${base}?kind=COPY_QA&sampleKind=OTHER`, { headers });
+    assert.equal(response.status, 400);
   } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
 });

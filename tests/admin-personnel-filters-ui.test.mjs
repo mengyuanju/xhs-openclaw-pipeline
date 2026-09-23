@@ -11,8 +11,10 @@ test('administrator personnel filters use stable account ids in statistics and d
     readFile(new URL('../app/delivery-pool/shared-delivery-workbench.tsx', import.meta.url), 'utf8'),
   ]);
 
-  assert.match(statistics, /name="accountId" aria-label="人员"/u);
-  assert.match(statistics, /const accountId=String\(fields\.get\('accountId'\)/u);
+  assert.match(statistics, /<Select name="accountId"/u);
+  assert.match(statistics, /<SelectTrigger id="operator-account-filter" aria-label="人员"/u);
+  assert.match(statistics, /const selectedAccountId=String\(fields\.get\('accountId'\)/u);
+  assert.match(statistics, /selectedAccountId==='__all__'\?'':selectedAccountId/u);
   assert.match(statistics, /人员：\$\{selectedAccountLabel\}/u);
   assert.match(statistics, /accountId:'',batchId:'',page:'1'/u);
   assert.doesNotMatch(statistics, /setFilters\(previous=>\(\{\.\.\.previous,query:'',accountId:''/u,
