@@ -42,6 +42,9 @@ type ManagedUser = {
   copyQcEnabled?: boolean;
   imageQcEnabled?: boolean;
   copySamplingRateBpsOverride?: number | null;
+  autoCopyBatchEnabled?: boolean;
+  autoCopyBatchSize?: number;
+  copyFullInspection?: boolean;
   mustChangePassword: boolean;
   version: number;
 };
@@ -75,6 +78,9 @@ export function UserManager({
   const [samplingMode, setSamplingMode] = useState('INHERIT');
   const [samplingInput, setSamplingInput] = useState('');
   const [editorReviewEnabled, setEditorReviewEnabled] = useState(true);
+  const [autoBatchEnabled,setAutoBatchEnabled]=useState(true);
+  const [autoBatchSize,setAutoBatchSize]=useState(10);
+  const [fullInspection,setFullInspection]=useState(false);
   const samplingEditable = samplingSettings?.supported === true
     && (editor?.mode === 'create' || editor?.user.copySamplingRateBpsOverride !== undefined);
 
@@ -83,6 +89,9 @@ export function UserManager({
     setError('');
     setEditorRole(user?.role ?? 'USER');
     setEditorReviewEnabled(user?.copyReviewEnabled ?? true);
+    setAutoBatchEnabled(user?.autoCopyBatchEnabled ?? true);
+    setAutoBatchSize(user?.autoCopyBatchSize ?? 10);
+    setFullInspection(user?.copyFullInspection ?? false);
     setSamplingMode(user?.copySamplingRateBpsOverride != null ? 'OVERRIDE' : 'INHERIT');
     setSamplingInput(String((user?.copySamplingRateBpsOverride ?? samplingSettings?.rateBps ?? 0) / 100));
     setEditor(next);
@@ -140,6 +149,7 @@ export function UserManager({
         body: JSON.stringify({
           username: form.get('username'),
           ...samplingUpdate,
+          autoCopyBatchEnabled:autoBatchEnabled,autoCopyBatchSize:autoBatchSize,copyFullInspection:fullInspection,
           displayName: form.get('displayName'),
           role: editorRole,
           copyReviewEnabled: form.get('copyReviewEnabled') === 'on',
@@ -157,6 +167,7 @@ export function UserManager({
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         ...samplingUpdate,
+        autoCopyBatchEnabled:autoBatchEnabled,autoCopyBatchSize:autoBatchSize,copyFullInspection:fullInspection,
         displayName: form.get('displayName'),
         role: editorRole,
           copyReviewEnabled: form.get('copyReviewEnabled') === 'on',
@@ -254,7 +265,7 @@ export function UserManager({
         : filteredUsers.length === 0
           ? <div className="empty-state user-filter-empty">没有符合当前条件的用户。请调整搜索或筛选条件。</div>
         : <div className="table-wrap mobile-cards user-table-wrap" role="region" aria-label="用户列表，可横向滚动" tabIndex={0}><table className="user-table">
-          <thead><tr><th>用户</th><th>角色</th><th>状态</th><th>文案抽检</th><th>密码</th><th className="user-actions-heading">操作</th></tr></thead>
+          <thead><tr><th>用户</th><th>角色</th><th>状态</th><th>文案抽检</th><th>自动成批</th><th>全量质检</th><th>密码</th><th className="user-actions-heading">操作</th></tr></thead>
           <tbody>{visibleUsers.map((user) => {
             const isCurrentUser = user.username === currentUsername;
             return <tr key={user.id}>
@@ -262,6 +273,8 @@ export function UserManager({
               <td data-label="角色"><span className={`pill user-role-${user.role.toLowerCase()}`}>{ROLE_LABELS[user.role]}</span></td>
               <td data-label="状态"><span className={`pill pill-${user.status.toLowerCase()}`}>{STATUS_LABELS[user.status]}</span></td>
               <td data-label="文案抽检">{accountSamplingLabel(samplingSettings, user.copySamplingRateBpsOverride)}</td>
+              <td data-label="自动成批">{user.autoCopyBatchEnabled ? `${user.autoCopyBatchSize ?? 10} 条` : "关闭"}</td>
+              <td data-label="全量质检">{user.copyFullInspection ? "开启" : "关闭"}</td>
               <td data-label="密码"><span className={user.mustChangePassword ? 'user-password-pending' : 'user-password-ready'}>{user.mustChangePassword ? '待修改初始密码' : '已设置'}</span></td>
               <td className="row-action" data-label="操作"><div className="user-row-actions">
                 <Button unstyled className="button small" type="button" disabled={Boolean(busy)} onClick={() => openEditor({ mode: 'edit', user })}><Pencil size={14} />编辑</Button>
@@ -300,43 +313,45 @@ export function UserManager({
           <span className="user-editor-icon"><UserRound size={20} /></span>
           <div><DialogTitle>{editor?.mode === 'create' ? '新增用户' : '编辑用户'}</DialogTitle><DialogDescription>{editor?.mode === 'create' ? '填写账号资料。创建后初始密码为 123456。' : `调整 @${editorUser?.username} 的姓名、角色和账号状态。`}</DialogDescription></div>
         </div>
-        <form className="stack" key={editor?.mode === 'edit' ? `edit-${editorUser?.id}` : 'create'} onSubmit={saveUser}>
-          {editor?.mode === 'create' && <div className="field"><label htmlFor="user-editor-username">登录账号</label><Input className="input" id="user-editor-username" name="username" pattern="[a-z0-9][a-z0-9._-]{2,49}" placeholder="例如 zhangsan" autoComplete="off" required /><small>3–50 位小写字母、数字、点、下划线或连字符。</small></div>}
-          <div className="field"><label htmlFor="user-editor-display-name">姓名</label><Input className="input" id="user-editor-display-name" name="displayName" defaultValue={editorUser?.displayName ?? ''} maxLength={80} placeholder="请输入用户姓名" required /></div>
-          <div className="user-editor-fields">
-            <div className="field"><label htmlFor="user-editor-role">角色</label><Select name="role" value={editorRole} onValueChange={(value) => setEditorRole(value as ManagedUser['role'])}><SelectTrigger id="user-editor-role"><SelectValue /></SelectTrigger><SelectContent>{Object.entries(ROLE_LABELS).map(([value, label]) => <SelectItem key={value} value={String(value)}>{label}</SelectItem>)}</SelectContent></Select></div>
-            {editor?.mode === 'edit' && <div className="field"><label htmlFor="user-editor-status">账号状态</label><Select name="status" defaultValue={editorUser?.status}><SelectTrigger id="user-editor-status"><SelectValue /></SelectTrigger><SelectContent>{Object.entries(STATUS_LABELS).map(([value, label]) => <SelectItem key={value} value={String(value)}>{label}</SelectItem>)}</SelectContent></Select></div>}
-          </div>
-          <div className="field user-editor-permissions">
-            <div className="user-editor-permission-options">
-              <label><input type="checkbox" name="copyReviewEnabled" checked={editorReviewEnabled} onChange={(event) => setEditorReviewEnabled(event.target.checked)} /> 文案审核</label>
-              <label><input type="checkbox" name="copyQcEnabled" defaultChecked={editorUser?.copyQcEnabled ?? false} /> 文案质检</label>
-              <label><input type="checkbox" name="imageQcEnabled" defaultChecked={editorRole === 'REVIEWER' && (editorUser?.imageQcEnabled ?? false)} disabled={editorRole !== 'REVIEWER'} /> 图片质检（仅质检）</label>
+        <form className="user-editor-form" key={editor?.mode === 'edit' ? `edit-${editorUser?.id}` : 'create'} onSubmit={saveUser}>
+          <section className="user-editor-section">
+            <div className="user-editor-section-heading"><h3>基础信息</h3><p>设置账号身份与登录状态。</p></div>
+            <div className="user-editor-grid">
+              {editor?.mode === 'create' && <div className="field"><label htmlFor="user-editor-username">登录账号</label><Input className="input" id="user-editor-username" name="username" pattern="[a-z0-9][a-z0-9._-]{2,49}" placeholder="例如 zhangsan" autoComplete="off" required /><small>3–50 位小写字母、数字、点、下划线或连字符。</small></div>}
+              <div className="field"><label htmlFor="user-editor-display-name">姓名</label><Input className="input" id="user-editor-display-name" name="displayName" defaultValue={editorUser?.displayName ?? ''} maxLength={80} placeholder="请输入用户姓名" required /></div>
+              <div className="field"><label htmlFor="user-editor-role">角色</label><Select name="role" value={editorRole} onValueChange={(value) => setEditorRole(value as ManagedUser['role'])}><SelectTrigger id="user-editor-role"><SelectValue /></SelectTrigger><SelectContent>{Object.entries(ROLE_LABELS).map(([value, label]) => <SelectItem key={value} value={String(value)}>{label}</SelectItem>)}</SelectContent></Select></div>
+              {editor?.mode === 'edit' && <div className="field"><label htmlFor="user-editor-status">账号状态</label><Select name="status" defaultValue={editorUser?.status}><SelectTrigger id="user-editor-status"><SelectValue /></SelectTrigger><SelectContent>{Object.entries(STATUS_LABELS).map(([value, label]) => <SelectItem key={value} value={String(value)}>{label}</SelectItem>)}</SelectContent></Select></div>}
             </div>
-            <small>文案审核、文案质检和图片质检独立设置；图片质检只能授予质检。图片初审无需授权，标注只初审自己负责的任务；管理员始终拥有质检管理权限。</small>
-          </div>
-          <div className="field">
-            <label htmlFor="user-copy-sampling-mode">文案抽检比例</label>
-            {samplingEditable && samplingSettings ? <>
-              <Select value={samplingMode} disabled={editorBusy} onValueChange={setSamplingMode}>
-                <SelectTrigger id="user-copy-sampling-mode"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="INHERIT">继承生产配置（当前默认 {samplingSettings.rateBps / 100}%）</SelectItem>
-                  <SelectItem value="OVERRIDE">单独配置</SelectItem>
-                </SelectContent>
-              </Select>
-              {samplingMode === 'OVERRIDE' && <>
-                <label htmlFor="user-copy-sampling-rate">单独配置比例（%）</label>
-                <Input id="user-copy-sampling-rate" type="number" min={0} max={100} step={0.01} required
-                  value={samplingInput} disabled={editorBusy} onChange={(event) => setSamplingInput(event.target.value)} />
-              </>}
-              <small>按此账号最终人工通过的文案抽检；单独配置优先于生产配置默认值，仅影响后续冻结。</small>
-              {!samplingSettings.enabled && <small>普通文案抽检当前全局关闭，账号配置会保留并在重新开启后生效。</small>}
-              {(samplingMode === 'OVERRIDE' ? samplingInput.trim() !== '' && Number(samplingInput) === 0 : samplingSettings.rateBps === 0)
-                && <small>0% 仍会在结批或等待超时后对非空尾批保底抽 1 条。</small>}
-              {editorRole !== 'ADMIN' && !editorReviewEnabled && <small>文案审核权限已关闭，当前不会产生新的最终审核结果；已保存的比例保留。</small>}
-            </> : <small>{samplingSettings?.supported ? '账号比例未读取，请刷新后配置。' : samplingSettings ? '中心服务尚未支持账号级比例，请先升级中心服务。' : '无法确认中心版本或读取生产配置，账号比例暂不可编辑。'}</small>}
-          </div>
+          </section>
+          <section className="user-editor-section">
+            <div className="user-editor-section-heading"><h3>工作权限</h3><p>按实际职责授予审核和质检权限。</p></div>
+            <div className="user-editor-toggle-grid">
+              <label><input type="checkbox" name="copyReviewEnabled" checked={editorReviewEnabled} onChange={(event) => setEditorReviewEnabled(event.target.checked)} /><span><strong>文案审核</strong><small>审核任务文案</small></span></label>
+              <label><input type="checkbox" name="copyQcEnabled" defaultChecked={editorUser?.copyQcEnabled ?? false} /><span><strong>文案质检</strong><small>处理抽检任务</small></span></label>
+              <label><input type="checkbox" name="imageQcEnabled" defaultChecked={editorRole === 'REVIEWER' && (editorUser?.imageQcEnabled ?? false)} disabled={editorRole !== 'REVIEWER'} /><span><strong>图片质检</strong><small>仅质检角色可用</small></span></label>
+            </div>
+          </section>
+          <section className="user-editor-section">
+            <div className="user-editor-section-heading"><h3>文案质检配置</h3><p>设置该账号的抽检比例与自动成批方式。</p></div>
+            <div className="user-editor-grid">
+              <div className="field"><label htmlFor="user-copy-sampling-mode">文案抽检比例</label>
+                {samplingEditable && samplingSettings ? <>
+                  <Select value={samplingMode} disabled={editorBusy} onValueChange={setSamplingMode}>
+                    <SelectTrigger id="user-copy-sampling-mode"><SelectValue /></SelectTrigger>
+                    <SelectContent><SelectItem value="INHERIT">继承默认比例（{samplingSettings.rateBps / 100}%）</SelectItem><SelectItem value="OVERRIDE">单独配置</SelectItem></SelectContent>
+                  </Select>
+                  {samplingMode === 'OVERRIDE' && <div className="field"><label htmlFor="user-copy-sampling-rate">单独配置比例（%）</label><Input id="user-copy-sampling-rate" type="number" min={0} max={100} step={0.01} required value={samplingInput} disabled={editorBusy} onChange={(event) => setSamplingInput(event.target.value)} /></div>}
+                  <small>个人自动批次按此比例随机选择质检项，只影响新批次。</small>
+                  {!samplingSettings.enabled && <small>全局文案抽检已关闭，此设置会在重新开启后生效。</small>}
+                </> : <small>{samplingSettings?.supported ? '账号比例未读取，请刷新后配置。' : samplingSettings ? '中心服务尚未支持账号级比例。' : '无法确认中心版本或读取生产配置。'}</small>}
+              </div>
+              <div className="field"><label htmlFor="auto-copy-batch-size">自动成批任务数</label><Input id="auto-copy-batch-size" type="number" min={1} max={5000} required value={autoBatchSize} onChange={event=>setAutoBatchSize(Number(event.target.value))} disabled={editorBusy||!autoBatchEnabled} /><small>待入批任务达到该数量时自动创建个人批次。</small></div>
+            </div>
+            <div className="user-editor-toggle-grid user-editor-quality-options">
+              <label><input type="checkbox" checked={autoBatchEnabled} onChange={event=>setAutoBatchEnabled(event.target.checked)} disabled={editorBusy} /><span><strong>自动文案成批</strong><small>默认开启</small></span></label>
+              <label><input type="checkbox" checked={fullInspection} onChange={event=>setFullInspection(event.target.checked)} disabled={editorBusy} /><span><strong>文案全量质检</strong><small>个人批次不按驳回率提前结束</small></span></label>
+            </div>
+          </section>
           {error && <div className="notice error" role="alert">{error}</div>}
           <div className="user-editor-actions"><DialogClose asChild><Button unstyled className="button" type="button" disabled={editorBusy}>取消</Button></DialogClose><Button unstyled className="button primary" disabled={editorBusy}>{editorBusy ? '保存中…' : editor?.mode === 'create' ? '创建用户' : '保存修改'}</Button></div>
         </form>

@@ -173,6 +173,7 @@ type TaskDetail = PriorityTask & {
   assignedToAccountId?: number | null;
   aiDisclosureEnabled: boolean;
   mandatoryCopyQc?: boolean;
+  copyQaReworkPending?: boolean;
   mandatoryCopyQcOrigin?: 'QA_RETURN' | 'FINAL_REWORK' | 'IMAGE_RETRY_REVIEW' | 'DISCARD_RESTORE' | 'SECOND_ASSIGNMENT' | null;
   mandatoryImageQc?: boolean;
   mandatoryImageQcOrigin?: 'QA_RETURN' | 'BATCH_RETURN' | 'DISCARD_RESTORE' | 'SECOND_ASSIGNMENT' | null;
@@ -877,6 +878,7 @@ export function TaskReviewDialog({
     && Boolean(revision && draft);
   const isImageRetryRework = Boolean(detail && isImageRetryExhausted(detail));
   const isCopyRework = !['DISCARD_RESTORE', 'SECOND_ASSIGNMENT'].includes(detail?.mandatoryCopyQcOrigin ?? '') && Boolean(isImageRetryRework
+    || detail?.copyQaReworkPending
     || detail?.mandatoryCopyQc
     || ['QA_RETURN', 'FINAL_REWORK'].includes(revision?.revisionOrigin ?? '')
     || ['QA_RETURN', 'FINAL_REWORK'].includes(revision?.reworkOrigin ?? ''));
@@ -1500,11 +1502,14 @@ export function TaskReviewDialog({
     if ((!embedded || decision === 'DISCARD') && !await confirm({
       title: decision === 'APPROVE'
         ? isImageRetryRework ? '确认生图失败修订并提交强制复检？'
+          : detail.copyQaReworkPending ? '确认返工文案达标并重新审核？'
           : isCopyRework ? '确认返工文案达标并提交强制复检？' : '确认文案达标并进入后续流程？'
         : decision === 'DISCARD' ? '评分并废弃这条任务？' : '保存评分与当前修改？',
       description: decision === 'APPROVE'
         ? isCopyRework
-          ? `${isImageRetryRework ? '生图失败修订' : revision.reworkOrigin === 'QA_RETURN' || detail.mandatoryCopyQcOrigin === 'QA_RETURN' ? '抽检返工' : '终审返工'}稿已实际修改文案或图片规划。本次将一起保存修改；人工确认达标后，系统将最终稿记录为 3 分并提交强制复检；复检通过后才会进入待生图队列。原稿评分和返工原因继续保留。`
+          ? detail.copyQaReworkPending
+            ? '抽检返工稿已实际修改，人工确认达标后会按普通规则重新进入待成批任务池；是否成为质检项由新批次决定。'
+            : `${isImageRetryRework ? '生图失败修订' : revision.reworkOrigin === 'QA_RETURN' || detail.mandatoryCopyQcOrigin === 'QA_RETURN' ? '抽检返工' : '终审返工'}稿已实际修改文案或图片规划。本次将一起保存修改；人工确认达标后，系统将最终稿记录为 3 分并提交强制复检；复检通过后才会进入待生图队列。原稿评分和返工原因继续保留。`
           : hasEditedCopyVersion
           ? `机器原稿评分 ${copyOriginalScore} 分及其原因会原样保留；人工确认达标后，系统将当前最终修改稿记录为 3 分，并按任务策略进入文案抽检或待生图队列。`
           : `机器原稿评分为 ${submittedScore} 分。系统会保存审核结果，并按任务策略进入文案抽检或待生图队列。`
@@ -1512,7 +1517,7 @@ export function TaskReviewDialog({
           ? '当前文案评分为 1 分。任务会被标记为已废弃，历史文案、执行记录与评分仍会保留。'
           : `机器原稿评分为 ${submittedScore} 分。系统会保存评分${draftChanged ? '和人工修订版本' : ''}，任务继续留在文案审核。`,
       confirmLabel: decision === 'APPROVE'
-        ? isImageRetryRework ? '提交修订并复检' : isCopyRework ? '提交强制复检' : '提交审核结果'
+        ? isImageRetryRework ? '提交修订并复检' : detail.copyQaReworkPending ? '提交重新审核' : isCopyRework ? '提交强制复检' : '提交审核结果'
         : decision === 'DISCARD' ? '评分并废弃' : '保存待修改',
       ...(decision === 'DISCARD' ? { tone: 'danger' as const } : {}),
     })) return;
@@ -2516,10 +2521,7 @@ export function TaskReviewDialog({
               {canModifyImages && <Button unstyled className="button primary" type="button" disabled={submitting} onClick={() => void reviseImages('REGENERATE')}><RotateCcw size={15} />重新生成图片</Button>}
               {canRetryCopy && <Button unstyled className="button primary" type="button" disabled={submitting || loading} onClick={() => { void retryCopy(); }}><RotateCcw size={15} />重试文案</Button>}
               {role === 'ADMIN' && detail.state === 'COPY_QC_PENDING'
-                && <Button unstyled className="button primary" type="button" disabled={submitting || loading}
-                  onClick={() => { void adminDirectApproveCopyQa(); }}>
-                  <CheckCircle2 size={15} />{submitting ? '正在提交…' : '通过文案质检'}
-                </Button>}
+                && <a className="button primary" href="/copy-qa">进入质检批次</a>}
               {canResumeImages && <Button unstyled className="button primary" type="button" disabled={submitting || loading} onClick={() => { void resumeImages(); }}><RotateCcw size={15} />从失败步骤继续</Button>}
               {canDiscardImages && detail.currentImageRunId && detail.currentCopyRevisionId && <ImageDiscardButton
                 target={{ taskId: detail.id, imageRunId: detail.currentImageRunId, copyRevisionId: detail.currentCopyRevisionId }}
@@ -2557,10 +2559,10 @@ export function TaskReviewDialog({
                 </ReviewActionButton>}
                 {!isCopyRework && copyOriginalScore === 1 && <ReviewActionButton unstyled className="button danger" type="button" disabledReason={copyActionBusyReason || copyRatingBlockReason} disabled={submitting || loading || regeneratingImagePlan || draftSaveStatus === 'saving' || !copyRatingComplete} onClick={(event) => { if (event.currentTarget.form) void submitCopyDecision('DISCARD', event.currentTarget.form); }}><Trash2 size={15} />评分并废弃</ReviewActionButton>}
                 {!isImageRetryRework && (isCopyRework || copyOriginalScore !== 1) && <ReviewActionButton unstyled className="button" type="button" disabledReason={saveCopyBlockReason} disabled={submitting || loading || regeneratingImagePlan || draftSaveStatus === 'saving' || !copyRatingComplete || isCopyRework && !draftChanged} onClick={(event) => { if (event.currentTarget.form) void submitCopyDecision('SAVE', event.currentTarget.form); }}>
-                  {submitting ? <><LoaderCircle className="animate-spin" size={15} />正在提交…</> : isCopyRework ? '保存返工稿，暂不提交复检' : '保存评分，暂不提交'}
+                  {submitting ? <><LoaderCircle className="animate-spin" size={15} />正在提交…</> : isCopyRework ? detail.copyQaReworkPending ? '保存返工稿，暂不提交审核' : '保存返工稿，暂不提交复检' : '保存评分，暂不提交'}
                 </ReviewActionButton>}
                 <ReviewActionButton unstyled className="button primary" type="submit" disabledReason={approveCopyBlockReason} disabled={submitting || loading || regeneratingImagePlan || draftSaveStatus === 'saving' || !canApproveCopy}>
-                  {submitting ? <><LoaderCircle className="animate-spin" size={15} />正在提交…</> : <><CheckCircle2 size={15} />{isImageRetryRework ? embedded ? '提交修订并下一条' : '提交修订并强制复检' : embedded ? isCopyRework ? '提交复检并下一条' : '提交并下一条' : isCopyRework ? '提交强制复检' : '审核通过并进入后续流程'}</>}
+                  {submitting ? <><LoaderCircle className="animate-spin" size={15} />正在提交…</> : <><CheckCircle2 size={15} />{detail.copyQaReworkPending ? embedded ? '提交审核并下一条' : '审核通过并进入待成批' : isImageRetryRework ? embedded ? '提交修订并下一条' : '提交修订并强制复检' : embedded ? isCopyRework ? '提交复检并下一条' : '提交并下一条' : isCopyRework ? '提交强制复检' : '审核通过并进入后续流程'}</>}
                 </ReviewActionButton>
               </>}
             </div>

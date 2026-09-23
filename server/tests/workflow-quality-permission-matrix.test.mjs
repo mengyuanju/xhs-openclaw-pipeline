@@ -82,6 +82,7 @@ test('partial settings updates preserve all independent controls', () => {
     copySampling: {
       enabled: true,
       rateBps: 2_000,
+      returnThresholdBps: 5_000,
       blindReviewEnabled: true,
       reviewerBatchReturnEnabled: true,
     },

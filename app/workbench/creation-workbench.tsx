@@ -107,6 +107,7 @@ type DistributedTask = PriorityTask & {
   imageExecutorNodeName?: string | null;
   currentCopyRevisionId: number | null;
   mandatoryCopyQc?: boolean;
+  copyQaReworkPending?: boolean;
   mandatoryCopyQcOrigin?: 'QA_RETURN' | 'FINAL_REWORK' | 'IMAGE_RETRY_REVIEW' | 'DISCARD_RESTORE' | 'SECOND_ASSIGNMENT' | null;
   currentExecutionId?: string | null;
   createdByUserId: string | null;
@@ -1015,7 +1016,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
             && personalStates.includes(task.state)
           : matchesWorkbenchView(task, view, creatorUserId, creatorAccountId))
           && (!copyQaReturnedOnly
-            || task.mandatoryCopyQc === true && task.mandatoryCopyQcOrigin === 'QA_RETURN')
+            || task.copyQaReworkPending === true || task.mandatoryCopyQc === true && task.mandatoryCopyQcOrigin === 'QA_RETURN')
           && matchesAttention(task, attentionFilter)
           && (!keyword || (searchedTaskId ? task.id === searchedTaskId : task.query.toLocaleLowerCase('zh-CN').includes(keyword)))
           && (!packageKeyword || (task.sourceQueryPackageName ?? '').toLocaleLowerCase('zh-CN').includes(packageKeyword)))
@@ -1043,7 +1044,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         throw new Error('中心服务返回了不符合当前状态筛选的作业，请刷新或联系管理员。');
       }
       if (copyQaReturnedOnly && taskPage.items.some((task) => (
-        task.mandatoryCopyQc !== true || task.mandatoryCopyQcOrigin !== 'QA_RETURN'
+        task.copyQaReworkPending !== true && (task.mandatoryCopyQc !== true || task.mandatoryCopyQcOrigin !== 'QA_RETURN')
       ))) {
         throw new Error('中心服务尚未支持质检打回筛选，请更新并重启中心服务。');
       }
@@ -1812,11 +1813,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       && <Button unstyled className="button small primary" type="button" disabled={busy || Boolean(batchAction)}
         onClick={() => { void restoreCancelledTask(task); }}><RotateCcw size={14} />恢复任务</Button>;
     const directCopyQaButton = role === 'ADMIN' && task.state === 'COPY_QC_PENDING'
-      && <Button unstyled className="button small primary" type="button" disabled={busy}
-        onClick={() => { void adminDirectApproveCopyQa(task); }}
-        title="管理员单独审核通过，不等待整批完成">
-        <ShieldCheck size={14} />单独通过质检
-      </Button>;
+      && <a className="button small" href="/copy-qa">进入质检批次</a>;
     const allJobsDetailButton = canHandleAssignedImages && task.state === 'MANUAL_ARCHIVE'
       ? <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><FileCheck2 size={14} />图片初审</Button>
       : canHandleAssignedImages && task.state === 'IMAGE_REWORK_PENDING'
