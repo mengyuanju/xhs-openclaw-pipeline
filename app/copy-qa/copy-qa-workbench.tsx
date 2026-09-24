@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect,useState } from 'react';
+import { useEffect,useRef,useState } from 'react';
 import { Dialog,DialogContent,DialogDescription,DialogTitle } from '@/components/ui/dialog';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 import { apiRequest } from '../components/api-client';
@@ -10,17 +10,19 @@ import { CopyQaRevisionComparison } from './copy-qa-revision-view';
 import legacyStyles from './copy-qa.module.css';
 import { copyRevisionView } from './types';
 import styles from './copy-qa-workbench.module.css';
+import { COPY_QA_DISCARD_REASONS, copyQaDiscardReasonLabel } from '../../src/copy-qa-discard-reasons.mjs';
 
-type Batch = {id:string;displayName:string;mode:string;status:string;memberCount:number;sampleCount:number;pendingCount:number;passedCount:number;returnedCount:number;affectedCount:number;fullInspection:boolean;returnTriggerCount:number;createdAt:string};
-type Item = {id:string;taskId:number|null;query:string|null;content:unknown;status:string;approverUsername:string|null;revisionToken:string};
+type Batch = {id:string;displayName:string;mode:string;status:string;memberCount:number;sampleCount:number;pendingCount:number;passedCount:number;returnedCount:number;discardedCount:number;affectedCount:number;fullInspection:boolean;returnTriggerCount:number;createdAt:string};
+type Item = {id:string;taskId:number|null;query:string|null;content:unknown;status:string;approverUsername:string|null;revisionToken:string;discardReasonCode:string|null;dispositionNote:string|null};
 type Detail = {batch:Batch;items:Item[]};
 type View = 'PENDING'|'FINISHED';
 const modeName:Record<string,string>={PERSONAL_AUTO:'个人自动',PERSONAL_MANUAL:'个人手动',MIXED_MANUAL:'混合手动',SYSTEM_MIGRATION:'系统迁移'};
-const statusName:Record<string,string>={PENDING:'待质检',PASSED:'已通过',RETURNED:'已驳回',BATCH_AFFECTED:'批次驳回',RELEASED:'已放行',COMPLETED:'已完成',AUTO_RETURNED:'整批驳回'};
+const statusName:Record<string,string>={PENDING:'待质检',PASSED:'已通过',RETURNED:'已驳回',BATCH_AFFECTED:'批次驳回',RELEASED:'已放行',DISCARDED:'已废弃',COMPLETED:'已完成',AUTO_RETURNED:'整批驳回'};
 const localTime=(value:string)=>new Date(value).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 export function CopyQaWorkbench(){
   const confirm=useConfirmDialog();
+  const discardMutation=useRef<{fingerprint:string;requestId:string}|null>(null);
   const [view,setView]=useState<View>('PENDING');
   const [batches,setBatches]=useState<Batch[]>([]);
   const [detail,setDetail]=useState<Detail|null>(null);
@@ -28,6 +30,9 @@ export function CopyQaWorkbench(){
   const [note,setNote]=useState('');
   const [reasonCodes,setReasonCodes]=useState<string[]>([]);
   const [returnItem,setReturnItem]=useState<Item|null>(null);
+  const [discardItem,setDiscardItem]=useState<Item|null>(null);
+  const [discardReasonCode,setDiscardReasonCode]=useState('');
+  const [discardNote,setDiscardNote]=useState('');
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState('');
   const selectedItem=detail?.items.find(item=>item.id===selectedItemId)??null;
@@ -45,19 +50,33 @@ export function CopyQaWorkbench(){
   }
   function viewItem(id:string){setSelectedItemId(id);setReasonCodes([]);setNote('');setError('');}
   function openReturn(item:Item){setSelectedItemId(null);setReturnItem(item);setReasonCodes([]);setNote('');setError('');}
+  function openDiscard(item:Item){setSelectedItemId(null);setDiscardItem(item);setDiscardReasonCode('');setDiscardNote('');discardMutation.current=null;setError('');}
+  async function confirmDiscard(item:Item){
+    if(!discardReasonCode||!discardNote.trim()){setError('请选择废弃理由并填写说明');return;}
+    const approved=await confirm({title:'确认废弃这条任务？',description:'任务将进入已废弃状态，退出后续质检与返工；文案版本及质检记录仍会保留。',confirmLabel:'确认废弃',tone:'danger'});
+    if(approved)await decide(item,'DISCARD');
+  }
   async function confirmPass(item:Item){
     const approved=await confirm({title:'确认通过质检？',description:'通过后，该任务将进入下一环节。请确认当前文案已完成质检。',confirmLabel:'确认通过'});
     if(approved)await decide(item,'PASS');
   }
-  async function decide(item:Item,decision:'PASS'|'RETURN'){
+  async function decide(item:Item,decision:'PASS'|'RETURN'|'DISCARD'){
     if(decision==='RETURN'&&!note.trim()&&!reasonCodes.length){setError('驳回请填写原因或选择问题标签');return;}
+    if(decision==='DISCARD'&&(!discardReasonCode||!discardNote.trim())){setError('请选择废弃理由并填写说明');return;}
     setBusy(true);setError('');
     try{
+      const payload={decision,revisionToken:item.revisionToken,note:decision==='RETURN'?note.trim():decision==='DISCARD'?discardNote.trim():'',reasonCodes:decision==='RETURN'?reasonCodes:[],discardReasonCode:decision==='DISCARD'?discardReasonCode:undefined};
+      let requestId=createRequestId();
+      if(decision==='DISCARD'){
+        const fingerprint=JSON.stringify({itemId:item.id,payload});
+        if(discardMutation.current?.fingerprint!==fingerprint)discardMutation.current={fingerprint,requestId};
+        requestId=discardMutation.current.requestId;
+      }
       await apiRequest(`/api/control-plane/v2/copy-qa/items/${item.id}/decision`,{
-        method:'POST',headers:{'content-type':'application/json'},
-        body:JSON.stringify({requestId:createRequestId(),decision,revisionToken:item.revisionToken,note:decision==='RETURN'?note.trim():'',reasonCodes:decision==='RETURN'?reasonCodes:[]}),
+        method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({requestId,...payload}),
       });
-      setSelectedItemId(null);setReturnItem(null);setReasonCodes([]);setNote('');
+      discardMutation.current=null;
+      setSelectedItemId(null);setReturnItem(null);setDiscardItem(null);setReasonCodes([]);setNote('');setDiscardReasonCode('');setDiscardNote('');
       await refresh();
       if(detail)await open(detail.batch.id);
     }catch(e){setError(e instanceof Error?e.message:'质检操作失败');}
@@ -87,7 +106,7 @@ export function CopyQaWorkbench(){
       <div className={styles.detailHead}>
         <div><button className={styles.back} type="button" onClick={()=>{setDetail(null);setSelectedItemId(null);void refresh();}}>← 返回批次列表</button>
           <h2>{detail.batch.displayName}</h2><p>{modeName[detail.batch.mode]??detail.batch.mode} · {statusName[detail.batch.status]??detail.batch.status}</p></div>
-        <div className={styles.metrics}><span>任务数量 <strong>{detail.batch.memberCount}</strong></span><span>质检项 <strong>{detail.batch.sampleCount}</strong></span><span>待质检 <strong>{detail.items.filter(item=>item.status==='PENDING').length}</strong></span></div>
+        <div className={styles.metrics}><span>任务数量 <strong>{detail.batch.memberCount}</strong></span><span>质检项 <strong>{detail.batch.sampleCount}</strong></span><span>已废弃 <strong>{detail.items.filter(item=>item.status==='DISCARDED').length}</strong></span><span>待质检 <strong>{detail.items.filter(item=>item.status==='PENDING').length}</strong></span></div>
       </div>
       <p className={styles.policy}>{detail.batch.fullInspection?'本批所有质检项需逐条完成质检。':`质检项驳回达到 ${detail.batch.returnTriggerCount} 条后，系统自动处理剩余成员。`}</p>
       <div className="table-wrap"><table className={styles.table}><thead><tr><th>序号</th><th>任务</th><th>文案标题</th><th>审核人</th><th>状态</th><th>操作</th></tr></thead><tbody>
@@ -120,6 +139,7 @@ export function CopyQaWorkbench(){
           </header>
           <div className={legacyStyles.detailBody}>
             <CopyQaRevisionComparison copy={copy} blind={selectedItem.taskId==null} />
+            {selectedItem.status==='DISCARDED'&&<p className="notice warning">废弃理由：{copyQaDiscardReasonLabel(selectedItem.discardReasonCode)}；说明：{selectedItem.dispositionNote??'—'}</p>}
             {error&&<div className="notice error" role="alert">{error}</div>}
           </div>
           <footer className={`${legacyStyles.footer} ${legacyStyles.detailFooter}`}>
@@ -128,11 +148,34 @@ export function CopyQaWorkbench(){
               <button className="button" disabled={busy} onClick={()=>setSelectedItemId(null)}>关闭</button>
               {selectedItem.status==='PENDING'&&detail?.batch.status==='INSPECTING'&&<>
                 <button className="button danger" disabled={busy} onClick={()=>openReturn(selectedItem)}>仅打回此条</button>
+                <button className="button danger" disabled={busy} onClick={()=>openDiscard(selectedItem)}>废弃任务</button>
                 <button className="button primary" disabled={busy} onClick={()=>void confirmPass(selectedItem)}>通过质检</button>
               </>}
             </div>
           </footer>
         </>}
+      </DialogContent>
+    </Dialog>
+    <Dialog open={discardItem!==null} onOpenChange={open=>{if(!open&&!busy){setDiscardItem(null);discardMutation.current=null;setError('');}}}>
+      <DialogContent className={legacyStyles.dialog} showCloseButton={!busy}>
+        <div className={legacyStyles.dialogHeader}><div>
+          <DialogTitle>废弃文案任务</DialogTitle>
+          <DialogDescription>请选择废弃理由并说明原因。该质检项废弃后不计入批次驳回率。</DialogDescription>
+        </div></div>
+        <section className={styles.returnPanel}>
+          <label htmlFor="qa-discard-reason">废弃理由</label>
+          <select id="qa-discard-reason" className="select" value={discardReasonCode} disabled={busy} onChange={event=>setDiscardReasonCode(event.target.value)}>
+            <option value="">请选择废弃理由</option>
+            {COPY_QA_DISCARD_REASONS.map(({code,label})=><option key={code} value={code}>{label}</option>)}
+          </select>
+          <label htmlFor="qa-discard-note">废弃说明（必填）</label>
+          <textarea id="qa-discard-note" className="textarea" rows={3} maxLength={1000} value={discardNote} disabled={busy} onChange={event=>setDiscardNote(event.target.value)} />
+        </section>
+        {error&&<div className="notice error" role="alert">{error}</div>}
+        <footer className={legacyStyles.footer}><span className="subtle">任务将退出后续流程，历史记录保留。</span><div>
+          <button className="button" type="button" disabled={busy} onClick={()=>{setDiscardItem(null);discardMutation.current=null;setError('');}}>取消</button>
+          <button className="button danger" type="button" disabled={busy} onClick={()=>{if(discardItem)void confirmDiscard(discardItem);}}>继续废弃</button>
+        </div></footer>
       </DialogContent>
     </Dialog>
     <Dialog open={returnItem!==null} onOpenChange={open=>{if(!open&&!busy){setReturnItem(null);setError('');}}}>

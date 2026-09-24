@@ -3661,6 +3661,17 @@ export class PostgresControlPlaneRepository {
             'actorUsername', disposition.actor_username, 'createdAt', disposition.created_at)
             ORDER BY disposition.id DESC) FROM image_task_dispositions disposition
             WHERE disposition.task_id = task.id) AS image_discard_events,
+          (SELECT jsonb_agg(jsonb_build_object('source', disposition.source,
+            'reasonCode', disposition.reason_code, 'note', disposition.note,
+            'actorUsername', disposition.actor_username, 'createdAt', disposition.created_at)
+            ORDER BY disposition.created_at DESC, disposition.source DESC, disposition.id DESC)
+            FROM (
+              SELECT id, 'COPY_QA' AS source, reason_code, note, actor_username, created_at
+              FROM copy_qa_dispositions_v2 WHERE task_id = task.id
+              UNION ALL
+              SELECT id, 'COPY_QA_RETURN' AS source, reason_code, note, actor_username, created_at
+              FROM copy_return_dispositions WHERE task_id = task.id
+            ) AS disposition) AS copy_discard_events,
           (SELECT to_jsonb(p) FROM copy_image_plan_regeneration_jobs p
             WHERE p.task_id=task.id AND p.copy_revision_id=task.current_copy_revision_id
               AND task.state='COPY_REVIEW_PENDING'
@@ -3769,6 +3780,7 @@ export class PostgresControlPlaneRepository {
       issuedQuery: task.rows[0].issued_query ?? null,
       ...(imageRetryFailures.length > 0 ? { imageRetryFailures } : {}),
       imageDiscardEvents: task.rows[0].image_discard_events ?? [],
+      copyDiscardEvents: task.rows[0].copy_discard_events ?? [],
       imagePlanRegeneration: task.rows[0].personal_image_plan_job
         ? imagePlanRegenerationFrom(task.rows[0].personal_image_plan_job) : null,
       imageQaReturn: imageQaReturnFrom(task.rows[0].image_qa_return),

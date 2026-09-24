@@ -1,6 +1,6 @@
 # 文案质检批次升级
 
-本次升级依次执行 `0088_copy_qa_batch_redesign.sql`、补偿迁移 `0089_release_unreviewed_legacy_copy_qa_batches.sql`、批次命名迁移 `0090_copy_qa_batch_display_names.sql` 和可信机器初稿修复迁移 `0091_copy_qa_initial_baseline_null_review.sql`。已执行的版本不会重复运行；中心服务启动时检查迁移版本，有待执行迁移时会提示先使用统一升级命令。
+本次升级依次执行 `0088_copy_qa_batch_redesign.sql`、补偿迁移 `0089_release_unreviewed_legacy_copy_qa_batches.sql`、批次命名迁移 `0090_copy_qa_batch_display_names.sql`、可信机器初稿修复迁移 `0091_copy_qa_initial_baseline_null_review.sql`、直接废弃迁移 `0092_copy_qa_direct_discard.sql` 和废弃理由迁移 `0093_copy_qa_discard_reasons.sql`。已执行的版本不会重复运行；中心服务启动时检查迁移版本，有待执行迁移时会提示先使用统一升级命令。
 
 ## 执行
 
@@ -23,6 +23,10 @@ npm run server:db:upgrade -- --environment=production --apply
 0090 给已有批次回填“文案质检-日期-当日序号”名称；此后创建批次自动递增当天序号。内部 UUID 只用于接口定位。
 
 0091 将历史生成稿中 `manualReview: null` 正确识别为未人工修改的机器初稿，补录满足机器执行记录和首稿条件的 `task_initial_baselines`，并清除因此产生的“缺少可信机器初稿”阻塞状态。升级后刷新二次分配页面，对这些任务点击“重试还原 / 清理”；无需点击“重新生成初始数据”。实际还原仍由原有操作执行，不在迁移中清理任务内容。
+
+0092 为文案质检项新增直接废弃状态和原因审计。质检员选择废弃理由、填写说明并再次确认后，当前任务进入已废弃；该操作不计入批次驳回率，其余质检项照常处理。管理员从废弃池恢复任务时沿用既有恢复流程，新文案版本仍需重新审核和成批。
+
+0093 将质检直接废弃的可选理由调整为“生成内容无深度”“逻辑混乱修改难度过大”“跑题”。旧理由代码仅用于展示历史记录，不能再用于新废弃操作。
 
 ## 迁移口径
 

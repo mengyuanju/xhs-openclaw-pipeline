@@ -7,11 +7,14 @@ import { resolveEffectiveCopySamplingPolicy } from '../../src/copy-sampling-poli
 import { readWorkflowQualitySettings } from './workflow-quality-settings.mjs';
 import { resolveCopyQaReasonSnapshots } from './copy-qa-reason-tags.mjs';
 import { MAX_COPY_QA_REASON_CODES } from '../../src/copy-qa-reasons.mjs';
+import { COPY_QA_DISCARD_REASONS } from '../../src/copy-qa-discard-reasons.mjs';
 import { escalateNewCopyQaReturn, cleanReassignmentFiles } from './secondary-assignment.mjs';
+import { withdrawReadyDeliveryEntries } from './final-delivery.mjs';
 
 const conflict = (code, message) => { throw new ControlPlaneConflictError(code, message); };
 const fingerprint = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const integer = (value) => Number.isSafeInteger(Number(value)) ? Number(value) : null;
+const COPY_QA_DISCARD_REASON_CODES = new Set(COPY_QA_DISCARD_REASONS.map(reason => reason.code));
 
 async function transaction(pool, action) {
   const client = await pool.connect();
@@ -242,24 +245,26 @@ export async function routeCopyApprovalV2(client,{task,revision,approval,actor,a
 
 export async function listCopyQaBatchesV2(pool,actor,view='PENDING') {
   if(!['PENDING','FINISHED'].includes(view))throw new TypeError('view is invalid');
+  const sortDirection=view==='PENDING'?'ASC':'DESC';
   await activeActor(pool,actor,{qc:true});
   const own=actor.role==='ADMIN'?null:Number(actor.userId);
   const result=await pool.query(`SELECT batch.*,
     count(*) FILTER(WHERE member.status='PENDING' AND member.selected) AS pending_count,
     count(*) FILTER(WHERE member.status='PASSED') AS passed_count,
     count(*) FILTER(WHERE member.status='RETURNED') AS returned_count,
+    count(*) FILTER(WHERE member.status='DISCARDED') AS discarded_count,
     count(*) FILTER(WHERE member.status='BATCH_AFFECTED') AS affected_count
     FROM copy_qa_batches_v2 AS batch
     JOIN copy_qa_batch_members_v2 AS member ON member.batch_id=batch.id
     WHERE (($2='PENDING' AND batch.status='INSPECTING')
       OR ($2='FINISHED' AND batch.status IN ('COMPLETED','AUTO_RETURNED')))
       AND ($1::bigint IS NULL OR member.approver_account_id<>$1)
-    GROUP BY batch.id ORDER BY batch.created_at DESC,batch.id DESC`,[own,view]);
+    GROUP BY batch.id ORDER BY batch.created_at ${sortDirection},batch.id ${sortDirection}`,[own,view]);
   return result.rows.map(row=>({id:row.public_id,displayName:row.display_name,mode:row.mode,status:row.status,
     accountId:row.account_id==null?null:Number(row.account_id),
     fullInspection:row.full_inspection,memberCount:row.member_count,sampleCount:row.sample_count,
     pendingCount:Number(row.pending_count),passedCount:Number(row.passed_count),
-    returnedCount:Number(row.returned_count),affectedCount:Number(row.affected_count),
+    returnedCount:Number(row.returned_count),discardedCount:Number(row.discarded_count),affectedCount:Number(row.affected_count),
     returnTriggerCount:row.return_trigger_count,createdAt:row.created_at}));
 }
 
@@ -284,6 +289,8 @@ export async function listCopyQaBatchItemsV2(pool,batchId,actor) {
       id:row.public_id,taskId:blind?null:Number(row.task_id),
       query:blind?null:row.query,content:blind?blindContent(row.content):row.content,status:row.status,
       approverUsername:blind?null:row.approver_username,revisionToken:row.content_sha256,
+      discardReasonCode:row.status==='DISCARDED'?row.reason_codes?.[0]??null:null,
+      dispositionNote:row.status==='DISCARDED'?row.note:null,
       createdAt:row.created_at,
     }))};
 }
@@ -366,6 +373,43 @@ async function returnMember(client,member,actor,{note,reasonCodes=[],reasonSnaps
     WHERE id=$1`,[member.task_id,revision.id]);
 }
 
+async function discardMember(client,member,actor,{reasonCode,note,requestId}) {
+  const task=(await client.query('SELECT * FROM tasks WHERE id=$1 FOR UPDATE',[member.task_id])).rows[0];
+  if(!task || task.state!=='COPY_QC_PENDING' || Number(task.current_copy_revision_id)!==Number(member.copy_revision_id)){
+    conflict('STALE_QA_ITEM','任务版本或状态已变化');
+  }
+  if(task.current_execution_id)conflict('TASK_EXECUTION_ACTIVE','任务仍在执行，不能废弃');
+  await client.query(`INSERT INTO copy_qa_dispositions_v2(member_id,task_id,copy_revision_id,
+    reason_code,note,actor_account_id,actor_username,request_id)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+  [member.id,member.task_id,member.copy_revision_id,reasonCode,note,actor.userId,actor.username,requestId]);
+  await withdrawReadyDeliveryEntries(client,Number(task.id),'COPY_QA_DISCARDED');
+  await client.query(`UPDATE tasks SET state='CANCELLED',cancelled_from_state=state,current_stage='CANCELLED',
+    current_execution_id=NULL,pending_snapshot=NULL,copy_qc_released_revision_id=NULL,
+    copy_qa_rework_pending=false,progress_percent=100,progress_message='文案质检已废弃：' || $2,
+    last_activity_at=now(),finished_at=now(),updated_at=now() WHERE id=$1`,[task.id,note]);
+  await client.query(`UPDATE copy_qa_batch_members_v2 SET status='DISCARDED',reviewed_by_account_id=$2,
+    reason_codes=ARRAY[$3]::text[],note=$4,decided_at=now() WHERE id=$1`,
+  [member.id,actor.userId,reasonCode,note]);
+  const isSelf=Number(member.approver_account_id)===Number(actor.userId);
+  const context=(await client.query(`SELECT approval.approved_by_username,task.production_batch_id,task.query
+    FROM copy_approval_events AS approval JOIN tasks AS task ON task.id=approval.task_id
+    WHERE approval.id=$1`,[member.approval_event_id])).rows[0];
+  const data={batchId:context?.production_batch_id==null?null:Number(context.production_batch_id),
+    qaBatchId:Number(member.batch_id),samplingItemId:Number(member.id),
+    reviewerId:actor.userId,username:context?.approved_by_username??null,
+    query:context?.query??null,selected:true,reasonCode,note,source:'COPY_QA_DISCARD'};
+  await client.query(`INSERT INTO account_quality_events(
+    event_key,task_id,stage,account_id,action,establishes_sample,occurred_at,data)
+    VALUES($1,$2,'COPY',$3,'DISCARD',$4,clock_timestamp(),$5) ON CONFLICT DO NOTHING`,
+  [`copy-v2-discard:${member.id}`,member.task_id,member.approver_account_id,!isSelf,data]);
+  await client.query(`INSERT INTO quality_review_activity_events(
+    event_key,account_id,task_id,stage,kind,occurred_at,data)
+    VALUES($1,$2,$3,'COPY','QA_DISCARD',clock_timestamp(),$4) ON CONFLICT DO NOTHING`,
+  [`copy-v2-discard:${member.id}`,actor.userId,member.task_id,
+    {...data,outcome:'DISCARD',...(isSelf?{exclusion:'SELF_REVIEW'}:{})}]);
+}
+
 async function maybeCloseBatch(client,batch,actor,storageRoot,caseIds) {
   const stats=(await client.query(`SELECT count(*) FILTER(WHERE selected AND status='PENDING') AS pending,
     count(*) FILTER(WHERE status='RETURNED') AS returned
@@ -387,14 +431,17 @@ export async function decideCopyQaItemV2(pool,itemId,input,actor,{storageRoot}={
   const id=normalizeUuid(itemId,'itemId');
   const requestId=normalizeUuid(input?.requestId,'requestId');
   const decision=input?.decision;
-  if(!['PASS','RETURN'].includes(decision))throw new TypeError('decision is invalid');
+  if(!['PASS','RETURN','DISCARD'].includes(decision))throw new TypeError('decision is invalid');
   const token=String(input?.revisionToken??'');
   const note=String(input?.note??'').trim();
+  const discardReasonCode=decision==='DISCARD'?String(input?.discardReasonCode??'').trim().toUpperCase():null;
   const reasonCodes=Array.isArray(input?.reasonCodes)?input.reasonCodes:[];
   if(note.length>1000||reasonCodes.length>MAX_COPY_QA_REASON_CODES||reasonCodes.some(code=>typeof code!=='string'||code.length>100))throw new TypeError('质检原因无效');
   if(new Set(reasonCodes).size!==reasonCodes.length)throw new TypeError('问题标签不能重复');
   if(decision==='RETURN'&&!note&&!reasonCodes.length)throw new TypeError('驳回需要原因');
-  const requestFingerprint=fingerprint({id,decision,token,note,reasonCodes});
+  if(decision==='DISCARD'&&(!COPY_QA_DISCARD_REASON_CODES.has(discardReasonCode)||!note))
+    throw new TypeError('请选废弃理由并填写废弃说明');
+  const requestFingerprint=fingerprint({id,decision,token,note,reasonCodes,...(decision==='DISCARD'?{discardReasonCode}:{})});
   const caseIds=[];
   const result=await transaction(pool,async client=>{
     await client.query("SELECT set_config('app.secondary_assignment','on',true)");
@@ -426,12 +473,15 @@ export async function decideCopyQaItemV2(pool,itemId,input,actor,{storageRoot}={
         reviewed_by_account_id=$2,decided_at=now() WHERE id=$1`,[member.id,reviewer.id]);
       await recordQualityOutcome(client,member,{userId:Number(reviewer.id)},'PASS','DIRECT');
       await releaseMember(client,member);
-    }else{
+    }else if(decision==='RETURN'){
       await returnMember(client,member,{userId:Number(reviewer.id),username:reviewer.username},
         {note,reasonCodes,reasonSnapshots,kind:'DIRECT',storageRoot,caseIds});
+    }else{
+      await discardMember(client,member,{userId:Number(reviewer.id),username:reviewer.username},
+        {reasonCode:discardReasonCode,note,requestId});
     }
     await maybeCloseBatch(client,batch,{userId:Number(reviewer.id),username:reviewer.username},storageRoot,caseIds);
-    const response={id,status:decision==='PASS'?'PASSED':'RETURNED'};
+    const response={id,status:decision==='PASS'?'PASSED':decision==='RETURN'?'RETURNED':'DISCARDED'};
     await client.query(`INSERT INTO copy_qa_decision_requests_v2(
       reviewer_account_id,request_id,fingerprint,response) VALUES($1,$2,$3,$4)`,
     [reviewer.id,requestId,requestFingerprint,response]);
