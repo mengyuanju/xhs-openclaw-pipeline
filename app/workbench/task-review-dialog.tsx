@@ -58,6 +58,7 @@ import { DEFAULT_SETTINGS, useHumanQualitySettings } from './human-quality-setti
 import { buildCopyReviewSubmission } from '../../src/copy-review-submission.mjs';
 import { copyReworkChanges, findCopyReworkBaseline } from '../../src/copy-rework.mjs';
 import { copyQaReasonLabels } from '../../src/copy-qa-reasons.mjs';
+import { copyQaDiscardReasonLabel } from '../../src/copy-qa-discard-reasons.mjs';
 import {
   imagePlanBlankBulletLines,
   imagePlanBulletLengthWarnings,
@@ -204,6 +205,7 @@ type TaskDetail = PriorityTask & {
   }>;
   xiaohongshuSearchStatus?: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'BLOCKED' | 'FAILED' | 'CANCELLED' | null;
   imageDiscardEvents?: { note: string; actorUsername: string; createdAt: string }[];
+  copyDiscardEvents?: { source: 'COPY_QA' | 'COPY_QA_RETURN'; reasonCode: string; note: string; actorUsername: string; createdAt: string }[];
   imageQaReturn?: ReworkRequirement | null;
   xiaohongshuSearchBlockedReason?: 'LOGIN_REQUIRED' | 'CAPTCHA_REQUIRED' | null;
   assignedToUserId?: string | null;
@@ -2213,6 +2215,10 @@ export function TaskReviewDialog({
           </div>}
           <div className="workbench-review-scroll" data-mobile-pane={mobilePane}>
             <div id="review-copy-pane" className="workbench-review-pane" data-review-pane="copy">
+              {!!detail.copyDiscardEvents?.length && <div className="notice warning" role="status">
+                <strong>文案废弃记录</strong>{detail.copyDiscardEvents.map((event, index) => <p key={index}>
+                  {event.source === 'COPY_QA' ? '质检直接废弃' : '质检打回后废弃'} · {copyQaDiscardReasonLabel(event.reasonCode)} · {event.note} · {event.actorUsername} · {new Date(event.createdAt).toLocaleString('zh-CN')}</p>)}
+              </div>}
               {!!detail.imageDiscardEvents?.length && <div className="notice warning" role="status">
                 <strong>图片环节废弃记录</strong>{detail.imageDiscardEvents.map((event, index) => <p key={index}>
                   {event.note} · {event.actorUsername} · {new Date(event.createdAt).toLocaleString('zh-CN')}</p>)}
