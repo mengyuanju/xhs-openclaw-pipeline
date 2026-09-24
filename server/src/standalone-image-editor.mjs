@@ -97,8 +97,10 @@ export function createStandaloneImageEditor({ pool, storageRoot }) {
     if (!Array.isArray(input.images)||!input.images.length||input.images.length>LIMITS.maxImages) throw new TypeError('请上传 1 至 5 张图片');
     const images=[];
     for (const image of input.images) {
+      // Repeating four-character groups can exhaust V8's regexp stack on
+      // multi-megabyte uploads. Check length and the flat alphabet separately.
       if (typeof image.base64!=='string'||image.base64.length>Math.ceil(LIMITS.maxUploadBytes/3)*4
-        || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(image.base64)) throw new TypeError('上传图片编码或大小无效');
+        || image.base64.length%4!==0 || !/^[A-Za-z0-9+/]*={0,2}$/u.test(image.base64)) throw new TypeError('上传图片编码或大小无效');
       const decoded=await decodeReference(Buffer.from(image.base64,'base64'),image.mediaType);
       if (decoded.width!==LIMITS.width||decoded.height!==LIMITS.height) throw new TypeError('原图必须为 1086×1448，不会自动拉伸或裁切');
       images.push(decoded);

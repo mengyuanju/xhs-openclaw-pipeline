@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp,rm,writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join,resolve } from 'node:path';
@@ -18,6 +18,21 @@ import { imageHash } from '../../src/image-edit-pixels.mjs';
 
 const vision=(text='原图文字')=>({passed:true,checks:{textPreserved:true,unrelatedContentPreserved:true},ocrConfidence:1,
   recognizedText:{headline:text,subtitle:'',bullets:[],otherText:[]},reason:''});
+test('upload validation handles large base64 without stack overflow and keeps size and encoding limits',async()=>{
+  const service=createStandaloneImageEditor({pool:{},storageRoot:tmpdir()});
+  const upload=base64=>service.create({requestId:randomUUID(),images:[{mediaType:'image/png',base64}]},{});
+  // All three padding lengths reach the image-signature check, not a RangeError.
+  for(const size of [4*1024*1024,4*1024*1024+1,4*1024*1024+2,5*1024*1024]) {
+    await assert.rejects(()=>upload(Buffer.alloc(size).toString('base64')),{name:'TypeError',message:'文件签名与声明类型不符'});
+  }
+  const large=Buffer.alloc(4*1024*1024).toString('base64');
+  for(const value of [large.slice(0,-4)+'!!!!',large.slice(0,-4)+'AA=A',large.slice(0,-4)+'A===',large+'\n',large.slice(1),42]) {
+    await assert.rejects(()=>upload(value),{name:'TypeError',message:'上传图片编码或大小无效'});
+  }
+  await assert.rejects(()=>upload(Buffer.alloc(5*1024*1024+1).toString('base64')),{name:'TypeError',message:'参考图片上限为 5 MB'});
+  await assert.rejects(()=>upload(Buffer.alloc(5*1024*1024+3).toString('base64')),{name:'TypeError',message:'上传图片编码或大小无效'});
+});
+
 test('upload review fails closed on malformed, low-confidence, missing-text and negative checks',()=>{
   assert.equal(parseUploadImageReview(JSON.stringify(vision()),['原图文字']).passed,true);
   for(const patch of [{passed:false},{ocrConfidence:0.2},{checks:{textPreserved:false,unrelatedContentPreserved:true}},
@@ -223,6 +238,22 @@ test('standalone uploads: isolation, executor claims, shared capacity, preview, 
       const queued=await service.action(e.id,'retry',{requestId:randomUUID(),version:failed.version,reason:'重新生成标识'},actor);
       assert.equal(queued.status,'QUEUED');
       await service.action(e.id,'cancel',{requestId:randomUUID(),version:queued.version,reason:'测试完成'},actor);
+    });
+    await t.test('multi-megabyte PNG uploads through HTTP and preserves image pixels',async()=>{
+      const pixels=randomBytes(1086*1448*3);
+      const largePng=await sharp(pixels,{raw:{width:1086,height:1448,channels:3}}).png().toBuffer();
+      assert.ok(largePng.length>4*1024*1024&&largePng.length<=5*1024*1024);
+      const response=await request('/v1/image-editor/workspaces',{method:'POST',body:{
+        ...input,requestId:randomUUID(),images:[{mediaType:'image/png',base64:largePng.toString('base64')}],
+      }});
+      assert.equal(response.status,201,await response.clone().text());
+      const uploaded=(await response.json()).data;
+      assert.equal(uploaded.assets.length,1);
+      const asset=await request(uploaded.assets[0].url);
+      assert.equal(asset.status,200);
+      const decoded=await sharp(Buffer.from(await asset.arrayBuffer())).raw().toBuffer({resolveWithObject:true});
+      assert.equal(decoded.info.width,1086);assert.equal(decoded.info.height,1448);
+      assert.deepEqual(decoded.data,pixels);
     });
     await t.test('running workspace is read-only and executor failure frees the shared slot',async()=>{
       const fresh=await service.create({...input,requestId:randomUUID()},actor);
