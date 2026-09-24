@@ -30,6 +30,8 @@ test('permitted workflows stay available to current roles while administrator-on
     assert.equal(evaluateAdminProxyRequest(request('/api/workbench-statistics?scope=personal'), environment).type, 'next');
     assert.equal(evaluateAdminProxyRequest(request('/workbench-statistics'), environment).type,
       role === 'ADMIN' ? 'next' : 'forbidden');
+    assert.equal(evaluateAdminProxyRequest(request('/reports/task-data'), environment).type,
+      role === 'ADMIN' ? 'next' : 'forbidden');
     assert.equal(evaluateAdminProxyRequest(request('/api/workbench-statistics/anything'), environment).type,
       role === 'ADMIN' ? 'next' : 'forbidden');
     for (const path of ['/query-packages', '/query-packages/7']) {

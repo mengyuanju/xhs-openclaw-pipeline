@@ -145,8 +145,23 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       assert.equal(executorClaim.imageEdit.id,first.id);
       assert.equal(executorClaim.execution.snapshot.imageEditRequestId,first.id);
       assert.equal((await pool.query('SELECT state FROM tasks WHERE id=$1',[taskId])).rows[0].state,'MANUAL_ARCHIVE');
+      const [nodeStatus] = await repository.listNodes({ includeRunningImageEdits: true });
+      assert.equal(nodeStatus.imageRunningCount, 1);
+      assert.equal(nodeStatus.imageEditRunningCount, 1);
+      assert.deepEqual(nodeStatus.runningImageEdits.map(edit => ({
+        executionId: edit.executionId, taskId: edit.taskId,
+      })), [{ executionId: executorClaim.execution.id, taskId }]);
+      const [taskStatus] = await repository.listTasks({ taskId });
+      assert.deepEqual(taskStatus.activeImageEditExecutions.map(edit => ({
+        executionId: edit.executionId, nodeId: edit.nodeId,
+      })), [{ executionId: executorClaim.execution.id, nodeId: 'edit-test' }]);
       await action(first.id,'cancel');
       assert.equal((await pool.query('SELECT status FROM task_executions WHERE id=$1',[executorClaim.execution.id])).rows[0].status,'ABANDONED');
+      const [clearedNodeStatus] = await repository.listNodes({ includeRunningImageEdits: true });
+      assert.equal(clearedNodeStatus.imageEditRunningCount, 0);
+      assert.deepEqual(clearedNodeStatus.runningImageEdits, []);
+      const [clearedTaskStatus] = await repository.listTasks({ taskId });
+      assert.deepEqual(clearedTaskStatus.activeImageEditExecutions, []);
       await assert.rejects(()=>service.complete(executorClaim.imageEdit,{bytes:png,validation:{passed:true}}),{code:'IMAGE_EDIT_CONFLICT'});
       await action(lowEdit.id,'cancel');
     });

@@ -773,6 +773,31 @@ test('manual archive resolves the successful executor of the current image run',
   assert.match(selection, /successful_image.kind = 'IMAGE' AND successful_image.status = 'SUCCEEDED'/u);
 });
 
+test('task pages expose every active image repair executor without replacing image production history', async () => {
+  let selection;
+  const activeEdits = [
+    { executionId: 'edit-1', nodeId: 'repair-a', nodeName: '修复机 A' },
+    { executionId: 'edit-2', nodeId: 'repair-b', nodeName: '修复机 B' },
+  ];
+  const repository = new PostgresControlPlaneRepository({ pool: {
+    async query(sql) {
+      selection = String(sql);
+      return { rows: [taskRow({ state: 'MANUAL_ARCHIVE',
+        image_executor_node_id: 'original-image-node',
+        image_executor_node_name: '原生图机器',
+        active_image_edit_executions: activeEdits })] };
+    },
+  } });
+  const [task] = await repository.listTasks({ state: 'MANUAL_ARCHIVE' });
+  assert.equal(task.imageExecutorNodeId, 'original-image-node');
+  assert.equal(task.imageExecutorNodeName, '原生图机器');
+  assert.deepEqual(task.activeImageEditExecutions, activeEdits);
+  assert.match(selection, /LEFT JOIN LATERAL \([\s\S]*FROM image_edit_requests active_edit/u);
+  assert.match(selection, /active_edit\.task_id = page\.id AND active_edit\.status = 'RUNNING'/u);
+  assert.match(selection, /active_execution\.kind = 'IMAGE' AND active_execution\.status = 'RUNNING'/u);
+  assert.match(selection, /active_execution\.id = active_edit\.execution_id/u);
+});
+
 test('successful image execution moves the task directly to manual archive', async () => {
   const executionId = '47d841f5-3808-46f0-9f2a-fa9781379b38';
   const queries = [];
@@ -921,7 +946,7 @@ test('non-admin approval without edits creates an automatic-layout revision inst
   assert.equal(saved.manualReview.layoutsForcedAutomatic, true);
 });
 
-test('executor inventory counts every running image execution, including manual image edits', async () => {
+test('executor inventory identifies active image repairs within image and shared-pool occupancy', async () => {
   let selection;
   const repository = new PostgresControlPlaneRepository({
     pool: {
@@ -931,20 +956,33 @@ test('executor inventory counts every running image execution, including manual 
           id: 'node-a', name: '执行机 A', image_worker_enabled: true,
           copy_concurrency: 4, image_concurrency: 2, online: true,
           copy_queued_count: 0, copy_running_count: 3, image_running_count: 1,
+          codex_running_count: 4, codex_total_concurrency: 4,
+          image_edit_running_count: 1,
+          running_image_edits: [{ executionId: 'edit-1', taskId: '41',
+            progressMessage: '执行机已领取图片修改', startedAt: '2026-09-05T00:59:00Z' }],
           last_seen_at: '2026-09-05T01:00:00Z',
         }] };
       },
     },
   });
-  const nodes = await repository.listNodes();
+  const nodes = await repository.listNodes({ includeRunningImageEdits: true });
   assert.equal(nodes[0].copyRunningCount, 3);
   assert.equal(nodes[0].imageRunningCount, 1);
+  assert.equal(nodes[0].imageEditRunningCount, 1);
+  assert.equal(nodes[0].codexRunningCount, 4);
+  assert.deepEqual(nodes[0].runningImageEdits, [{ executionId: 'edit-1', taskId: 41,
+    progressMessage: '执行机已领取图片修改', startedAt: '2026-09-05T00:59:00Z' }]);
   assert.equal(nodes[0].copyConcurrency, 4);
   assert.equal(nodes[0].imageConcurrency, 2);
   assert.match(selection, /e\.kind = 'IMAGE' AND e\.status = 'RUNNING'/u);
+  assert.match(selection, /e\.snapshot \? 'imageEditRequestId'/u);
+  assert.match(selection, /AS image_edit_running_count/u);
+  assert.match(selection, /AS running_image_edits/u);
   assert.doesNotMatch(selection, /t\.state = 'IMAGE_RUNNING'/u);
   assert.doesNotMatch(selection, /t\.current_execution_id = e\.id/u);
   assert.match(selection, /WHERE n\.retired_at IS NULL/u);
+  const workerNodes = await repository.listNodes();
+  assert.equal(Object.hasOwn(workerNodes[0], 'runningImageEdits'), false);
 });
 
 test('task latest-activity date filters use inclusive Shanghai calendar days for pages and totals', async () => {

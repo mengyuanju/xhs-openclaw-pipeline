@@ -936,6 +936,7 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
 .executor-identity code { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .executor-identity > span { color: var(--muted); font-size: 10px; }
 .executor-capacity span, .executor-table-wrap time { color: var(--muted); font-size: 10px; }
+.executor-capacity .executor-running-image-edit { color: var(--ink); font-weight: 700; overflow-wrap: anywhere; }
 .executor-status { width: fit-content; display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 99px; font-size: 10px; font-weight: 800; white-space: nowrap; }
 .executor-status i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 15%, transparent); }
 .executor-status-ready { color: #126443; background: #e5f5ed; }

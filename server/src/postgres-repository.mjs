@@ -278,6 +278,8 @@ function taskFrom(row) {
     copyExecutorNodeId: row.copy_executor_node_id,
     imageExecutorNodeId: row.image_executor_node_id ?? null,
     imageExecutorNodeName: row.image_executor_node_name ?? null,
+    activeImageEditExecutions: Array.isArray(row.active_image_edit_executions)
+      ? row.active_image_edit_executions : [],
     currentCopyRevisionId: row.current_copy_revision_id === null
       ? null
       : Number(row.current_copy_revision_id),
@@ -450,7 +452,7 @@ function executionFrom(row) {
   };
 }
 
-function nodeFrom(row) {
+function nodeFrom(row, { includeRunningImageEdits = false } = {}) {
   if (!row) return null;
   return {
     id: row.id,
@@ -468,6 +470,14 @@ function nodeFrom(row) {
     copyQueuedCount: Number(row.copy_queued_count ?? 0),
     copyRunningCount: Number(row.copy_running_count ?? 0),
     imageRunningCount: Number(row.image_running_count ?? 0),
+    imageEditRunningCount: Number(row.image_edit_running_count ?? 0),
+    ...(includeRunningImageEdits ? { runningImageEdits: Array.isArray(row.running_image_edits)
+      ? row.running_image_edits.map(edit => ({
+          executionId: edit.executionId,
+          taskId: Number(edit.taskId),
+          progressMessage: edit.progressMessage,
+          startedAt: edit.startedAt,
+        })) : [] } : {}),
     lastSeenAt: row.last_seen_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -2711,7 +2721,7 @@ export class PostgresControlPlaneRepository {
     };
   }
 
-  async listNodes() {
+  async listNodes({ includeRunningImageEdits = false } = {}) {
     const result = await this.pool.query(`
       WITH task_counts AS MATERIALIZED (
         SELECT copy_executor_node_id AS node_id,
@@ -2721,7 +2731,14 @@ export class PostgresControlPlaneRepository {
       ), execution_counts AS MATERIALIZED (
         SELECT e.node_id,
           COUNT(*) FILTER (WHERE e.kind = 'COPY' AND e.status = 'RUNNING') AS copy_running_count,
-          COUNT(*) FILTER (WHERE e.kind = 'IMAGE' AND e.status = 'RUNNING') AS image_running_count
+          COUNT(*) FILTER (WHERE e.kind = 'IMAGE' AND e.status = 'RUNNING') AS image_running_count,
+          COUNT(*) FILTER (WHERE e.kind = 'IMAGE' AND e.status = 'RUNNING'
+            AND e.snapshot ? 'imageEditRequestId') AS image_edit_running_count,
+          COALESCE(jsonb_agg(jsonb_build_object(
+            'executionId', e.id, 'taskId', e.task_id,
+            'progressMessage', e.progress_message, 'startedAt', e.started_at
+          ) ORDER BY e.started_at, e.id) FILTER (WHERE e.kind = 'IMAGE'
+            AND e.snapshot ? 'imageEditRequestId'), '[]'::jsonb) AS running_image_edits
         FROM task_executions e
         WHERE e.status = 'RUNNING'
         GROUP BY e.node_id
@@ -2740,7 +2757,9 @@ export class PostgresControlPlaneRepository {
         n.last_seen_at >= now() - interval '90 seconds' AS online,
         COALESCE(task_count.copy_queued_count, 0) AS copy_queued_count,
         COALESCE(execution_count.copy_running_count, 0) AS copy_running_count,
-        COALESCE(execution_count.image_running_count, 0) AS image_running_count
+        COALESCE(execution_count.image_running_count, 0) AS image_running_count,
+        COALESCE(execution_count.image_edit_running_count, 0) AS image_edit_running_count,
+        COALESCE(execution_count.running_image_edits, '[]'::jsonb) AS running_image_edits
       FROM executor_nodes n
       LEFT JOIN codex_concurrency_pools pool ON pool.id = n.codex_pool_id
       LEFT JOIN task_counts task_count ON task_count.node_id = n.id
@@ -2749,7 +2768,7 @@ export class PostgresControlPlaneRepository {
       WHERE n.retired_at IS NULL
       ORDER BY online DESC, n.name, n.id
     `);
-    return result.rows.map(nodeFrom);
+    return result.rows.map(row => nodeFrom(row, { includeRunningImageEdits }));
   }
 
   async retireNode(rawNodeId, rawActor) {
@@ -3299,6 +3318,7 @@ export class PostgresControlPlaneRepository {
     const pageRequest = this.pool.query(`
       SELECT page.*, COALESCE(e.node_id, successful_image.node_id) AS image_executor_node_id,
         n.name AS image_executor_node_name, creator.id AS creator_account_id,
+        COALESCE(active_image_edits.executions, '[]'::jsonb) AS active_image_edit_executions,
         creator.display_name AS creator_display_name,
         creator.role AS creator_role, assignee.id AS assignee_account_id,
         assignee.display_name AS assigned_to_display_name,
@@ -3327,6 +3347,19 @@ export class PostgresControlPlaneRepository {
         AND successful_image.task_id = page.id
         AND successful_image.kind = 'IMAGE' AND successful_image.status = 'SUCCEEDED'
       LEFT JOIN executor_nodes n ON n.id = COALESCE(e.node_id, successful_image.node_id)
+      LEFT JOIN LATERAL (
+        SELECT jsonb_agg(jsonb_build_object(
+          'executionId', active_execution.id,
+          'nodeId', active_execution.node_id,
+          'nodeName', active_node.name
+        ) ORDER BY active_execution.started_at, active_execution.id) AS executions
+        FROM image_edit_requests active_edit
+        JOIN task_executions active_execution ON active_execution.id = active_edit.execution_id
+          AND active_execution.task_id = page.id
+          AND active_execution.kind = 'IMAGE' AND active_execution.status = 'RUNNING'
+        LEFT JOIN executor_nodes active_node ON active_node.id = active_execution.node_id
+        WHERE active_edit.task_id = page.id AND active_edit.status = 'RUNNING'
+      ) active_image_edits ON true
       LEFT JOIN app_users creator ON creator.username = page.created_by_user_id
         AND creator.created_at < page.created_at
       LEFT JOIN app_users assignee ON assignee.username = page.assigned_to_user_id

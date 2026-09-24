@@ -5,9 +5,10 @@ import test from 'node:test';
 const source = (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
 
 test('administrator-only executor management shows status and safely removes retired machines', async () => {
-  const [page, manager, navigation, topbar, proxy, server, repository, capability, migration, styles] = await Promise.all([
+  const [page, manager, workbench, navigation, topbar, proxy, server, repository, capability, migration, styles] = await Promise.all([
     source('app/executors/page.tsx'),
     source('app/executors/executor-manager.tsx'),
+    source('app/workbench/creation-workbench.tsx'),
     source('app/components/side-nav.tsx'),
     source('app/components/app-topbar.tsx'),
     source('app/api/control-plane/[...path]/route.ts'),
@@ -38,6 +39,13 @@ test('administrator-only executor management shows status and safely removes ret
   assert.match(manager, /copyImagePlanRegenerationVersion/u);
   assert.match(manager, /支持图文规划重生成/u);
   assert.match(manager, /node\.imageRunningCount[\s\S]*node\.imageConcurrency/u);
+  assert.match(manager, /imageEditRunningCount/u);
+  assert.match(manager, /runningImageEdits\?\.map/u);
+  assert.match(manager, /图片并发占用 · 其中图片修复/u);
+  assert.match(manager, /作业 #\{edit\.taskId\} 图片修复中/u);
+  assert.match(manager, /hasRunningTasks[\s\S]*在线执行中/u);
+  assert.match(manager, /codexRunningCount >= node\.codexTotalConcurrency/u);
+  assert.match(workbench, /activeImageEditExecutions\?\.map[\s\S]*图片修复执行机/u);
   assert.match(manager, /useConfirmDialog/u);
   assert.match(manager, /删除这条执行机信息/u);
   assert.match(manager, /apiRequest\('\/api\/control-plane\/v1\/executor-statuses'[\s\S]*method: 'DELETE'[\s\S]*JSON\.stringify\(\{ nodeId: node\.id \}\)/u);

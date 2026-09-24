@@ -308,8 +308,12 @@ test('duplicate Query discard preview and confirmation are admin-only and forwar
 test('executor status inventory and retirement are restricted to administrators', async () => {
   const nodes = [{ id: 'node-a', online: true, imageRunningCount: 1 }];
   const retired = [];
+  const inventoryOptions = [];
   const repository = {
-    listNodes: async () => nodes,
+    listNodes: async (options) => {
+      inventoryOptions.push(options);
+      return nodes;
+    },
     retireNode: async (nodeId, actor) => {
       retired.push({ nodeId, actor });
       return { id: nodeId, name: '执行机 A', retiredAt: '2026-09-09T00:00:00Z' };
@@ -332,6 +336,7 @@ test('executor status inventory and retirement are restricted to administrators'
     const admin = await fetch(`${root}/v1/executor-statuses`, { headers: headers('admin', 'ADMIN') });
     assert.equal(admin.status, 200);
     assert.deepEqual((await admin.json()).data, nodes);
+    assert.deepEqual(inventoryOptions, [{ includeRunningImageEdits: true }]);
     const reviewer = await fetch(`${root}/v1/executor-statuses`, { headers: headers('reviewer', 'REVIEWER') });
     assert.equal(reviewer.status, 403);
     assert.equal((await reviewer.json()).error.code, 'FORBIDDEN');

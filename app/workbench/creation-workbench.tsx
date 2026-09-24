@@ -105,6 +105,7 @@ type DistributedTask = PriorityTask & {
   copyExecutorNodeId: string | null;
   imageExecutorNodeId?: string | null;
   imageExecutorNodeName?: string | null;
+  activeImageEditExecutions?: { executionId: string; nodeId: string; nodeName: string | null }[];
   currentCopyRevisionId: number | null;
   mandatoryCopyQc?: boolean;
   copyQaReworkPending?: boolean;
@@ -2345,6 +2346,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
                   <div><small>{executorColumnLabel}</small><span className="mono workbench-text-preview" title={activeView === 'IMAGE_WORK' ? imageExecutorLabel(task) : copyExecutorLabel(task, nodes)}>{activeView === 'IMAGE_WORK' ? imageExecutorLabel(task) : copyExecutorLabel(task, nodes)}</span></div>
                   {(activeView === 'MANUAL_ARCHIVE' || isAllJobs) && <div><small>生图执行机</small><span className="mono workbench-text-preview" title={imageExecutorLabel(task)}>{imageExecutorLabel(task)}</span></div>}
                   {activeView === 'PERSONAL' && (task.state.startsWith('IMAGE_') || task.imageExecutorNodeId || isImageRetryExhausted(task)) && <div><small>生图执行机</small><span className="mono workbench-text-preview" title={imageExecutorLabel(task)}>{imageExecutorLabel(task)}</span></div>}
+                  {role === 'ADMIN' && task.activeImageEditExecutions?.map((edit, index, edits) => <div key={edit.executionId}><small>图片修复执行机{edits.length > 1 ? ` ${index + 1}` : ''}</small><span className="mono workbench-text-preview" title={`${edit.nodeName || edit.nodeId} · 执行记录 ${edit.executionId}`}>{edit.nodeName || edit.nodeId}</span></div>)}
                 </div></td>
                 <td className="workbench-col-time" data-label={isAllJobs ? '变更 / 创建 / 耗时' : '创建 / 开始 / 耗时'}><div className="workbench-cell-stack">
                   {isAllJobs

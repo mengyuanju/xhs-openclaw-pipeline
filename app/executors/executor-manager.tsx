@@ -26,6 +26,17 @@ export type ExecutorStatus = {
   imageConcurrency: number;
   copyRunningCount: number;
   imageRunningCount: number;
+  imageEditRunningCount?: number;
+  runningImageEdits?: {
+    executionId: string;
+    taskId: number;
+    progressMessage: string | null;
+    startedAt: string;
+  }[];
+  codexRunningCount?: number;
+  codexTotalConcurrency?: number;
+  codexImageConcurrency?: number;
+  codexPoolId?: string | null;
   lastSeenAt: string;
   createdAt: string;
   updatedAt: string;
@@ -33,11 +44,22 @@ export type ExecutorStatus = {
 
 function statusOf(node: ExecutorStatus) {
   if (!node.online) return { label: '离线', className: 'executor-status-offline' };
+  const hasRunningTasks = node.copyRunningCount > 0 || node.imageRunningCount > 0
+    || (node.imageEditRunningCount ?? 0) > 0;
+  if (node.codexTotalConcurrency && node.codexRunningCount !== undefined) {
+    if (node.codexRunningCount >= node.codexTotalConcurrency) {
+      return { label: '在线满载', className: 'executor-status-busy' };
+    }
+    return hasRunningTasks
+      ? { label: '在线执行中', className: 'executor-status-busy' }
+      : { label: '在线空闲', className: 'executor-status-ready' };
+  }
   const copyAvailable = node.copyRunningCount < node.copyConcurrency;
   const imageAvailable = node.imageWorkerEnabled && node.imageRunningCount < node.imageConcurrency;
-  return copyAvailable || imageAvailable
-    ? { label: '在线空闲', className: 'executor-status-ready' }
-    : { label: '在线满载', className: 'executor-status-busy' };
+  if (!copyAvailable && !imageAvailable) return { label: '在线满载', className: 'executor-status-busy' };
+  return hasRunningTasks
+    ? { label: '在线执行中', className: 'executor-status-busy' }
+    : { label: '在线空闲', className: 'executor-status-ready' };
 }
 
 function dateTime(value: string) {
@@ -112,11 +134,24 @@ export function ExecutorManager({
     copyCapacity: nodes.filter((node) => node.online).reduce((total, node) => total + node.copyConcurrency, 0),
     imageRunning: nodes.filter((node) => node.online && node.imageWorkerEnabled)
       .reduce((total, node) => total + node.imageRunningCount, 0),
+    imageEditRunning: nodes.filter((node) => node.online && node.imageWorkerEnabled)
+      .reduce((total, node) => total + (node.imageEditRunningCount ?? 0), 0),
     imageCapacity: nodes.filter((node) => node.online && node.imageWorkerEnabled)
       .reduce((total, node) => total + node.imageConcurrency, 0),
     xhsOnline: xhsSearchNodes.filter((node) => node.online).length,
     xhsAttention: xhsSearchNodes.filter(xhsSearchNeedsAttention).length,
   }), [nodes, xhsSearchNodes]);
+
+  const imageRunningByPool = useMemo(() => {
+    const running = new Map<string, number>();
+    for (const node of nodes) {
+      if (node.codexPoolId) {
+        running.set(node.codexPoolId,
+          (running.get(node.codexPoolId) ?? 0) + node.imageRunningCount);
+      }
+    }
+    return running;
+  }, [nodes]);
 
   async function deleteNode(node: ExecutorStatus) {
     const approved = await confirm({
@@ -180,7 +215,7 @@ export function ExecutorManager({
     <section className="executor-summary" aria-label="执行机概览">
       <article><ServerCog aria-hidden="true" size={19} /><div><strong>{summary.online} / {nodes.length}</strong><span>在线执行机</span></div></article>
       <article><Cpu aria-hidden="true" size={19} /><div><strong>{summary.copyRunning} / {summary.copyCapacity}</strong><span>文案并发占用</span></div></article>
-      <article><ImageIcon aria-hidden="true" size={19} /><div><strong>{summary.imageRunning} / {summary.imageCapacity}</strong><span>生图并发占用</span></div></article>
+      <article><ImageIcon aria-hidden="true" size={19} /><div><strong>{summary.imageRunning} / {summary.imageCapacity}</strong><span>图片并发占用 · 其中图片修复 {summary.imageEditRunning} 项</span></div></article>
       <article><Search aria-hidden="true" size={19} /><div><strong>{summary.xhsOnline} / {xhsSearchNodes.length}</strong><span>小红书搜索在线 · {summary.xhsAttention} 个需处理</span></div></article>
     </section>
 
@@ -204,11 +239,16 @@ export function ExecutorManager({
       {nodes.length === 0
         ? <div className="executor-empty">当前还没有执行机注册到中心服务。</div>
         : <div className="table-wrap executor-table-wrap mobile-cards"><table>
-          <thead><tr><th>执行机</th><th>状态</th><th>文案任务</th><th>生图任务</th><th>最后心跳</th><th className="executor-actions-heading">操作</th></tr></thead>
+          <thead><tr><th>执行机</th><th>状态</th><th>文案任务</th><th>图片任务</th><th>最后心跳</th><th className="executor-actions-heading">操作</th></tr></thead>
           <tbody>{nodes.map((node) => {
             const status = statusOf(node);
-            const copyAvailable = Math.max(0, node.copyConcurrency - node.copyRunningCount);
-            const imageAvailable = Math.max(0, node.imageConcurrency - node.imageRunningCount);
+            const poolAvailable = node.codexTotalConcurrency === undefined
+              ? Infinity : Math.max(0, node.codexTotalConcurrency - (node.codexRunningCount ?? 0));
+            const imagePoolAvailable = node.codexImageConcurrency === undefined || !node.codexPoolId
+              ? Infinity : Math.max(0, node.codexImageConcurrency - (imageRunningByPool.get(node.codexPoolId) ?? 0));
+            const copyAvailable = Math.max(0, Math.min(node.copyConcurrency - node.copyRunningCount, poolAvailable));
+            const imageAvailable = Math.max(0, Math.min(node.imageConcurrency - node.imageRunningCount,
+              poolAvailable, imagePoolAvailable));
             const hasRunningTasks = node.copyRunningCount > 0 || node.imageRunningCount > 0;
             const deletionDisabled = Boolean(deletingNodeId) || node.online || hasRunningTasks;
             const deleteTitle = node.online
@@ -219,9 +259,9 @@ export function ExecutorManager({
             return <tr key={node.id}>
               <td data-label="执行机"><div className="executor-identity"><strong>{node.name}</strong><code>{node.id}</code></div></td>
               <td data-label="状态"><span className={`executor-status ${status.className}`}><i aria-hidden="true" />{status.label}</span></td>
-              <td data-label="文案任务"><div className="executor-capacity"><strong>{node.copyRunningCount} / {node.copyConcurrency} 执行中</strong><span>空闲 {copyAvailable} 个槽位</span><span>{node.copyImagePlanRegenerationVersion >= 1 ? '支持图文规划重生成' : '需更新执行机才能重生成图文规划'}</span></div></td>
-              <td data-label="生图任务">{node.imageWorkerEnabled
-                ? <div className="executor-capacity"><strong>{node.imageRunningCount} / {node.imageConcurrency} 执行中</strong><span>空闲 {imageAvailable} 个槽位</span><span>{node.imageEditExecutorVersion >= 12?'支持单目标直交模型、批量、多产品与框内全部同款替换':node.imageEditExecutorVersion >= 11?'支持旧版产品遮罩替换，需升级单目标直交模型':node.imageEditExecutorVersion >= 10?'支持批量与多产品替换，需升级全部同款替换':node.imageEditExecutorVersion >= 8?'支持 AI 改图、程序标识与失败图定向修复':node.imageEditExecutorVersion >= 7?'支持 AI 改图，需升级程序标识':node.imageEditExecutorVersion >= 3?'仅支持合成与恢复，需升级 AI 改图':'需更新执行机才能改图'}</span></div>
+              <td data-label="文案任务"><div className="executor-capacity"><strong>{node.copyRunningCount} / {node.copyConcurrency} 执行中</strong><span>可用 {copyAvailable} 个槽位</span><span>{node.copyImagePlanRegenerationVersion >= 1 ? '支持图文规划重生成' : '需更新执行机才能重生成图文规划'}</span></div></td>
+              <td data-label="图片任务">{node.imageWorkerEnabled
+                ? <div className="executor-capacity"><strong>{node.imageRunningCount} / {node.imageConcurrency} 图片任务执行中</strong><span>其中图片修复 {node.imageEditRunningCount ?? 0} 项</span>{node.runningImageEdits?.map((edit) => <span className="executor-running-image-edit" key={edit.executionId} title={edit.progressMessage || undefined}>作业 #{edit.taskId} 图片修复中{edit.progressMessage ? ` · ${edit.progressMessage}` : ''}</span>)}<span>可用 {imageAvailable} 个槽位</span>{node.codexTotalConcurrency !== undefined && <span>共享并发池 {node.codexRunningCount ?? 0} / {node.codexTotalConcurrency} 占用</span>}<span>{node.imageEditExecutorVersion >= 12?'支持单目标直交模型、批量、多产品与框内全部同款替换':node.imageEditExecutorVersion >= 11?'支持旧版产品遮罩替换，需升级单目标直交模型':node.imageEditExecutorVersion >= 10?'支持批量与多产品替换，需升级全部同款替换':node.imageEditExecutorVersion >= 8?'支持 AI 改图、程序标识与失败图定向修复':node.imageEditExecutorVersion >= 7?'支持 AI 改图，需升级程序标识':node.imageEditExecutorVersion >= 3?'仅支持合成与恢复，需升级 AI 改图':'需更新执行机才能改图'}</span></div>
                 : <span className="executor-disabled">未启用生图</span>}</td>
               <td data-label="最后心跳"><time dateTime={node.lastSeenAt}>{dateTime(node.lastSeenAt)}</time></td>
               <td className="row-action" data-label="操作"><div className="executor-row-actions">

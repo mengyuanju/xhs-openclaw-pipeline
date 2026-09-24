@@ -45,7 +45,7 @@ async function activeActor(client, rawActor, { admin = false, qc = false } = {})
 }
 
 const CANDIDATE_SQL = `SELECT task.id AS task_id,task.query,task.current_copy_revision_id AS copy_revision_id,
-  task.copy_qa_cycle,approval.id AS approval_event_id,approval.content_sha256,
+  task.copy_qa_cycle,task.mandatory_copy_qc,approval.id AS approval_event_id,approval.content_sha256,
   approval.approved_by_account_id AS account_id,approval.approved_by_username AS username,
   approval.approved_at,approver.display_name,approver.copy_sampling_rate_bps_override,
   approver.auto_copy_batch_size,approver.auto_copy_batch_enabled,approver.copy_full_inspection,
@@ -134,9 +134,14 @@ async function createBatchInTransaction(client, rows, {
   if (!rows.length) conflict('EMPTY_BATCH', '没有可成批的任务');
   const settings = await readWorkflowQualitySettings(client);
   const ids = rows.map(row => Number(row.task_id));
-  const selected = selectedTaskIds ?? randomSubset(ids,
-    plannedSampleCount(ids.length,rateBps ?? settings.copySampling.rateBps));
-  if ([...selected].some(id => !ids.includes(id))) throw new TypeError('抽检项必须属于批次成员');
+  if (selectedTaskIds && [...selectedTaskIds].some(id => !ids.includes(id))) {
+    throw new TypeError('抽检项必须属于批次成员');
+  }
+  const ordinaryIds = rows.filter(row => row.mandatory_copy_qc !== true).map(row => Number(row.task_id));
+  const hasMandatory = ordinaryIds.length !== rows.length;
+  const selected = selectedTaskIds ? new Set(selectedTaskIds) : randomSubset(ordinaryIds,
+    plannedSampleCount(ordinaryIds.length,rateBps ?? settings.copySampling.rateBps));
+  for (const row of rows) if (row.mandatory_copy_qc === true) selected.add(Number(row.task_id));
   const sampleCount = selected.size;
   const returnThresholdBps = settings.copySampling.returnThresholdBps;
   const triggerCount = rejectionTriggerCount(sampleCount,returnThresholdBps);
@@ -144,7 +149,7 @@ async function createBatchInTransaction(client, rows, {
     mode,account_id,full_inspection,blind_review_enabled,sampling_rate_bps,return_threshold_bps,
     return_trigger_count,member_count,sample_count,created_by_account_id,request_id,request_fingerprint)
     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
-  [mode,accountId,fullInspection,settings.copySampling.blindReviewEnabled,
+  [mode,accountId,fullInspection||hasMandatory,settings.copySampling.blindReviewEnabled,
     rateBps,returnThresholdBps,triggerCount,ids.length,sampleCount,actorId,requestId,requestFingerprint])).rows[0];
   for (const row of rows) {
     const isSelected = selected.has(Number(row.task_id));
@@ -222,7 +227,12 @@ export async function autoCreateCopyQaBatchesV2(client, accountId) {
 
 export async function routeCopyApprovalV2(client,{task,revision,approval,actor,aiDisclosureEnabled}) {
   const settings=await readWorkflowQualitySettings(client);
-  if(!settings.copySampling.enabled){
+  const mandatoryReview=task.mandatory_copy_qc===true;
+  const approverAccountId=mandatoryReview?integer(approval.approved_by_account_id):null;
+  if(mandatoryReview&&(!approverAccountId||approverAccountId<1)){
+    conflict('APPROVER_IDENTITY_MISSING','强制复检缺少最终审核账号');
+  }
+  if(!settings.copySampling.enabled&&!mandatoryReview){
     const result=await client.query(`UPDATE tasks SET state='IMAGE_QUEUED',current_stage='IMAGE_QUEUED',
       current_copy_revision_id=$2,copy_qc_released_revision_id=$2,copy_qa_rework_pending=false,mandatory_copy_qc=false,
       mandatory_copy_qc_origin=NULL,ai_disclosure_enabled=$3,progress_percent=0,
@@ -233,13 +243,22 @@ export async function routeCopyApprovalV2(client,{task,revision,approval,actor,a
     return {task:result.rows[0],approval};
   }
   const result=await client.query(`UPDATE tasks SET state='COPY_QC_PENDING',current_stage='COPY_QC_PENDING',
-    current_copy_revision_id=$2,copy_qc_released_revision_id=NULL,copy_qa_rework_pending=false,mandatory_copy_qc=false,
-    mandatory_copy_qc_origin=NULL,ai_disclosure_enabled=$3,progress_percent=100,
+    current_copy_revision_id=$2,copy_qc_released_revision_id=NULL,copy_qa_rework_pending=false,mandatory_copy_qc=$4,
+    mandatory_copy_qc_origin=$5,ai_disclosure_enabled=$3,progress_percent=100,
     current_execution_id=NULL,current_image_run_id=NULL,pending_snapshot=NULL,
     execution_started_at=NULL,finished_at=NULL,error=NULL,last_activity_at=now(),
     progress_message='文案审核通过，等待质检成批',updated_at=now() WHERE id=$1 RETURNING *`,
-  [task.id,revision.id,aiDisclosureEnabled]);
-  await autoCreateCopyQaBatchesV2(client,approval.approved_by_account_id);
+  [task.id,revision.id,aiDisclosureEnabled,mandatoryReview,
+    mandatoryReview?task.mandatory_copy_qc_origin:null]);
+  if(mandatoryReview){
+    await createBatchInTransaction(client,[{
+      task_id:task.id,copy_revision_id:revision.id,copy_qa_cycle:task.copy_qa_cycle,
+      mandatory_copy_qc:true,
+      approval_event_id:approval.id,account_id:approverAccountId,
+      content_sha256:approval.content_sha256,
+    }],{mode:'PERSONAL_AUTO',accountId:approverAccountId,
+      selectedTaskIds:new Set([Number(task.id)]),rateBps:10000,fullInspection:true});
+  }else await autoCreateCopyQaBatchesV2(client,approval.approved_by_account_id);
   return {task:result.rows[0],approval};
 }
 
@@ -295,13 +314,14 @@ export async function listCopyQaBatchItemsV2(pool,batchId,actor) {
     }))};
 }
 
-async function releaseMember(client,member) {
+async function releaseMember(client,member,{reviewed=false}={}) {
   const updated=await client.query(`UPDATE tasks SET state='IMAGE_QUEUED',current_stage='IMAGE_QUEUED',
     copy_qc_released_revision_id=current_copy_revision_id,mandatory_copy_qc=false,
     mandatory_copy_qc_origin=NULL,progress_percent=0,
     progress_message='文案质检已放行，等待生图',updated_at=now()
-    WHERE id=$1 AND state='COPY_QC_PENDING' AND current_copy_revision_id=$2`,
-  [member.task_id,member.copy_revision_id]);
+    WHERE id=$1 AND state='COPY_QC_PENDING' AND current_copy_revision_id=$2
+      AND ($3::boolean OR NOT mandatory_copy_qc)`,
+  [member.task_id,member.copy_revision_id,reviewed]);
   if(updated.rowCount!==1)conflict('STALE_QA_ITEM','任务状态或版本已变化');
 }
 
@@ -366,11 +386,13 @@ async function returnMember(client,member,actor,{note,reasonCodes=[],reasonSnaps
     current.copy_content_changed_from_machine===true])).rows[0];
   await client.query(`UPDATE tasks SET state='COPY_REVIEW_PENDING',current_stage='COPY_REVIEW_PENDING',
     current_copy_revision_id=$2,copy_qc_released_revision_id=NULL,
-    copy_qa_rework_pending=true,mandatory_copy_qc=false,mandatory_copy_qc_origin=NULL,
+    copy_qa_rework_pending=true,mandatory_copy_qc=$3,mandatory_copy_qc_origin=$4,
     current_execution_id=NULL,current_image_run_id=NULL,pending_snapshot=NULL,error=NULL,
     finished_at=now(),last_activity_at=now(),
-    progress_message='文案质检驳回，修改并重新审核后按普通规则成批',updated_at=now()
-    WHERE id=$1`,[member.task_id,revision.id]);
+    progress_message=CASE WHEN $3 THEN '文案质检驳回，实际修改后须再次强制复检'
+      ELSE '文案质检驳回，修改并重新审核后按普通规则成批' END,updated_at=now()
+    WHERE id=$1`,[member.task_id,revision.id,task.mandatory_copy_qc===true,
+    task.mandatory_copy_qc===true?task.mandatory_copy_qc_origin:null]);
 }
 
 async function discardMember(client,member,actor,{reasonCode,note,requestId}) {
@@ -472,7 +494,7 @@ export async function decideCopyQaItemV2(pool,itemId,input,actor,{storageRoot}={
       await client.query(`UPDATE copy_qa_batch_members_v2 SET status='PASSED',
         reviewed_by_account_id=$2,decided_at=now() WHERE id=$1`,[member.id,reviewer.id]);
       await recordQualityOutcome(client,member,{userId:Number(reviewer.id)},'PASS','DIRECT');
-      await releaseMember(client,member);
+      await releaseMember(client,member,{reviewed:true});
     }else if(decision==='RETURN'){
       await returnMember(client,member,{userId:Number(reviewer.id),username:reviewer.username},
         {note,reasonCodes,reasonSnapshots,kind:'DIRECT',storageRoot,caseIds});

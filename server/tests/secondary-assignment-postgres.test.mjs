@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { startTemporaryPostgres18 } from './helpers/personal-postgres.mjs';
 import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 import { applyMigrations, loadMigrations } from '../src/database-migrations.mjs';
+import { decideCopyQaItemV2 } from '../src/copy-qa-v2.mjs';
 import { readAccountQualityFacts } from '../src/account-quality-statistics.mjs';
 import { summarizeAccountQuality } from '../../src/account-quality-statistics.mjs';
 import { PERFORMANCE_VERSION } from '../../src/operator-performance.mjs';
@@ -28,7 +29,11 @@ test('secondary assignment migrates existing states and preserves QA subjects wh
       ('sa-admin','管理员','ADMIN','fake','ACTIVE',true,true,true,now()-interval '10 days') RETURNING *`)).rows;
     const [a,b,qa,admin]=users.map(u=>({userId:Number(u.id),username:u.username,role:u.role,credentialVersion:Number(u.credential_version)}));
     await db.query("INSERT INTO executor_nodes(id,name) VALUES('sa-node','测试机')");
-    const baseline={copy:{title:'机器标题',body:'先清理不再使用的物品，再按照使用频率划分区域。'.repeat(20),tags:['机器']},imagePlan:[{kind:'hero',headline:'桌面整理',subtitle:'',bullets:['清空桌面'],prompt:'自然光整洁桌面场景'}, {kind:'steps',headline:'先做减法',subtitle:'',bullets:['判断使用频率'],prompt:'物品分类与筛选过程'}, {kind:'summary',headline:'固定位置',subtitle:'',bullets:['每天复位'],prompt:'整洁桌面标签收纳区域'}]};
+    const baseline={copy:{title:'机器标题',body:'先清理不再使用的物品，再按照使用频率划分区域。'.repeat(20),tags:['#整理','#收纳','#步骤']},imagePlan:[
+      {kind:'hero',headline:'桌面整理',subtitle:'',bullets:['清空桌面','展示整理后的样子'],prompt:'自然光下展示整洁桌面的真实生活场景'},
+      {kind:'steps',headline:'先做减法',subtitle:'',bullets:['判断使用频率','移走不常用物品'],prompt:'展示物品分类和筛选过程的真实桌面场景'},
+      {kind:'summary',headline:'固定位置',subtitle:'',bullets:['每天复位','保持桌面整洁'],prompt:'整洁桌面与标签明确的收纳区域近景画面'},
+    ]};
     async function fixture({initial=true,mandatory=true,machineReviewNull=false}={}) {
       const batch=Number((await db.query(`INSERT INTO production_batches(public_id,query_package_name,created_by_username,request_id,request_fingerprint,client_batch_code)
         VALUES($1,'二次分配测试','sa-admin',$2,$3,$4) RETURNING id`,[randomUUID(),randomUUID(),'a'.repeat(64),randomUUID().replaceAll('-','')])).rows[0].id);
@@ -121,11 +126,45 @@ test('secondary assignment migrates existing states and preserves QA subjects wh
     assert.deepEqual(afterA[0].first_qa_at,countBefore[0].first_qa_at);
     const reviewed=await repo.approveCopy(legacy.task,{revisionId:Number(assigned.current_copy_revision_id),nodeId:'sa-node',decision:'APPROVE',score:3,originalScore:3,reviewSessionId:randomUUID()},{actor:b});
     assert.equal(reviewed.state,'COPY_QC_PENDING','secondary assignment cannot bypass QA');
-    const bItem=(await db.query('SELECT * FROM copy_sampling_items WHERE task_id=$1 ORDER BY id DESC LIMIT 1',[legacy.task])).rows[0];
-    assert.equal(bItem.sample_kind,'MANDATORY_RECHECK');assert.equal(bItem.parent_item_id,null);
-    assert.equal(Number(bItem.final_approver_account_id),b.userId);
-    await assert.rejects(repo.adminDirectApproveCopyQa(legacy.task,{requestId:randomUUID(),expectedCopyRevisionId:Number(bItem.copy_revision_id),note:'尝试快捷直放'},{actor:admin}),/强制复检/);
-    await repo.passCopyQaItem(bItem.public_id,{requestId:randomUUID(),expectedRevisionToken:bItem.content_sha256},{actor:qa});
+    assert.equal(reviewed.mandatoryCopyQc,true);
+    const bItem=(await db.query(`SELECT member.*,batch.full_inspection,batch.member_count,batch.sample_count
+      FROM copy_qa_batch_members_v2 AS member
+      JOIN copy_qa_batches_v2 AS batch ON batch.id=member.batch_id
+      WHERE member.task_id=$1 ORDER BY member.id DESC LIMIT 1`,[legacy.task])).rows[0];
+    assert.equal(Number(bItem.approver_account_id),b.userId);
+    assert.equal(bItem.full_inspection,true);
+    assert.equal(bItem.member_count,1);assert.equal(bItem.sample_count,1);
+    assert.equal(bItem.selected,true);assert.equal(bItem.status,'PENDING');
+    await assert.rejects(repo.adminDirectApproveCopyQa(legacy.task,{requestId:randomUUID(),expectedCopyRevisionId:Number(bItem.copy_revision_id),note:'尝试快捷直放'},{actor:admin}),/请先结批|强制复检/);
+    await decideCopyQaItemV2(db,bItem.public_id,{requestId:randomUUID(),revisionToken:bItem.content_sha256,
+      decision:'RETURN',note:'初次复检仍需修改'},qa,{storageRoot:storage});
+    const returned=(await db.query('SELECT * FROM tasks WHERE id=$1',[legacy.task])).rows[0];
+    assert.equal(returned.state,'COPY_REVIEW_PENDING');
+    assert.equal(returned.mandatory_copy_qc,true);
+    assert.equal(returned.mandatory_copy_qc_origin,'SECOND_ASSIGNMENT');
+    assert.equal(returned.copy_qa_rework_pending,true);
+    await assert.rejects(repo.approveCopy(legacy.task,{revisionId:Number(returned.current_copy_revision_id),
+      nodeId:'sa-node',decision:'APPROVE',reviewSessionId:randomUUID()},{actor:b}),
+    {code:'COPY_REWORK_NOT_SATISFIED'});
+    const returnedContent=(await db.query('SELECT content FROM copy_revisions WHERE id=$1',
+      [returned.current_copy_revision_id])).rows[0].content;
+    const reapproved=await repo.approveCopy(legacy.task,{revisionId:Number(returned.current_copy_revision_id),
+      nodeId:'sa-node',decision:'APPROVE',reviewSessionId:randomUUID(),
+      edits:{copy:{...returnedContent.copy,title:'修改后再次提交',tags:['#整理','#收纳','#步骤']},
+        imagePlan:returnedContent.imagePlan}},
+    {actor:b});
+    assert.equal(reapproved.state,'COPY_QC_PENDING');
+    assert.equal(reapproved.mandatoryCopyQc,true);
+    const nextItem=(await db.query(`SELECT member.*,batch.full_inspection,batch.member_count,batch.sample_count
+      FROM copy_qa_batch_members_v2 AS member
+      JOIN copy_qa_batches_v2 AS batch ON batch.id=member.batch_id
+      WHERE member.task_id=$1 ORDER BY member.id DESC LIMIT 1`,[legacy.task])).rows[0];
+    assert.notEqual(nextItem.id,bItem.id);
+    assert.equal(nextItem.full_inspection,true);
+    assert.equal(nextItem.member_count,1);assert.equal(nextItem.sample_count,1);
+    assert.equal(nextItem.selected,true);assert.equal(nextItem.status,'PENDING');
+    await decideCopyQaItemV2(db,nextItem.public_id,{requestId:randomUUID(),
+      revisionToken:nextItem.content_sha256,decision:'PASS'},qa,{storageRoot:storage});
     assert.equal((await db.query('SELECT state FROM tasks WHERE id=$1',[legacy.task])).rows[0].state,'IMAGE_QUEUED');
     assert.equal((await db.query('SELECT count(*) FROM account_quality_records WHERE task_id=$1',[legacy.task])).rows[0].count,'2');
     const missingReceipt=await repo.escalateQualityToAdmin('COPY',missing.item.public_id,{...escalateInput,requestId:randomUUID()},{actor:admin});

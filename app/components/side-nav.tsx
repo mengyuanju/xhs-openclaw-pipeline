@@ -53,6 +53,9 @@ const navigationGroups: NavigationGroup[] = [
   {
     label: '运营与系统',
     items: [
+      { href: '/reports', label: '报表统计', icon: BarChart3, adminOnly: true, children: [
+        { href: '/reports/task-data', label: '任务数据统计', icon: BarChart3 },
+      ] },
       { href: '/workbench-statistics', label: '数据统计', icon: BarChart3 },
       { href: '/settings', label: '生产配置', icon: Settings2 },
       { href: '/executors', label: '执行机管理', icon: ServerCog },
@@ -75,10 +78,11 @@ export function SideNav({ session }: { session: NavigationSession }) {
   const router = useRouter();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isWorkbenchOpen, setIsWorkbenchOpen] = useState(pathname.startsWith('/workbench'));
+  const [isReportsOpen, setIsReportsOpen] = useState(pathname.startsWith('/reports'));
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState('');
   const role = session?.roles?.[0];
-  const isAdmin = role === 'ADMIN';
+  const isAdmin = session?.roles?.includes('ADMIN') === true;
   const allowedWorkflowHrefs = new Set(workflowNavigationHrefs(session));
   const roleGroups = isAdmin
     ? navigationGroups.map((group) => ({
@@ -94,12 +98,12 @@ export function SideNav({ session }: { session: NavigationSession }) {
     : role === 'REVIEWER'
       ? navigationGroups.map((group) => ({
           ...group,
-          items: group.items.filter((item) => allowedWorkflowHrefs.has(item.href))
+          items: group.items.filter((item) => !item.adminOnly && allowedWorkflowHrefs.has(item.href))
             .map((item) => ({ ...item, children: item.children?.filter((child) => !child.adminOnly) })),
         }))
       : navigationGroups.map((group) => ({
           ...group,
-          items: group.items.filter((item) => allowedWorkflowHrefs.has(item.href)).map((item) => ({
+          items: group.items.filter((item) => !item.adminOnly && allowedWorkflowHrefs.has(item.href)).map((item) => ({
             ...item,
             children: item.children?.filter((child) => ['/workbench/personal','/workbench/personal-statistics'].includes(child.href)),
           })),
@@ -109,6 +113,7 @@ export function SideNav({ session }: { session: NavigationSession }) {
   useEffect(() => setIsMenuOpen(false), [pathname]);
   useEffect(() => {
     if (pathname.startsWith('/workbench')) setIsWorkbenchOpen(true);
+    if (pathname.startsWith('/reports')) setIsReportsOpen(true);
   }, [pathname]);
 
   async function signOut() {
@@ -151,19 +156,23 @@ export function SideNav({ session }: { session: NavigationSession }) {
               {group.items.map((item) => {
                 const active = item.href === '/' ? pathname === '/' : pathname.startsWith(item.href);
                 const Icon = item.icon;
-                if (item.children) return <div className="nav-item-group" key={item.href}>
+                if (item.children) {
+                  const isReportMenu = item.href === '/reports';
+                  const expanded = isReportMenu ? isReportsOpen : isWorkbenchOpen;
+                  const submenuId = isReportMenu ? 'reports-submenu' : 'workbench-submenu';
+                  return <div className="nav-item-group" key={item.href}>
                   <Button unstyled
                     className="nav-item nav-parent"
                     type="button"
-                    aria-expanded={isWorkbenchOpen}
-                    aria-controls="workbench-submenu"
-                    onClick={() => setIsWorkbenchOpen((open) => !open)}
+                    aria-expanded={expanded}
+                    aria-controls={submenuId}
+                    onClick={() => isReportMenu ? setIsReportsOpen((open) => !open) : setIsWorkbenchOpen((open) => !open)}
                   >
                     <Icon aria-hidden="true" size={17} strokeWidth={1.8} />
                     <span>{item.label}</span>
                     <ChevronDown aria-hidden="true" size={14} className="nav-parent-chevron" />
                   </Button>
-                  <div className="nav-submenu" id="workbench-submenu" hidden={!isWorkbenchOpen}>
+                  <div className="nav-submenu" id={submenuId} hidden={!expanded}>
                     {item.children.map((child) => {
                       const ChildIcon = child.icon;
                       const selected = pathname === child.href;
@@ -176,6 +185,7 @@ export function SideNav({ session }: { session: NavigationSession }) {
                     })}
                   </div>
                 </div>;
+                }
                 return (
                   <Link
                     key={item.href}

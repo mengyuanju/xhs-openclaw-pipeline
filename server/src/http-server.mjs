@@ -1,6 +1,11 @@
 import { getCopyQualityQueues } from './copy-quality-control.mjs';
 import { listCopyQaCandidatesV2, createCopyQaBatchV2, listCopyQaBatchesV2, listCopyQaBatchItemsV2, decideCopyQaItemV2 } from './copy-qa-v2.mjs';
 import { loadWorkModePage } from './work-mode.mjs';
+import { readTaskDataReport, readTaskDataReportTask, exportTaskDataReportCsv } from './task-data-report.mjs';
+import {
+  listSavedTaskReportQueries, createSavedTaskReportQuery,
+  updateSavedTaskReportQuery, deleteSavedTaskReportQuery,
+} from './saved-task-report-queries.mjs';
 import { installSharedDeliveryRoutes } from './delivery-routes.mjs';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
@@ -1406,7 +1411,7 @@ function installRoutes(
   });
   router.get('/v1/executor-statuses', async (ctx) => {
     requestActor(ctx, ['ADMIN']);
-    json(ctx, 200, await repository.listNodes());
+    json(ctx, 200, await repository.listNodes({ includeRunningImageEdits: true }));
   });
   router.get('/v1/xhs-search-statuses', async (ctx) => {
     requestActor(ctx, ['ADMIN']);
@@ -1478,6 +1483,49 @@ function installRoutes(
     const actor=requestActor(ctx,['ADMIN']);
     ctx.set('Cache-Control','private, no-store');
     json(ctx,200,await repository.operatorPerformance(actor,ctx.query));
+  });
+  router.post('/v1/admin/task-data-report/query', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    await assertCurrentActorIdentity(repository, actor);
+    ctx.set('Cache-Control', 'private, no-store');
+    json(ctx, 200, await readTaskDataReport(repository.pool, actor, requireJson(ctx)));
+  });
+  router.post('/v1/admin/task-data-report/export', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    await assertCurrentActorIdentity(repository, actor);
+    const csv = await exportTaskDataReportCsv(repository.pool, actor, requireJson(ctx));
+    ctx.set('Cache-Control', 'private, no-store');
+    ctx.set('Content-Disposition', 'attachment; filename="task-data-report.csv"');
+    ctx.type = 'text/csv; charset=utf-8';
+    ctx.body = csv;
+  });
+  router.get('/v1/admin/task-data-report/saved-queries', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    ctx.set('Cache-Control', 'private, no-store');
+    json(ctx, 200, await listSavedTaskReportQueries(repository.pool, actor));
+  });
+  router.post('/v1/admin/task-data-report/saved-queries', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    ctx.set('Cache-Control', 'private, no-store');
+    json(ctx, 201, await createSavedTaskReportQuery(repository.pool, actor, requireJson(ctx)));
+  });
+  router.patch('/v1/admin/task-data-report/saved-queries/:id', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    ctx.set('Cache-Control', 'private, no-store');
+    json(ctx, 200, await updateSavedTaskReportQuery(repository.pool, actor, ctx.params.id, requireJson(ctx)));
+  });
+  router.delete('/v1/admin/task-data-report/saved-queries/:id', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    ctx.set('Cache-Control', 'private, no-store');
+    json(ctx, 200, await deleteSavedTaskReportQuery(repository.pool, actor, ctx.params.id));
+  });
+  router.get('/v1/admin/task-data-report/tasks/:taskId', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    await assertCurrentActorIdentity(repository, actor);
+    const report = await readTaskDataReportTask(repository.pool, actor, ctx.params.taskId);
+    if (!report) throw new HttpError(404, 'TASK_NOT_FOUND', '任务不存在');
+    ctx.set('Cache-Control', 'private, no-store');
+    json(ctx, 200, report);
   });
   router.get('/v1/admin/operator-performance/tasks', async(ctx)=>{
     const actor=requestActor(ctx,['ADMIN']);
