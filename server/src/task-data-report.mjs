@@ -1,4 +1,5 @@
 import { ControlPlaneAuthorizationError } from './domain.mjs';
+import { readTaskActivityOverview } from './task-activity-overview.mjs';
 
 const TIME_FIELDS = new Set([
   'FIRST_MANUAL_COPY_ASSIGNMENT', 'FIRST_COPY_ASSIGNMENT', 'FIRST_COPY_REVIEW_ACTION', 'CREATED_AT',
@@ -15,6 +16,7 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/u;
 const MAX_CONDITIONS = 20;
 
 const REPORT_TASK_SQL = `t.task_kind='CONTENT' AND NOT (t.input @> '{"testRun":true}'::jsonb)`;
+const ASSIGNED_COPY_REVIEW_SQL = `t.state='COPY_REVIEW_PENDING' AND t.assigned_to_user_id IS NOT NULL`;
 // Both delivery groups share current-version eligibility and apply their own date filters.
 const CURRENT_DELIVERY_SQL = `${REPORT_TASK_SQL} AND t.state='REVIEWED' AND delivery.status='READY'
   AND t.current_copy_revision_id=delivery.copy_revision_id AND t.current_image_run_id=delivery.image_run_id
@@ -47,6 +49,12 @@ const FIRST_COPY_REVIEW_SQL = `(SELECT min(reviewed_at) FROM (
     AND t.cancelled_from_state='COPY_REVIEW_PENDING'
     AND t.progress_message='文案已被质检废弃'
 ) first_review_actions)`;
+// A reassigned task starts a new review round; historical returns alone do not make it pending rework.
+const COPY_QA_REWORK_SQL = `COALESCE(t.copy_qa_rework_pending
+  OR (t.mandatory_copy_qc AND t.mandatory_copy_qc_origin='QA_RETURN'),false)`;
+const COPY_INITIAL_REVIEW_PENDING_SQL = `${ASSIGNED_COPY_REVIEW_SQL} AND NOT ${COPY_QA_REWORK_SQL}`;
+const COPY_REWORK_PENDING_SQL = `${ASSIGNED_COPY_REVIEW_SQL} AND ${COPY_QA_REWORK_SQL}
+  AND ${FIRST_COPY_REVIEW_SQL} IS NOT NULL`;
 // Tasks without a manual copy decision enter the report on their bypass or current discard date.
 const FIRST_REPORT_EVENT_SQL = `LEAST(
   ${FIRST_COPY_REVIEW_SQL},
@@ -92,7 +100,7 @@ const IMAGE_QA_RELEASE_SQL = `CASE WHEN t.image_qc_released_approval_event_id IS
 const COPY_STATUS_SQL = `CASE
   WHEN t.current_copy_revision_id IS NOT NULL
     AND t.copy_qc_released_revision_id=t.current_copy_revision_id THEN 'QA_RELEASED'
-  WHEN t.copy_qa_rework_pending OR t.state='PENDING_SECOND_ASSIGNMENT' THEN 'RETURNED'
+  WHEN ${COPY_QA_REWORK_SQL} OR t.state='PENDING_SECOND_ASSIGNMENT' THEN 'RETURNED'
   WHEN t.state='COPY_QC_PENDING' THEN 'QA_PENDING'
   WHEN ${COPY_REVIEW_SQL} IS NOT NULL THEN 'REVIEW_PASSED'
   ELSE 'PENDING' END`;
@@ -472,6 +480,29 @@ async function readDetailRows(client, ids) {
   return ids.map(id => byId.get(id)).filter(Boolean);
 }
 
+async function readTaskPoolOverview(client, asOf) {
+  const row = (await client.query(`SELECT
+    count(*) FILTER(WHERE ${COPY_INITIAL_REVIEW_PENDING_SQL})::integer AS copy_review_pending,
+    count(*) FILTER(WHERE ${COPY_REWORK_PENDING_SQL})::integer AS copy_rework_pending,
+    count(*) FILTER(WHERE state='PENDING_SECOND_ASSIGNMENT')::integer AS second_assignment_pending,
+    count(*) FILTER(WHERE state='COPY_QC_PENDING')::integer AS copy_qa_pending,
+    count(*) FILTER(WHERE state IN ('IMAGE_QUEUED','IMAGE_RUNNING'))::integer AS image_generating,
+    count(*) FILTER(WHERE state IN ('MANUAL_ARCHIVE','IMAGE_REWORK_PENDING'))::integer AS image_review_pending,
+    count(*) FILTER(WHERE state='IMAGE_QC_PENDING')::integer AS image_qa_pending,
+    count(*) FILTER(WHERE ${HAS_CURRENT_DELIVERY_SQL})::integer AS delivery_total
+    FROM tasks t WHERE ${REPORT_TASK_SQL} AND t.created_at <= $1::timestamptz`, [asOf])).rows[0] ?? {};
+  return {
+    copyReviewPending: Number(row.copy_review_pending ?? 0),
+    copyReworkPending: Number(row.copy_rework_pending ?? 0),
+    secondAssignmentPending: Number(row.second_assignment_pending ?? 0),
+    copyQaPending: Number(row.copy_qa_pending ?? 0),
+    imageGenerating: Number(row.image_generating ?? 0),
+    imageReviewPending: Number(row.image_review_pending ?? 0),
+    imageQaPending: Number(row.image_qa_pending ?? 0),
+    deliveryTotal: Number(row.delivery_total ?? 0),
+  };
+}
+
 async function readTaskDeliveryOverview(client,query) {
   const annotators=query.conditions.filter(condition=>condition.field==='ANNOTATOR');
   const params=[query.time.start,query.time.end,...annotators.map(condition=>condition.value)];
@@ -529,14 +560,21 @@ export async function readTaskDataReport(pool, actor, input = {}, { now = new Da
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
     await client.query(exportAll ? "SET LOCAL statement_timeout='60s'" : "SET LOCAL statement_timeout='20s'");
     const asOf = iso((await client.query('SELECT clock_timestamp() AS at')).rows[0].at);
+    const poolOverview = await readTaskPoolOverview(client, asOf);
     const overview = await readTaskDeliveryOverview(client,query);
+    const activityOverview = await readTaskActivityOverview(client, query, asOf);
     const summaryRows = (await client.query(`WITH filtered AS MATERIALIZED (
       SELECT t.id,t.state,t.current_copy_revision_id,t.copy_qc_released_revision_id,
         t.current_image_run_id,t.image_qc_released_approval_event_id,t.image_qc_legacy_accepted,
-        ${HAS_CURRENT_DELIVERY_SQL} AS delivery_eligible
+        ${HAS_CURRENT_DELIVERY_SQL} AS delivery_eligible,
+        ${ASSIGNED_COPY_REVIEW_SQL} AS copy_review_pending_eligible,
+        ${COPY_INITIAL_REVIEW_PENDING_SQL} AS copy_initial_review_pending_eligible,
+        ${COPY_REWORK_PENDING_SQL} AS copy_rework_pending_eligible
       FROM tasks t WHERE ${filter.sql})
       SELECT count(*)::integer AS total,
-        count(*) FILTER(WHERE state IN ('COPY_REVIEW_PENDING','PENDING_SECOND_ASSIGNMENT'))::integer AS copy_review_pending,
+        count(*) FILTER(WHERE copy_review_pending_eligible)::integer AS copy_review_pending,
+        count(*) FILTER(WHERE copy_initial_review_pending_eligible)::integer AS copy_initial_review_pending,
+        count(*) FILTER(WHERE copy_rework_pending_eligible)::integer AS copy_rework_pending,
         count(*) FILTER(WHERE state IN ('MANUAL_ARCHIVE','IMAGE_REWORK_PENDING'))::integer AS image_review_pending,
         count(*) FILTER(WHERE state='COPY_QC_PENDING')::integer AS copy_qa_pending,
         count(*) FILTER(WHERE state='IMAGE_QC_PENDING')::integer AS image_qa_pending,
@@ -596,11 +634,13 @@ export async function readTaskDataReport(pool, actor, input = {}, { now = new Da
     await client.query('COMMIT');
     const total = Number(summaryRows.total);
     return {
-      overview,
+      poolOverview, overview, activityOverview,
       summary: {
         total, byState: summaryRows.by_state ?? {},
         reviewPending: Number(summaryRows.copy_review_pending) + Number(summaryRows.image_review_pending),
         copyReviewPending: Number(summaryRows.copy_review_pending),
+        copyInitialReviewPending: Number(summaryRows.copy_initial_review_pending),
+        copyReworkPending: Number(summaryRows.copy_rework_pending),
         imageReviewPending: Number(summaryRows.image_review_pending),
         qaPending: Number(summaryRows.copy_qa_pending) + Number(summaryRows.image_qa_pending),
         copyQaPending: Number(summaryRows.copy_qa_pending),

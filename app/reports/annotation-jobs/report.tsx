@@ -24,14 +24,6 @@ type Account = {id:number;username:string;displayName?:string;status?:string};
 const day = (time:number) => new Date(time + 8 * 3_600_000).toISOString().slice(0,10);
 const initialDates = () => { const today=day(Date.now()); return {from:today,to:today}; };
 const number = (value:number|undefined) => value == null ? '—' : new Intl.NumberFormat('zh-CN').format(value);
-function unjudgedSummary(person:Person) {
-  return [
-    [person.copyFirstPending,'待质检'],
-    [person.copyFirstBypassed,'放行/免检'],
-    [person.copyFirstUnjudgedOther,'其他无首检'],
-  ].filter(([count])=>Number(count)>0).map(([count,label])=>`${label} ${number(Number(count))}`).join(' · ');
-}
-
 export function AnnotationJobReport({initialFilters}:{initialFilters?:{from:string;to:string;accountId:string}}) {
   const [draft,setDraft] = useState(() => initialFilters ? {from:initialFilters.from,to:initialFilters.to} : initialDates());
   const [filters,setFilters] = useState(() => initialFilters ?? {...initialDates(),accountId:''});
@@ -104,7 +96,7 @@ export function AnnotationJobReport({initialFilters}:{initialFilters?:{from:stri
         <th scope="col">标注人</th><th scope="col">总作业</th><th scope="col">首次文案审核</th><th scope="col">文案一次通过率</th><th scope="col">文案返修</th><th scope="col">首次图片审核</th><th scope="col">图片返修</th><th scope="col">废弃任务数量</th>
       </tr></thead><tbody>{visiblePeople.map(person=><tr key={person.accountId}>
         <td><strong>{person.displayName}</strong><small>@{person.username}</small>{person.totalJobs===0&&<small>本期无作业 · 仅质检记录</small>}</td><td>{number(person.totalJobs)}</td><td>{number(person.copyReview)}</td>
-        <td>{person.copyDecided?(person.copyFirstPassRate*100).toFixed(2)+'%':'—'}<small title="按所选日期内首次文案作业对应的个人接手轮次统计，追踪该轮首次提交截至报表时点的结果；分母包含有效首检的通过、打回及质检废弃结论，绑定该首次提交的有效整批打回也计为未通过。">{number(person.copyFirstPassed)} / {number(person.copyDecided)} 有效首检轮次</small>{(person.copyFirstReturned>0||person.copyFirstQaDiscarded>0)&&<small>首检打回 {number(person.copyFirstReturned)}{person.copyFirstQaDiscarded>0?` · 质检废弃 ${number(person.copyFirstQaDiscarded)}`:''}</small>}{person.copyFirstUnjudged>0&&<small className={styles.qualityStatus} title={`无有效首检记录共 ${number(person.copyFirstUnjudged)} 轮；放行/免检包含管理员直接放行及未被抽中质检，不计入一次通过率分母。`}>{unjudgedSummary(person)}</small>}{person.copyFirstDirectDiscarded>0&&<small title="仅统计本期首次文案作业对应的接手轮次：本人直接废弃且该轮尚未提交质检。不含文案返修废弃或图片废弃，不计入一次通过率分母。">首次文案未提交即废弃 {number(person.copyFirstDirectDiscarded)} 轮</small>}</td>
+        <td>{person.copyDecided?(person.copyFirstPassRate*100).toFixed(2)+'%':'—'}<small title="按所选日期内首次文案作业对应的个人接手轮次统计，追踪该轮首次提交截至报表时点的结果；分母包含有效首检的通过、打回及质检废弃结论，绑定该首次提交的有效整批打回也计为未通过。">{number(person.copyFirstPassed)} / {number(person.copyDecided)} 有效首检轮次</small></td>
         <td>{number(person.copyRework)}<small>涉及 {number(person.copyReworkTasks)} 个任务</small></td><td>{number(person.imageFirstReview)}</td><td>{number(person.imageRework)}</td><td title="本人在所选日期内所有文案、图片阶段的废弃任务去重统计，包含首次审核及返修阶段。">{number(person.discarded)}</td>
       </tr>)}{!visiblePeople.length&&<tr><td colSpan={8} className={styles.empty}>{busy?'正在读取…':'所选日期暂无标注作业'}</td></tr>}</tbody></table></div>
       <details className={styles.methods}><summary>统计口径</summary>
