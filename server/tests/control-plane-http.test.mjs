@@ -1519,10 +1519,13 @@ test('permanent task deletion quarantines files and restores them when the datab
   const storageRoot = await mkdtemp(join(tmpdir(), 'xhs-permanent-delete-'));
   const taskFile = join(storageRoot, 'tasks', '7', 'image-runs', 'run-a', 'image.png');
   const thumbnailFile = join(storageRoot, 'thumbnails', '7', 'thumb.webp');
+  const referenceFile = join(storageRoot, 'image-edits', '7', 'reference.png');
   await mkdir(join(storageRoot, 'tasks', '7', 'image-runs', 'run-a'), { recursive: true });
   await mkdir(join(storageRoot, 'thumbnails', '7'), { recursive: true });
+  await mkdir(join(storageRoot, 'image-edits', '7'), { recursive: true });
   await writeFile(taskFile, 'task-image');
   await writeFile(thumbnailFile, 'thumbnail');
+  await writeFile(referenceFile, 'reference-image');
   const repository = {
     getTask: async () => ({ id: 7, createdByUserId: 'admin' }),
     permanentlyDeleteTask: async (taskId, input) => {
@@ -1540,6 +1543,7 @@ test('permanent task deletion quarantines files and restores them when the datab
     }, { storageRoot });
     assert.equal(await readFile(taskFile, 'utf8'), 'task-image');
     assert.equal(await readFile(thumbnailFile, 'utf8'), 'thumbnail');
+    assert.equal(await readFile(referenceFile, 'utf8'), 'reference-image');
   } finally {
     await rm(storageRoot, { recursive: true, force: true });
   }
@@ -1548,8 +1552,11 @@ test('permanent task deletion quarantines files and restores them when the datab
 test('permanent task deletion removes quarantined files after the database commits', async () => {
   const storageRoot = await mkdtemp(join(tmpdir(), 'xhs-permanent-delete-'));
   const taskFile = join(storageRoot, 'tasks', '7', 'image.png');
+  const referenceFile = join(storageRoot, 'image-edits', '7', 'reference.png');
   await mkdir(join(storageRoot, 'tasks', '7'), { recursive: true });
+  await mkdir(join(storageRoot, 'image-edits', '7'), { recursive: true });
   await writeFile(taskFile, 'task-image');
+  await writeFile(referenceFile, 'reference-image');
   const repository = {
     getTask: async () => ({ id: 7, createdByUserId: 'admin' }),
     permanentlyDeleteTask: async (taskId, input) => {
@@ -1567,6 +1574,7 @@ test('permanent task deletion removes quarantined files after the database commi
       assert.deepEqual((await response.json()).data, { id: 7, deleted: true, cleanupPending: false });
     }, { storageRoot });
     await assert.rejects(() => readFile(taskFile), { code: 'ENOENT' });
+    await assert.rejects(() => readFile(referenceFile), { code: 'ENOENT' });
   } finally {
     await rm(storageRoot, { recursive: true, force: true });
   }

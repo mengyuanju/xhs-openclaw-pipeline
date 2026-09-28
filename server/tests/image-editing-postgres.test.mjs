@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp,writeFile,rm } from 'node:fs/promises';
+import { mkdtemp,mkdir,writeFile,readFile,rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join,resolve } from 'node:path';
 import { createServer } from 'node:net';
@@ -11,8 +11,9 @@ import sharp from 'sharp';
 import pg from 'pg';
 import { migrateDatabase } from '../src/database-migrations.mjs';
 import { createImageEditingService } from '../src/image-editing.mjs';
+import { backfillEligibleReferenceCleanup, drainReferenceCleanup } from '../src/image-reference-cleanup.mjs';
 import { processImageEdit } from '../src/image-edit-renderer.mjs';
-import { imageHash } from '../../src/image-edit-pixels.mjs';
+import { decodeReference, imageHash } from '../../src/image-edit-pixels.mjs';
 import { assertTaskReadyForDelivery, createReadyDeliveryEntry } from '../src/final-delivery.mjs';
 import { createPostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 import { createControlPlaneApp } from '../src/http-server.mjs';
@@ -93,6 +94,190 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       const draft=await service.create(taskId,request({operation:'COMPOSITE',draft:true,references:[{assetId:uploaded.id,x:200,y:500,width:100,height:100}]}),actor);
       const binding=(await pool.query('SELECT * FROM image_edit_reference_assets WHERE request_id=$1',[draft.id])).rows[0];assert.equal(binding.sha256,uploaded.sha256);
       await action(draft.id,'cancel');
+      assert.ok((await pool.query('SELECT content_cleared_at FROM assets WHERE id=$1',[uploaded.id])).rows[0].content_cleared_at);
+      await assert.rejects(readFile(asset.storage_path),{code:'ENOENT'});
+    });
+    await t.test('manual deletion frees a reference and quota enforces 100 MiB after normalization',async()=>{
+      const input={base64:png.toString('base64'),mediaType:'image/png',purpose:'配额验证',source:'测试自有照片'};
+      const secondInput={...input,base64:localPng.toString('base64')};
+      const replacementInput={...input,base64:localPatch.toString('base64')};
+      const normalizedSecondBytes=(await decodeReference(localPng,'image/png')).bytes.length;
+      const first=await service.upload(taskId,input,actor);
+      const firstAsset=await service.asset(first.id,taskId);
+      let second;
+      try {
+        await pool.query('UPDATE assets SET byte_size=$2 WHERE id=$1',[first.id,100*1024*1024-normalizedSecondBytes]);
+        second=await service.upload(taskId,secondInput,actor);
+        const reused=await service.upload(taskId,input,actor);
+        assert.equal(reused.id,first.id,'an existing image does not consume quota at the byte limit');
+        await assert.rejects(service.upload(taskId,replacementInput,actor),/任务参考图存储已达上限/u);
+        const replaced=second;
+        const replacedPath=(await pool.query('SELECT storage_path FROM assets WHERE id=$1',[replaced.id])).rows[0].storage_path;
+        second=await service.upload(taskId,{...replacementInput,replaceAssetId:replaced.id},actor);
+        assert.notEqual(second.id,replaced.id);
+        assert.equal(second.oldReferenceRetained,false);
+        await assert.rejects(readFile(replacedPath),{code:'ENOENT'});
+        await assert.rejects(service.upload(taskId,secondInput,actor),/任务参考图存储已达上限/u);
+      } finally {
+        await pool.query('UPDATE assets SET byte_size=$2 WHERE id=$1',[first.id,firstAsset.byte_size]);
+        if(second)await service.deleteReference(taskId,second.id,actor);
+      }
+      const thumbnailPath=resolve(root,'thumbnails',String(taskId),`${first.id}-${first.sha256}-thumb-480-v1.webp`);
+      await mkdir(resolve(root,'thumbnails',String(taskId)),{recursive:true});
+      await writeFile(thumbnailPath,Buffer.from('thumbnail'));
+      const deleted=await service.deleteReference(taskId,first.id,actor);
+      assert.deepEqual({id:deleted.id,deleted:deleted.deleted,cleanupPending:deleted.cleanupPending},
+        {id:first.id,deleted:true,cleanupPending:false});
+      assert.ok((await pool.query('SELECT content_cleared_at FROM assets WHERE id=$1',[first.id])).rows[0].content_cleared_at);
+      await assert.rejects(readFile(firstAsset.storage_path),{code:'ENOENT'});
+      await assert.rejects(readFile(thumbnailPath),{code:'ENOENT'});
+      await assert.rejects(service.create(taskId,request({operation:'COMPOSITE',draft:true,
+        references:[{assetId:first.id,x:200,y:500,width:100,height:100}]}),actor),/参考图片/u);
+    });
+    await t.test('same normalized image reuses its asset, including a same-image replacement',async()=>{
+      const input={base64:png.toString('base64'),mediaType:'image/png',purpose:'重复图片',source:'测试自有照片'};
+      const first=await service.upload(taskId,input,actor);
+      const firstPath=(await service.asset(first.id,taskId)).storage_path;
+      try {
+        const reused=await service.upload(taskId,input,actor);
+        assert.equal(reused.id,first.id);
+        const sameReplacement=await service.upload(taskId,{...input,replaceAssetId:first.id},actor);
+        assert.equal(sameReplacement.id,first.id);
+        assert.equal(sameReplacement.oldReferenceRetained,false);
+        assert.equal((await pool.query("SELECT count(*)::int AS count FROM assets WHERE task_id=$1 AND asset_role='REFERENCE' AND content_cleared_at IS NULL",[taskId])).rows[0].count,1);
+        assert.ok((await readFile(firstPath)).length>0);
+        assert.equal((await pool.query('SELECT count(*)::int AS count FROM image_reference_cleanup_jobs WHERE asset_id=$1',[first.id])).rows[0].count,0);
+        const reuseEvent=(await pool.query("SELECT action,detail FROM image_edit_events WHERE task_id=$1 AND action='REUSE_REFERENCE' ORDER BY id DESC LIMIT 1",[taskId])).rows[0];
+        assert.equal(reuseEvent.detail.assetId,first.id);
+        assert.equal(reuseEvent.detail.replacementRequestedAssetId,first.id);
+        assert.equal(reuseEvent.detail.replacedAssetId,null);
+        const other=await service.upload(taskId,{...input,base64:localPng.toString('base64')},actor);
+        const otherPath=(await service.asset(other.id,taskId)).storage_path;
+        const replacedWithExisting=await service.upload(taskId,{...input,replaceAssetId:other.id},actor);
+        assert.equal(replacedWithExisting.id,first.id);
+        assert.equal(replacedWithExisting.oldReferenceRetained,false);
+        assert.ok((await readFile(firstPath)).length>0,'the reused asset must remain available');
+        await assert.rejects(readFile(otherPath),{code:'ENOENT'});
+        const replacementEvent=(await pool.query("SELECT action,detail FROM image_edit_events WHERE task_id=$1 AND action='REUSE_REFERENCE' ORDER BY id DESC LIMIT 1",[taskId])).rows[0];
+        assert.equal(replacementEvent.detail.assetId,first.id);
+        assert.equal(replacementEvent.detail.replacedAssetId,other.id);
+      } finally { await service.deleteReference(taskId,first.id,actor); }
+      await assert.rejects(readFile(firstPath),{code:'ENOENT'});
+    });
+    await t.test('twenty legacy duplicate assets count as one image and new uploads still reuse',async()=>{
+      const input={base64:png.toString('base64'),mediaType:'image/png',purpose:'重复历史图片',source:'测试自有照片'};
+      const first=await service.upload(taskId,input,actor);
+      const firstAsset=await service.asset(first.id,taskId);
+      const firstBytes=await readFile(firstAsset.storage_path);
+      const normalizedSecondBytes=(await decodeReference(localPng,'image/png')).bytes.length;
+      const ids=[first.id];
+      const paths=[firstAsset.storage_path];
+      try {
+        for(let index=0;index<19;index++) {
+          const storagePath=resolve(root,'image-edits',String(taskId),`${randomUUID()}.png`);
+          await writeFile(storagePath,firstBytes);
+          const row=(await pool.query(`INSERT INTO assets(task_id,image_run_id,media_type,byte_size,sha256,storage_path,
+            original_name,image_production_chain_id,artifact_key,origin_image_run_id,active,asset_role,edit_metadata)
+            VALUES($1,$2,'image/png',$3,$4,$5,$6,$2,$7,$2,false,'REFERENCE',$8) RETURNING id`,
+          [taskId,runId,firstAsset.byte_size,first.sha256,storagePath,`legacy-${index}.png`,randomUUID(),firstAsset.edit_metadata])).rows[0];
+          ids.push(Number(row.id));
+          paths.push(storagePath);
+        }
+        await pool.query('UPDATE assets SET byte_size=$2 WHERE id=$1',
+          [first.id,100*1024*1024-19*Number(firstAsset.byte_size)-normalizedSecondBytes+1]);
+        try {
+          await assert.rejects(service.upload(taskId,{...input,base64:localPng.toString('base64')},actor),
+            /任务参考图存储已达上限/u);
+        } finally {await pool.query('UPDATE assets SET byte_size=$2 WHERE id=$1',[first.id,firstAsset.byte_size]);}
+        const distinct=await service.upload(taskId,{...input,base64:localPng.toString('base64')},actor);
+        ids.push(distinct.id);
+        paths.push((await service.asset(distinct.id,taskId)).storage_path);
+        const reused=await service.upload(taskId,{...input,base64:localPng.toString('base64')},actor);
+        assert.equal(reused.id,distinct.id);
+        const counts=(await pool.query(`SELECT count(*)::int AS assets,count(DISTINCT sha256)::int AS images
+          FROM assets WHERE task_id=$1 AND asset_role='REFERENCE' AND content_cleared_at IS NULL`,[taskId])).rows[0];
+        assert.deepEqual(counts,{assets:21,images:2});
+      } finally {
+        for(const [index,id] of ids.entries()) {
+          const deleted=await service.deleteReference(taskId,id,actor);
+          assert.equal(deleted.cleanupPending,false);
+          await assert.rejects(readFile(paths[index]),{code:'ENOENT'});
+        }
+      }
+    });
+    await t.test('a failed physical deletion remains queued and can be retried',async()=>{
+      const uploaded=await service.upload(taskId,{base64:png.toString('base64'),mediaType:'image/png',purpose:'重试验证',source:'测试自有照片'},actor);
+      const path=(await service.asset(uploaded.id,taskId)).storage_path;
+      await pool.query('UPDATE assets SET storage_path=$2 WHERE id=$1',[uploaded.id,resolve(root,'invalid-reference.png')]);
+      const deleted=await service.deleteReference(taskId,uploaded.id,actor);
+      assert.equal(deleted.cleanupPending,true);
+      assert.ok((await readFile(path)).length>0);
+      const job=(await pool.query('SELECT attempts,last_error FROM image_reference_cleanup_jobs WHERE asset_id=$1',[uploaded.id])).rows[0];
+      assert.equal(job.attempts,1);
+      assert.ok(job.last_error);
+      await pool.query('UPDATE assets SET storage_path=$2 WHERE id=$1',[uploaded.id,path]);
+      await pool.query('UPDATE image_reference_cleanup_jobs SET storage_path=$2,next_attempt_at=clock_timestamp() WHERE asset_id=$1',[uploaded.id,path]);
+      assert.deepEqual(await drainReferenceCleanup(pool,root,{assetId:uploaded.id}),{processed:1,failed:0});
+      await assert.rejects(readFile(path),{code:'ENOENT'});
+    });
+    await t.test('legacy cancelled references are found by the backfill sweep',async()=>{
+      const uploaded=await service.upload(taskId,{base64:png.toString('base64'),mediaType:'image/png',purpose:'旧数据补扫',source:'测试自有照片'},actor);
+      const path=(await service.asset(uploaded.id,taskId)).storage_path;
+      const bytes=await readFile(path);
+      const draft=await service.create(taskId,request({operation:'COMPOSITE',draft:true,
+        references:[{assetId:uploaded.id,x:200,y:500,width:100,height:100}]}),actor);
+      await action(draft.id,'cancel');
+      await writeFile(path,bytes);
+      await pool.query('DELETE FROM image_reference_cleanup_jobs WHERE asset_id=$1',[uploaded.id]);
+      await pool.query('UPDATE assets SET content_cleared_at=NULL WHERE id=$1',[uploaded.id]);
+      const swept=await backfillEligibleReferenceCleanup(pool,{limitTasks:100});
+      assert.ok(swept.scheduled>=1);
+      assert.ok((await pool.query('SELECT content_cleared_at FROM assets WHERE id=$1',[uploaded.id])).rows[0].content_cleared_at);
+      assert.deepEqual(await drainReferenceCleanup(pool,root,{assetId:uploaded.id}),{processed:1,failed:0});
+      await assert.rejects(readFile(path),{code:'ENOENT'});
+    });
+    await t.test('a shared reference remains until its last unfinished request is cancelled',async()=>{
+      const shared=await service.upload(taskId,{base64:png.toString('base64'),mediaType:'image/png',purpose:'共享参考',source:'测试自有照片'},actor);
+      const path=(await service.asset(shared.id,taskId)).storage_path;
+      const draft=()=>service.create(taskId,request({operation:'COMPOSITE',draft:true,
+        references:[{assetId:shared.id,x:200,y:500,width:100,height:100}]}),actor);
+      const firstDraft=await draft(),secondDraft=await draft();
+      const unchanged=await service.upload(taskId,{base64:png.toString('base64'),mediaType:'image/png',
+        purpose:'同图替换',source:'测试自有照片',replaceAssetId:shared.id},actor);
+      assert.equal(unchanged.id,shared.id);
+      assert.equal(unchanged.oldReferenceRetained,false);
+      const existing=await service.upload(taskId,{base64:localPng.toString('base64'),mediaType:'image/png',
+        purpose:'可复用的新图',source:'测试自有照片'},actor);
+      const replacement=await service.upload(taskId,{base64:localPng.toString('base64'),mediaType:'image/png',
+        purpose:'仍在使用的参考图替换',source:'测试自有照片',replaceAssetId:shared.id},actor);
+      assert.equal(replacement.id,existing.id);
+      assert.equal(replacement.oldReferenceRetained,true);
+      assert.ok((await readFile(path)).length>0);
+      await service.deleteReference(taskId,replacement.id,actor);
+      await assert.rejects(service.deleteReference(taskId,shared.id,actor),{code:'IMAGE_REFERENCE_IN_USE'});
+      await action(firstDraft.id,'cancel');
+      assert.equal((await pool.query('SELECT content_cleared_at FROM assets WHERE id=$1',[shared.id])).rows[0].content_cleared_at,null);
+      assert.ok((await readFile(path)).length>0);
+      await action(secondDraft.id,'cancel');
+      assert.ok((await pool.query('SELECT content_cleared_at FROM assets WHERE id=$1',[shared.id])).rows[0].content_cleared_at);
+      await assert.rejects(readFile(path),{code:'ENOENT'});
+    });
+    await t.test('rejecting a finished edit removes only its reference, not the generated result',async()=>{
+      const reference=await service.upload(taskId,{base64:png.toString('base64'),mediaType:'image/png',purpose:'结果参考',source:'测试自有照片'},actor);
+      const referencePath=(await service.asset(reference.id,taskId)).storage_path;
+      const edit=await service.create(taskId,request({operation:'COMPOSITE',
+        references:[{assetId:reference.id,x:200,y:500,width:100,height:100}]}),actor);
+      const claim=await service.claim('reference-cleanup-result');
+      assert.equal(claim.id,edit.id);
+      const completed=await service.complete(claim,{bytes:disclosurePng,validation:{passed:true,
+        integrity:{sha256:imageHash(disclosurePng)}}});
+      const result=(await pool.query('SELECT storage_path FROM assets WHERE id=$1',[completed.assetId])).rows[0];
+      assert.deepEqual(await readFile(result.storage_path),disclosurePng);
+      await action(edit.id,'reject');
+      assert.ok((await pool.query('SELECT content_cleared_at FROM assets WHERE id=$1',[reference.id])).rows[0].content_cleared_at);
+      await assert.rejects(readFile(referencePath),{code:'ENOENT'});
+      assert.deepEqual(await readFile(result.storage_path),disclosurePng);
+      assert.equal((await pool.query('SELECT status FROM image_runs WHERE id=$1',[completed.imageRunId])).rows[0].status,'COMPLETED');
     });
     await t.test('an unconfirmed AI draft saves without cost and requires confirmation when queued',async()=>{
       const draft=await service.create(taskId,request({confirmation:undefined,draft:true}),actor);
@@ -617,7 +802,24 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
         await pool.query('UPDATE tasks SET current_copy_revision_id=$2,current_image_run_id=$3 WHERE id=$1', [id, copy.id, sourceRunId]);
         await pool.query(`UPDATE tasks SET image_qc_released_approval_event_id=$2,image_qc_legacy_accepted=$3,
           image_reviewed_at=now(),image_reviewed_by_user_id=$4 WHERE id=$1`, [id, approvalId, legacy, actor.username]);
+        const reference = await service.upload(id, { base64: png.toString('base64'), mediaType: 'image/png',
+          purpose: '交付前上传', source: '测试自有照片' }, adminActor);
+        const referencePath = (await service.asset(reference.id, id)).storage_path;
         const delivery = await createReadyDeliveryEntry(pool, { taskId: id, copyRevisionId: Number(copy.id), imageRunId: sourceRunId, actor: adminActor });
+        assert.ok((await pool.query('SELECT content_cleared_at FROM assets WHERE id=$1', [reference.id])).rows[0].content_cleared_at);
+        assert.equal((await pool.query('SELECT count(*)::integer AS count FROM image_reference_cleanup_jobs WHERE asset_id=$1', [reference.id])).rows[0].count, 1);
+        assert.deepEqual(await drainReferenceCleanup(pool, root, { taskId: id }), { processed: 1, failed: 0 });
+        await assert.rejects(readFile(referencePath), { code: 'ENOENT' });
+        const deliveryAssetPath = (await pool.query('SELECT storage_path FROM assets WHERE id=$1', [sourceImages[1].assetId])).rows[0].storage_path;
+        assert.deepEqual(await readFile(deliveryAssetPath), png);
+        const laterReference = await service.upload(id, { base64: png.toString('base64'), mediaType: 'image/png',
+          purpose: '交付后新修改', source: '测试自有照片' }, adminActor);
+        const laterPath = (await service.asset(laterReference.id, id)).storage_path;
+        await pool.query('UPDATE assets SET created_at=$2 WHERE id=$1', [laterReference.id, delivery.created_at]);
+        await backfillEligibleReferenceCleanup(pool, { limitTasks: 100 });
+        assert.equal((await pool.query('SELECT content_cleared_at FROM assets WHERE id=$1', [laterReference.id])).rows[0].content_cleared_at, null);
+        assert.ok((await readFile(laterPath)).length > 0);
+        await service.deleteReference(id, laterReference.id, adminActor);
         await pool.query(`UPDATE delivery_entries SET preview_id=$2,preview_note_id=$3,
           preview_content_hash=$4,preview_status='PUBLISHED',preview_uploaded_by_account_id=$5,
           preview_uploaded_by_username=$6,preview_published_at=now() WHERE id=$1`,

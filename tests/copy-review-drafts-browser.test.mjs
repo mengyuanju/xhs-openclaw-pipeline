@@ -26,7 +26,7 @@ test('copy review drafts use IndexedDB across reloads, account and revision scop
       import {Toaster} from './components/ui/sonner';
       const accountId=Number(new URLSearchParams(location.search).get('account')||7);
       createRoot(document.getElementById('root')).render(<ConfirmDialogProvider><TextInputDialogProvider>
-        <BackgroundTasksProvider accountKey={'draft-browser-'+accountId}>
+        <BackgroundTasksProvider accountKey={'draft-browser-'+accountId} accountUsername="reviewer" accountId={accountId}>
           <TaskReviewDialog taskId={41} nodeId="fixture" role="USER" currentUsername="reviewer"
             currentAccountId={accountId} embedded onOpenChange={()=>{}} onUpdated={async()=>{}}/>
           <Toaster/>

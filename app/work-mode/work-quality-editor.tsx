@@ -19,6 +19,7 @@ import { CopyQaReasonPicker } from '../copy-qa/copy-qa-reason-picker';
 import type { ImageQaItem } from '../image-qa/types';
 import { useHumanQualitySettings } from '../workbench/human-quality-settings';
 import { WORK_LABELS, type WorkItem } from './types';
+import { PreviousReturnNotice } from './previous-return-notice';
 import styles from './work-mode.module.css';
 
 const apiPath = (path: string) => `/api/control-plane${path}`;
@@ -52,6 +53,7 @@ export function WorkQualityEditor({ item, navigationGuardRef, onSkip, onComplete
   const imageMode = item.kind === 'IMAGE_QA';
   const qa = item.qa!;
   const copyItem = imageMode ? null : qa as CopyQaItem;
+  const copyV2 = copyItem?.qaVersion === 2;
   const imageItem = imageMode ? qa as ImageQaItem : null;
   const copy = copyItem ? copyRevisionView(copyItem.approvedRevision.content) : null;
   const { settings, loading: settingsLoading, error: settingsError, refresh } = useHumanQualitySettings();
@@ -103,9 +105,14 @@ export function WorkQualityEditor({ item, navigationGuardRef, onSkip, onComplete
         if (settings.imageReviewDisplay.showDeductionReasons && settings.imageReasons.length && !reasons.length) { setError('至少选择一项返工原因。'); return; }
         if (target !== 'COPY' && !problemAssets.length) { setError('请选择至少一张问题图片。'); return; }
         if (target !== 'IMAGE' && !copyFields.length) { setError('请选择需要返工的文案字段。'); return; }
-      } else if (recommendation === 'DISCARD' && !note.trim()) { setError('建议废弃时请填写明确原因。'); return; }
+      } else if (!copyV2 && recommendation === 'DISCARD' && !note.trim()) { setError('建议废弃时请填写明确原因。'); return; }
     }
-    const payload = copyItem ? {
+    const payload = copyV2 && copyItem ? {
+      decision: returned ? 'RETURN' : 'PASS',
+      revisionToken: copyItem.approvedRevision.revisionToken,
+      note: returned ? note.trim() : '',
+      reasonCodes: returned ? reasons : [],
+    } : copyItem ? {
       expectedRevisionToken: copyItem.approvedRevision.revisionToken,
       ...(returned ? { reasonCodes: reasons, note: note.trim(), recommendedDisposition: recommendation } : {}),
     } : returned ? { score: Number(score), reworkTarget: target, reasonCodes: reasons, note: note.trim(),
@@ -116,7 +123,8 @@ export function WorkQualityEditor({ item, navigationGuardRef, onSkip, onComplete
     if (mutation.current?.fingerprint !== fingerprint) mutation.current = { fingerprint, requestId: createRequestId() };
     submitting.current = true; setBusy(true); setError('');
     try {
-      await apiRequest(apiPath(`/v1/${imageMode ? 'image' : 'copy'}-qa/items/${encodeURIComponent(item.id)}/${action}`), {
+      await apiRequest(apiPath(copyV2 ? `/v2/copy-qa/items/${encodeURIComponent(item.id)}/decision`
+        : `/v1/${imageMode ? 'image' : 'copy'}-qa/items/${encodeURIComponent(item.id)}/${action}`), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...payload, requestId: mutation.current.requestId }),
       });
@@ -146,13 +154,14 @@ export function WorkQualityEditor({ item, navigationGuardRef, onSkip, onComplete
             if (!marked) { if (target === 'COPY') setTarget('IMAGE'); beginReturn(); }
           }}>{problemAssets.includes(currentAsset.id) ? '取消当前页问题标记' : '标记当前页有问题'}</Button>}
       </div>}
-      {!imageMode && <p className={styles.qualityHelp}>核对文案与逐页规划；强制复检不通过时提交管理员处理。</p>}
+      {!imageMode && <p className={styles.qualityHelp}>核对文案与逐页规划；强制复检不通过时由系统提交管理员处理。</p>}
       {imageItem && !qa.blindReview && qa.query && <Disclosure className={styles.qualityQuery}>
         <DisclosureTrigger><strong>原始 Query</strong><span>{qa.query}</span></DisclosureTrigger>
         <DisclosureContent><p>{qa.query}</p></DisclosureContent>
       </Disclosure>}
       {imageItem && imageItem.blockers.pendingImageEdits > 0 && <p className={`notice warning ${styles.qualityHeaderNotice}`} role="status">图片仍有未完成的编辑，处理完成后才能通过质检。</p>}
     </header>
+    {qa.sampleKind === 'MANDATORY_RECHECK' && <PreviousReturnNotice previousReturn={qa.previousReturn} compact={returning} />}
     <nav className={styles.qualityPaneSwitch} aria-label="切换质检内容">
       <Button unstyled aria-controls={contentId} aria-pressed={mobilePane === 'content'} onClick={() => setMobilePane('content')}>{imageMode ? '查看图片' : '查看文案'}</Button>
       <Button unstyled aria-controls={decisionId} aria-pressed={mobilePane === 'decision'} onClick={() => setMobilePane('decision')}>{imageMode ? '质检操作' : '规划与质检'}</Button>
@@ -198,10 +207,10 @@ export function WorkQualityEditor({ item, navigationGuardRef, onSkip, onComplete
             </div>)}
           </fieldset>}
           {settingsError && <p role="alert">{settingsError}<Button unstyled className="button small" onClick={() => void refresh()}>重试配置</Button></p>}</>}
-        {!imageMode && <label>处理建议<Select value={recommendation} onValueChange={setRecommendation} disabled={busy}><SelectTrigger aria-label="处理建议"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="REWORK">修改后复检</SelectItem><SelectItem value="DISCARD">建议负责人废弃</SelectItem></SelectContent></Select></label>}
+        {!imageMode && !copyV2 && <label>处理建议<Select value={recommendation} onValueChange={setRecommendation} disabled={busy}><SelectTrigger aria-label="处理建议"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="REWORK">修改后复检</SelectItem><SelectItem value="DISCARD">建议负责人废弃</SelectItem></SelectContent></Select></label>}
         {imageMode && settings?.imageReviewDisplay.showDeductionReasons && <fieldset className={styles.qualityReasonOptions} disabled={busy}><legend>问题原因</legend>{reasonOptions.map(([code, label]) => <label key={code}><Checkbox checked={reasons.includes(code)} onChange={() => setReasons(toggle(reasons, code))} />{label}</label>)}</fieldset>}
         {!imageMode && <CopyQaReasonPicker selected={reasons} onChange={(value) => { setReasons(value); setError(''); }} disabled={busy} />}
-        <label>{imageMode ? '具体问题与修改要求' : `详细说明${recommendation === 'DISCARD' ? '（建议废弃时必填）' : '（选填）'}`}<Textarea rows={imageMode ? 3 : 4} value={note} disabled={busy} onChange={e => setNote(e.target.value)} placeholder={imageMode ? '请说明需要修改的位置和内容' : '可选：补充具体句子、页码或修改要求'} /></label>
+        <label>{imageMode ? '具体问题与修改要求' : `详细说明${!copyV2 && recommendation === 'DISCARD' ? '（建议废弃时必填）' : '（选填）'}`}<Textarea rows={imageMode ? 3 : 4} value={note} disabled={busy} onChange={e => setNote(e.target.value)} placeholder={imageMode ? '请说明需要修改的位置和内容' : '可选：补充具体句子、页码或修改要求'} /></label>
       </section>}
       {copy && <QualityCopyPlan pages={copy.imagePlan} />}
       </aside>
@@ -209,7 +218,7 @@ export function WorkQualityEditor({ item, navigationGuardRef, onSkip, onComplete
     <footer className={styles.qualityFooter}>{error && <div className="notice error" role="alert">{error}</div>}
       <span>{item.rework ? '当前版本须通过强制复检' : '本次结论绑定当前待检版本'}</span><div>
         <Button unstyled className="button" disabled={busy} onClick={onSkip}>暂跳过</Button>
-        {!imageMode && qa.capabilities.canEscalate && <QaEscalateButton stage="COPY" itemId={item.id}
+        {!imageMode && !copyV2 && qa.capabilities.canEscalate && <QaEscalateButton stage="COPY" itemId={item.id}
           revisionToken={copyItem?.approvedRevision.revisionToken ?? ''} disabled={busy}
           onBusyChange={value => { submitting.current = value; setBusy(value); }}
           onCompleted={() => onCompleted(qa.anonymousCode + ' 已提交管理员。')} />}

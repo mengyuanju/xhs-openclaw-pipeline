@@ -37,11 +37,42 @@ test('image QA server ignores blind redaction for administrators only', () => {
   assert.equal(admin.query, '玄关收纳');
   assert.equal(admin.productionBatch.queryPackageName, '九月选题');
   assert.equal(admin.submitter.username, 'worker');
+  assert.equal(admin.previousReturn, null);
 
   assert.equal(reviewer.blindReview, true);
+  assert.equal(reviewer.previousReturn, null);
   for (const key of ['taskId', 'query', 'productionBatch', 'submitter', 'imageRunId', 'copyRevisionId']) {
     assert.equal(Object.hasOwn(reviewer, key), false, key);
   }
+});
+
+test('blind image recheck exposes only its direct previous return summary', () => {
+  const row = {
+    ...databaseRow(), sample_kind: 'MANDATORY_RECHECK',
+    previous_return: {
+      reasonCodes: ['TEXT_ERROR', 'LEGACY_REASON'],
+      reasonSnapshots: [{ code: 'TEXT_ERROR', label: '画面文字错误' }],
+      note: '请重做第 2 张', returnedAt: '2026-09-24T05:00:00.000Z',
+      reworkTarget: 'BOTH', problemPages: [2, 2, 1], copyFields: ['TITLE'],
+      taskId: 123, query: 'must stay hidden', submitterUsername: 'must stay hidden',
+    },
+  };
+  const reviewer = imageQaItemFrom(row, { userId: 91, username: 'reviewer', role: 'REVIEWER' });
+  assert.deepEqual(reviewer.previousReturn, {
+    reasonLabels: ['画面文字错误', 'LEGACY_REASON'],
+    note: '请重做第 2 张', returnedAt: '2026-09-24T05:00:00.000Z',
+    reworkTarget: 'BOTH', problemPages: [1, 2], copyFields: ['TITLE'],
+  });
+  for (const key of ['taskId', 'query', 'productionBatch', 'submitter', 'imageRunId', 'copyRevisionId']) {
+    assert.equal(Object.hasOwn(reviewer, key), false, key);
+  }
+  assert.equal(JSON.stringify(reviewer).includes('must stay hidden'), false);
+  assert.equal(imageQaItemFrom({ ...row, sample_kind: 'RANDOM' }, {
+    userId: 91, username: 'reviewer', role: 'REVIEWER',
+  }).previousReturn, null);
+  assert.equal(imageQaItemFrom({ ...row, previous_return: null }, {
+    userId: 91, username: 'reviewer', role: 'REVIEWER',
+  }).previousReturn, null);
 });
 
 test('administrator can act on their own submitted image while reviewers still cannot', () => {

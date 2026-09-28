@@ -273,6 +273,8 @@ type TaskDetail = PriorityTask & {
 };
 type ImagePlanRegenerationJob = {
   id: string;
+  requestedByUsername: string;
+  requestedByAccountId: number;
   copyRevisionId: number;
   copy: Copy;
   status: 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'STALE';
@@ -1102,7 +1104,8 @@ export function TaskReviewDialog({
   useEffect(() => {
     const job = detail?.imagePlanRegeneration;
     if (job && backgroundStore && !backgroundStore.getSnapshot().some(task => task.id === job.id)) {
-      backgroundStore.track({ id:job.id,kind:'IMAGE_PLAN',taskId:detail.id,status:job.status,payload:job });
+      backgroundStore.track({ id:job.id,kind:'IMAGE_PLAN',taskId:detail.id,status:job.status,payload:job,
+        ownerUsername:job.requestedByUsername,ownerAccountId:job.requestedByAccountId });
     }
   },[detail,backgroundStore]);
   const canLoadCompletedPlan = Boolean(editable && completedPlan?.result?.imagePlan?.length
@@ -1466,7 +1469,8 @@ export function TaskReviewDialog({
         },
       );
       const job = queued.job;
-      backgroundStore.track({ id: job.id, kind: 'IMAGE_PLAN', taskId: detail.id, status: job.status, payload: job });
+      backgroundStore.track({ id: job.id, kind: 'IMAGE_PLAN', taskId: detail.id, status: job.status, payload: job,
+        ownerUsername: job.requestedByUsername, ownerAccountId: job.requestedByAccountId });
       toast.info('文案规划已提交，可以关闭窗口。完成或失败后会在“后台任务”中提醒。');
       if (imagePlanGenerationRequestRef.current !== generationSequence) return;
       autoLoadPlanIdRef.current = job.id;

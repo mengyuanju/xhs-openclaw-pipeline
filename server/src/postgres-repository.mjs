@@ -42,7 +42,7 @@ import { changeLayoutCatalog, layoutCatalogRecord } from './layout-catalog-setti
 import { parseVisualPlanOutput } from '../../src/visual-plan.mjs';
 import { assertLockedImageText, imageTextHash } from '../../src/locked-image-plan.mjs';
 import { migrateDatabase, loadMigrations, pendingMigrations } from './database-migrations.mjs';
-import { autoCreateCopyQaBatchesV2 } from './copy-qa-v2.mjs';
+import { autoCreateCopyQaBatchesV2, listCopyQaWorkItemsV2 } from './copy-qa-v2.mjs';
 import { claimRequestExpiry } from './claim-request.mjs';
 import { saveModelCall, listModelCalls, getModelCall } from './model-call-traces.mjs';
 import { hashUserPassword, verifyUserPassword } from './user-auth.mjs';
@@ -1679,6 +1679,7 @@ export class PostgresControlPlaneRepository {
     return getProductionBatchSamplingReadiness(this.pool, id, actor);
   }
   listCopyQaItems(options, { actor } = {}) { return listCopyQaItems(this.pool, options, actor); }
+  listCopyQaWorkItemsV2(options, { actor } = {}) { return listCopyQaWorkItemsV2(this.pool, options, actor); }
   escalateQualityToAdmin(stage, id, input, { actor, storageRoot } = {}) { return escalateQualityToAdmin(this.pool, stage, id, input, actor, { storageRoot }); }
   restoreReassignmentCase(id, input, { actor } = {}) { return restoreReassignmentCase(this.pool, id, input, actor); }
   regenerateReassignmentBaseline(id, input, { actor } = {}) { return regenerateReassignmentBaseline(this.pool, id, input, actor); }

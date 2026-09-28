@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 
-import { autoCreateCopyQaBatchesV2, createCopyQaBatchV2, decideCopyQaItemV2 } from '../src/copy-qa-v2.mjs';
+import { autoCreateCopyQaBatchesV2, createCopyQaBatchV2, decideCopyQaItemV2,
+  listCopyQaWorkItemsV2, routeCopyApprovalV2 } from '../src/copy-qa-v2.mjs';
 import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 import { startTemporaryPostgres18 } from './helpers/personal-postgres.mjs';
 
@@ -77,13 +78,40 @@ test('manual and automatic batches select mandatory legacy candidates and refuse
     assert.equal(protectedMember.full_inspection,true);
     await decideCopyQaItemV2(db,returnedMember.public_id,{
       requestId:randomUUID(),revisionToken:returnedMember.content_sha256,
-      decision:'RETURN',note:'普通成员质检打回',
+      decision:'RETURN',reasonCodes:['TITLE_AI_TONE'],note:'普通成员质检打回',
     },reviewer);
     assert.equal((await member(protectedTask)).status,'PENDING');
     assert.equal((await member(protectedTask)).batch_status,'INSPECTING',
       'the return threshold cannot auto-return an unreviewed mandatory member');
     assert.equal((await db.query('SELECT state FROM tasks WHERE id=$1',
       [protectedTask])).rows[0].state,'COPY_QC_PENDING');
+
+    // Approving an actual edit after a V2 return creates a dedicated recheck.
+    const returnedTaskRow=(await db.query('SELECT * FROM tasks WHERE id=$1',[returnedTask])).rows[0];
+    assert.equal(returnedTaskRow.copy_qa_rework_pending,true);
+    assert.equal(returnedTaskRow.mandatory_copy_qc,false);
+    const editedRevision=(await db.query(`INSERT INTO copy_revisions(task_id,revision,content,
+      parent_revision_id,revision_origin,approved_at,copy_rework_satisfied)
+      VALUES($1,3,$2,$3,'COPY_EDIT',now(),true) RETURNING *`,[returnedTask,
+      {copy:{title:'修正标题',body:'已修改正文',tags:[]},imagePlan:[]},
+      returnedTaskRow.current_copy_revision_id])).rows[0];
+    const approval=(await db.query(`INSERT INTO copy_approval_events(task_id,copy_revision_id,
+      approval_mode,approved_by_account_id,approved_by_username,content_sha256)
+      VALUES($1,$2,'MANUAL',$3,$4,$5) RETURNING *`,[returnedTask,editedRevision.id,
+      worker.userId,worker.username,'b'.repeat(64)])).rows[0];
+    await routeCopyApprovalV2(db,{task:returnedTaskRow,revision:editedRevision,approval,
+      actor:worker,aiDisclosureEnabled:true});
+    const recheck=await member(returnedTask);
+    assert.notEqual(recheck.id,returnedMember.id);
+    assert.equal(recheck.selected,true);
+    const queue=await listCopyQaWorkItemsV2(db,{sampleKind:'MANDATORY_RECHECK'},reviewer);
+    const recheckItem=queue.items.find(item=>item.id===recheck.public_id);
+    assert.ok(recheckItem);
+    assert.deepEqual(recheckItem.previousReturn.reasonLabels,['标题 · AI感严重']);
+    assert.equal(recheckItem.previousReturn.note,'普通成员质检打回');
+    assert.ok(recheckItem.previousReturn.returnedAt);
+    assert.equal((await listCopyQaWorkItemsV2(db,{sampleKind:'RANDOM'},reviewer)).items
+      .some(item=>item.id===recheck.public_id),false);
 
     const guarded=await candidate();
     const ordinary=await candidate({mandatory:false});

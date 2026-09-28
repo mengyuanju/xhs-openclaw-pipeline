@@ -14,10 +14,10 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
   const png=await sharp({create:{width:1086,height:1448,channels:4,background:'#e6f0ec'}}).png().toBuffer();
   const workspace={id:501,title:'独立上传图片',runId:randomUUID(),copyRevisionId:91,
     assets:[{id:601,sha256:'a'.repeat(64),url:'/v1/image-editor/assets/601'}],runs:[]};
-  let server,browser,uploaded=false,edits=[],submitted,submissionCount=0,failSubmission=false,extraRows=[],batchSubmissions=0;
+  let server,browser,uploaded=false,edits=[],submitted,submissionCount=0,failSubmission=false,extraRows=[],batchSubmissions=0,batchPayload,acceptedBatchPayload,individualAcceptCalls=0;
   const deleted=new Set(),deletions=[];
   try {
-    await build({stdin:{contents:`import './app/globals.css';import React from 'react';import{createRoot}from'react-dom/client';import{ConfirmDialogProvider}from'./components/ui/confirm-dialog';import{ImageEditorWorkbench}from'./app/image-editor/workbench';import{BackgroundTasksProvider,BackgroundTaskNotifications}from'./app/components/background-tasks';import{Toaster}from'./components/ui/sonner';createRoot(document.getElementById('root')).render(<ConfirmDialogProvider><BackgroundTasksProvider accountKey="browser-test"><ImageEditorWorkbench/><BackgroundTaskNotifications/><Toaster/></BackgroundTasksProvider></ConfirmDialogProvider>);`,resolveDir:process.cwd(),loader:'tsx'},bundle:true,outfile:join(root,'bundle.js'),jsx:'automatic',platform:'browser',conditions:['style'],alias:{'@':process.cwd()},define:{'process.env.NODE_ENV':'"test"','process.env':'{}'}});
+    await build({stdin:{contents:`import './app/globals.css';import React from 'react';import{createRoot}from'react-dom/client';import{ConfirmDialogProvider}from'./components/ui/confirm-dialog';import{ImageEditorWorkbench}from'./app/image-editor/workbench';import{BackgroundTasksProvider,BackgroundTaskNotifications}from'./app/components/background-tasks';import{Toaster}from'./components/ui/sonner';createRoot(document.getElementById('root')).render(<ConfirmDialogProvider><BackgroundTasksProvider accountKey="browser-test" accountUsername="本人" accountId={8}><ImageEditorWorkbench/><BackgroundTaskNotifications/><Toaster/></BackgroundTasksProvider></ConfirmDialogProvider>);`,resolveDir:process.cwd(),loader:'tsx'},bundle:true,outfile:join(root,'bundle.js'),jsx:'automatic',platform:'browser',conditions:['style'],alias:{'@':process.cwd()},define:{'process.env.NODE_ENV':'"test"','process.env':'{}'}});
     const [js,rawCss]=await Promise.all([readFile(join(root,'bundle.js')),readFile(join(root,'bundle.css'),'utf8')]);
     const {default:postcss}=await import('postcss'),{default:tailwind}=await import('@tailwindcss/postcss');
     const {css}=await postcss([tailwind()]).process(rawCss,{from:join(process.cwd(),'app/globals.css')});
@@ -33,18 +33,26 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
         else if(path==='/v1/image-editor/workspaces'&&req.method==='POST'){uploaded=true;deleted.delete(workspace.id);assert.equal(data.images.length,workspace.assets.length);result={...workspace,status:'UPLOADED'};}
         else if(path==='/v1/image-editor/workspaces'){assert.equal(new URL(req.url,'http://localhost').searchParams.get('queue'),'true');const items=[...(edits.length?[{id:501,title:workspace.title,owner:'本人',status:edits[0].status,error:edits[0].error}]:[]),...extraRows].filter(item=>!deleted.has(item.id));result={total:items.length,items};}
         else if(path.startsWith('/v1/image-editor/edits/')) {
-          const edit=edits.find(item=>path.endsWith(item.id));
+          const edit=edits.find(item=>path.endsWith(item.id)||path.endsWith(`${item.id}/accept`));
           if(!edit){res.statusCode=404;result=null;}
+          else if(path.endsWith('/accept')&&req.method==='POST') {individualAcceptCalls+=1;edit.status='ACCEPTED';result=edit;}
           else result=deleted.has(501)?{id:edit.id,task_id:501,status:'DELETED'}:edit;
         }
         else if(path==='/v1/image-editor/workspaces/501')result={...workspace,status:edits[0]?.status??'UPLOADED'};
         else if(path==='/v1/image-editor/workspaces/501/image-edits/batch') {
-          batchSubmissions+=1;assert.equal(data.edits.length,2);
-          const created=data.edits.map(item=>({id:randomUUID(),status:'QUEUED',version:1,attempts:0,operation:item.operation,target_page:item.targetPage,source_asset_id:item.sourceAssetId,created_by:'本人',config:item,result:null}));
+          batchSubmissions+=1;batchPayload=data;assert.equal(data.edits.length,2);
+          const created=data.edits.map(item=>({id:randomUUID(),status:'QUEUED',version:1,attempts:0,operation:item.operation,target_page:item.targetPage,source_asset_id:item.sourceAssetId,created_by:'本人',created_by_account_id:8,config:item,result:null}));
           edits=[...created,...edits];result=created;
         }
+        else if(/^\/v1\/image-editor\/workspaces\/501\/image-edits\/batch\/.+\/accept$/u.test(path)) {
+          acceptedBatchPayload=data;
+          assert.equal(data.edits.length,2);
+          assert.equal(data.imageRunId,workspace.runId);
+          for(const edit of edits.filter(item=>data.edits.some(selected=>selected.id===item.id)))edit.status='ACCEPTED';
+          result={imageRunId:randomUUID(),processed:2};
+        }
         else if(path==='/v1/image-editor/workspaces/501/image-edits') {
-          if(req.method==='POST'){submissionCount+=1;if(failSubmission){res.statusCode=503;res.setHeader('content-type','application/json');res.end(JSON.stringify({error:{code:'UNAVAILABLE',message:'暂时无法提交'}}));return;}submitted=data;edits=[{id:randomUUID(),status:'QUEUED',version:1,attempts:0,operation:data.operation,target_page:1,source_asset_id:601,created_by:'本人',config:data,result:null},...edits];result=edits[0];}
+          if(req.method==='POST'){submissionCount+=1;if(failSubmission){res.statusCode=503;res.setHeader('content-type','application/json');res.end(JSON.stringify({error:{code:'UNAVAILABLE',message:'暂时无法提交'}}));return;}submitted=data;edits=[{id:randomUUID(),status:'QUEUED',version:1,attempts:0,operation:data.operation,target_page:data.targetPage,source_asset_id:data.sourceAssetId,created_by:'本人',created_by_account_id:8,config:data,result:null},...edits];result=edits[0];}
           else result=edits;
         }else {res.statusCode=404;result=null;}
         res.setHeader('content-type','application/json');res.end(JSON.stringify({data:result}));return;
@@ -156,16 +164,62 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
     assert.deepEqual(deletions[1],[501,502]);
     await page.getByRole('button',{name:'新增图片',exact:true}).click();
     assert.equal(await page.getByRole('region',{name:'图片编辑组件'}).count(),0,'new upload clears the previous editor');
-    edits=[];workspace.assets.push({id:603,sha256:'c'.repeat(64),url:'/v1/image-editor/assets/603'});
-    await page.getByLabel('上传待编辑图片',{exact:true}).setInputFiles([{name:'one.png',mimeType:'image/png',buffer:png},{name:'two.png',mimeType:'image/png',buffer:png}]);
+    edits=[];workspace.assets.push({id:603,sha256:'c'.repeat(64),url:'/v1/image-editor/assets/603'},{id:604,sha256:'d'.repeat(64),url:'/v1/image-editor/assets/604'});
+    await page.getByLabel('上传待编辑图片',{exact:true}).setInputFiles([{name:'one.png',mimeType:'image/png',buffer:png},{name:'two.png',mimeType:'image/png',buffer:png},{name:'three.png',mimeType:'image/png',buffer:png}]);
     await page.getByRole('region',{name:'图片编辑组件'}).waitFor();
     await page.getByRole('button',{name:'程序叠加（SVG + Sharp）',exact:true}).click();
-    await page.getByRole('button',{name:'整套 2 张',exact:true}).click();
-    await page.getByRole('button',{name:'保存并提交生图',exact:true}).click();
+    assert.equal(await page.getByLabel('选择第 1 页').isChecked(),true,'current page is selected by default');
+    await page.getByRole('button',{name:'预览第 2 页',exact:true}).click();
+    assert.equal(await page.getByLabel('选择第 2 页').isChecked(),false,'previewing does not select a page');
+    assert.equal(await page.getByLabel('选择第 1 页').isChecked(),true);
+    await page.getByLabel('选择第 3 页').check();
+    await page.getByRole('button',{name:'生成已选 2 张程序标识预览',exact:true}).click();
     await page.getByRole('dialog').waitFor({state:'hidden'});
     await list.getByText('待生图',{exact:true}).waitFor();
-    assert.equal(batchSubmissions,1,'all pages are submitted in one atomic request');
-    assert.deepEqual(edits.map(edit=>edit.target_page),[1,2]);
+    assert.equal(batchSubmissions,1,'selected pages are submitted in one atomic request');
+    assert.deepEqual(batchPayload.edits.map(edit=>[edit.targetPage,edit.batchSize,edit.sourceAssetId]),[[1,2,601],[3,2,604]]);
+    assert.deepEqual(edits.map(edit=>edit.target_page),[1,3]);
+    edits=edits.map(edit=>({...edit,status:'PREVIEW_READY',result:{asset_id:edit.source_asset_id+100,image_run_id:randomUUID(),validation:{passed:true}}}));
+    await list.getByRole('button',{name:'刷新',exact:true}).click();
+    await list.getByRole('button',{name:'查看 / 编辑',exact:true}).click();
+    await page.getByRole('tab',{name:/编辑记录/u}).click();
+    await page.getByRole('button',{name:'查看第 3 页预览待确认',exact:true}).click();
+    assert.equal(await page.getByRole('region',{name:'图片预览'}).locator('img').first().getAttribute('src'),'/api/control-plane/v1/image-editor/assets/604');
+    await page.getByRole('region',{name:'已选标识批次状态'}).getByRole('button',{name:'一次采用已选 2 张',exact:true}).click();
+    await page.getByLabel('已选标识采用原因').fill('预览符合要求');
+    await page.getByRole('region',{name:'已选标识批次状态'}).getByRole('button',{name:'确认采用',exact:true}).click();
+    await page.getByRole('region',{name:'已选标识批次状态'}).getByRole('button',{name:'已采用 2 张标识',exact:true}).waitFor();
+    assert.deepEqual(acceptedBatchPayload.edits.map(edit=>edit.id).sort(),edits.map(edit=>edit.id).sort());
+    edits=[...edits.map((edit,index)=>({...edit,status:index===0?'PREVIEW_READY':'ACCEPTED',config:{...edit.config,batchSize:undefined}})),
+      {...edits[0],id:randomUUID(),target_page:2,source_asset_id:603,status:'ACCEPTED',config:{...edits[0].config,targetPage:2,sourceAssetId:603,batchSize:undefined}}];
+    await page.getByRole('button',{name:'关闭弹窗',exact:true}).click();
+    await list.getByRole('button',{name:'刷新',exact:true}).click();
+    await list.getByRole('button',{name:'查看 / 编辑',exact:true}).click();
+    await page.getByRole('tab',{name:/编辑记录/u}).click();
+    await page.getByRole('region',{name:'已选标识批次状态'}).getByRole('button',{name:'继续采用剩余 1 张',exact:true}).click();
+    await page.getByLabel('已选标识采用原因').fill('旧批次继续采用');
+    await page.getByRole('region',{name:'已选标识批次状态'}).getByRole('button',{name:'确认采用',exact:true}).click();
+    await page.getByRole('region',{name:'已选标识批次状态'}).getByRole('button',{name:'已采用 3 张标识',exact:true}).waitFor();
+    assert.equal(individualAcceptCalls,1,'a partially accepted legacy batch resumes only its pending page');
+    edits=edits.map(edit=>({...edit,status:'PREVIEW_READY'}));
+    await page.getByRole('button',{name:'关闭弹窗',exact:true}).click();
+    await list.getByRole('button',{name:'刷新',exact:true}).click();
+    await list.getByRole('button',{name:'查看 / 编辑',exact:true}).click();
+    await page.getByRole('tab',{name:/编辑记录/u}).click();
+    await page.getByRole('region',{name:'已选标识批次状态'}).getByRole('button',{name:'逐张采用旧批次 3 张',exact:true}).click();
+    await page.getByLabel('已选标识采用原因').fill('旧批次采用');
+    await page.getByRole('region',{name:'已选标识批次状态'}).getByRole('button',{name:'确认采用',exact:true}).click();
+    await page.getByRole('region',{name:'已选标识批次状态'}).getByRole('button',{name:'已采用 3 张标识',exact:true}).waitFor();
+    assert.equal(individualAcceptCalls,4,'a legacy batch without batchSize does not call atomic adoption');
+    await page.getByRole('tab',{name:'本次编辑',exact:true}).click();
+    await page.getByRole('button',{name:'清空',exact:true}).click();
+    assert.equal(await page.getByRole('button',{name:'生成已选 0 张程序标识预览',exact:true}).isDisabled(),true);
+    await page.getByLabel('选择第 2 页').check();
+    await page.getByRole('button',{name:'生成已选 1 张程序标识预览',exact:true}).click();
+    await page.getByRole('dialog').waitFor({state:'hidden'});
+    assert.equal(submitted.targetPage,2,'single selection uses its own page');
+    assert.equal(submitted.sourceAssetId,603,'single selection uses the matching source asset');
+    assert.equal(batchSubmissions,1,'single selection does not create a batch');
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true);
     assert.deepEqual(errors,[]);
   } finally {

@@ -24,7 +24,7 @@ test('browser: returned copy accepts plan-only direct submit and saved plans wit
     import {BackgroundTasksProvider} from './app/components/background-tasks';
     import {Toaster} from './components/ui/sonner';
     function App() { const [taskId,setTaskId]=useState(1), [message,setMessage]=useState('');
-      return <ConfirmDialogProvider><TextInputDialogProvider><BackgroundTasksProvider accountKey="rework-test">
+      return <ConfirmDialogProvider><TextInputDialogProvider><BackgroundTasksProvider accountKey="rework-test" accountUsername="worker" accountId={8}>
         <output>{message}</output><TaskReviewDialog taskId={taskId} nodeId="test" role="USER"
           currentUsername="worker" currentAccountId={8} embedded
           onOpenChange={open=>{if(!open)setTaskId(null)}}

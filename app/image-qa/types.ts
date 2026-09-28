@@ -1,3 +1,5 @@
+import { normalizeImageQaPreviousReturn, type ImageQaPreviousReturn } from '../components/qa-previous-return.mjs';
+
 export type ImageQaAsset = {
   id: number;
   mediaType: string;
@@ -26,6 +28,7 @@ export type ImageQaItem = {
   imageRunId?: string;
   copyRevisionId?: number;
   createdAt?: string;
+  previousReturn?: ImageQaPreviousReturn;
 };
 
 export function normalizeImageQaItem(value: unknown, role: 'ADMIN' | 'REVIEWER'): ImageQaItem | null {
@@ -35,6 +38,8 @@ export function normalizeImageQaItem(value: unknown, role: 'ADMIN' | 'REVIEWER')
   const capabilities = row.capabilities && typeof row.capabilities === 'object'
     ? row.capabilities as Record<string, unknown> : {};
   const blindReview = row.blindReview === true && role !== 'ADMIN';
+  const previousReturn = row.sampleKind === 'MANDATORY_RECHECK'
+    ? normalizeImageQaPreviousReturn(row.previousReturn) : null;
   const common: ImageQaItem = {
     id: row.id, revisionToken: typeof row.revisionToken === 'string' ? row.revisionToken : '',
     freezePublicId: String(row.freezePublicId ?? ''),
@@ -71,6 +76,7 @@ export function normalizeImageQaItem(value: unknown, role: 'ADMIN' | 'REVIEWER')
     },
     ...(typeof row.createdAt === 'string' ? { createdAt: row.createdAt } : {}),
     ...(typeof row.discardReason === 'string' ? { discardReason: row.discardReason } : {}),
+    ...(previousReturn ? { previousReturn } : {}),
   };
   if (blindReview) return common;
   return {

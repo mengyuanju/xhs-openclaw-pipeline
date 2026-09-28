@@ -11,7 +11,7 @@ import { localEditAlternatives } from '../src/local-edit-alternatives.mjs';
 test('image editor browser: prompt-localized edit, multi-page product replacement, preview and explicit acceptance',{skip:process.env.RUN_IMAGE_EDIT_BROWSER!=='1',timeout:75000},async()=>{
   const {build}=await import('esbuild'),{chromium}=await import('playwright-core');
   const root=await mkdtemp(join(tmpdir(),'image-edit-browser-')),bundle=join(root,'bundle.js'),stylesheet=join(root,'bundle.css');
-  const runId=randomUUID(),editId=randomUUID(),failedEditId=randomUUID();let edits=[],submitted=null,submissions=[],actions=[];
+  const runId=randomUUID(),editId=randomUUID(),failedEditId=randomUUID();let edits=[],submitted=null,submissions=[],actions=[],batchRequests=[];
   const png=await sharp({create:{width:1086,height:1448,channels:4,background:'#eeeeee'}}).png().toBuffer();
   let browser,server;
   try{
@@ -38,8 +38,20 @@ test('image editor browser: prompt-localized edit, multi-page product replacemen
         let body='';for await(const chunk of req)body+=chunk;
         const data=body?JSON.parse(body):null;
         if(req.method==='POST'&&req.url.endsWith('/image-edit-references')){res.setHeader('content-type','application/json');res.end(JSON.stringify({data:{id:9,sha256:'b'.repeat(64),url:'/v1/assets/9'}}));return;}
+        const createEdit=input=>{submitted=input;submissions.push(input);const needsSuggestion=!input.draft&&input.operation==='AI_LOCAL'&&input.instruction.includes('一勺老抽');const suggestion=needsSuggestion?{stage:'LOCAL_EDIT_SUGGESTION',decision:'SUGGEST',canEdit:true,confidence:.96,candidateCount:1,operationType:'MOVE',targetDescription:'右下角汤勺和液流',touchesImageEdge:true,sourceRegion:{x:910,y:965,width:176,height:483},destinationRegion:{x:470,y:850,width:260,height:460},editRegions:[{x:890,y:940,width:196,height:508},{x:430,y:810,width:340,height:540}],suggestedInstruction:'将右下角汤勺和液流移动到锅的左侧，把勺中老抽减少为半勺，保持液流落入锅内并自然修复原位置；不要修改文字和其他内容。',reason:'目标唯一，但原说明需要明确落点与原位置修复。'}:null;return {id:input.batchId?randomUUID():editId,version:1,status:needsSuggestion?'FAILED':input.draft?'DRAFT':'PREVIEW_READY',operation:input.operation,source_asset_id:input.sourceAssetId,target_page:input.targetPage,config:{instruction:input.instruction,confirmation:input.confirmation,batchId:input.batchId,batchSize:input.batchSize},...(needsSuggestion?{validation:suggestion,error:'已生成更适合图片编辑的描述，请确认采用后再调用图片编辑模型'}:input.draft?{}:{result:{asset_id:input.sourceAssetId+10+submissions.length,image_run_id:randomUUID(),validation:{passed:true}}})};};
         let response;
-        if(req.method==='POST'&&req.url.endsWith('/image-edits')){submitted=data;submissions.push(data);const needsSuggestion=!data.draft&&data.operation==='AI_LOCAL'&&data.instruction.includes('一勺老抽');const suggestion=needsSuggestion?{stage:'LOCAL_EDIT_SUGGESTION',decision:'SUGGEST',canEdit:true,confidence:.96,candidateCount:1,operationType:'MOVE',targetDescription:'右下角汤勺和液流',touchesImageEdge:true,sourceRegion:{x:910,y:965,width:176,height:483},destinationRegion:{x:470,y:850,width:260,height:460},editRegions:[{x:890,y:940,width:196,height:508},{x:430,y:810,width:340,height:540}],suggestedInstruction:'将右下角汤勺和液流移动到锅的左侧，把勺中老抽减少为半勺，保持液流落入锅内并自然修复原位置；不要修改文字和其他内容。',reason:'目标唯一，但原说明需要明确落点与原位置修复。'}:null;const row={id:data.batchId?randomUUID():editId,version:1,status:needsSuggestion?'FAILED':data.draft?'DRAFT':'PREVIEW_READY',operation:data.operation,source_asset_id:data.sourceAssetId,target_page:data.targetPage,config:{instruction:data.instruction,confirmation:data.confirmation,batchId:data.batchId,batchSize:data.batchSize},...(needsSuggestion?{validation:suggestion,error:'已生成更适合图片编辑的描述，请确认采用后再调用图片编辑模型'}:data.draft?{}:{result:{asset_id:data.sourceAssetId+10+submissions.length,image_run_id:randomUUID(),validation:{passed:true}}})};edits=data.batchId?[row,...edits]:[row];response=row;}
+        if(req.method==='POST'&&req.url.endsWith('/image-edits/batch')){
+          batchRequests.push({url:req.url,data});
+          const rows=data.edits.map(createEdit);
+          edits=[...rows,...edits];response=rows;
+        }
+        else if(req.method==='POST'&&req.url.endsWith('/image-edits')){const row=createEdit(data);edits=data.batchId?[row,...edits]:[row];response=row;}
+        else if(req.method==='POST'&&/\/image-edits\/batch\/[^/]+\/accept$/u.test(req.url)){
+          actions.push({url:req.url,data});
+          const acceptedIds=new Set(data.edits.map(item=>item.id));
+          edits=edits.map(edit=>acceptedIds.has(edit.id)?{...edit,status:'ACCEPTED',version:edit.version+1}:edit);
+          response=edits.filter(edit=>acceptedIds.has(edit.id));
+        }
         else if(req.method==='POST'){actions.push({url:req.url,data});const targetId=req.url.split('/').at(-2);edits=edits.map(e=>e.id===targetId?{...e,status:req.url.endsWith('/accept')?'ACCEPTED':req.url.endsWith('/apply-suggestion')||req.url.endsWith('/retry')?'QUEUED':'CANCELLED',version:e.version+1,...(req.url.endsWith('/apply-suggestion')?{config:{...e.config,instruction:localEditAlternatives(e).find(option=>option.id===data.suggestionId).instruction}}:{})}:e);response=edits.find(e=>e.id===targetId);}
         res.setHeader('content-type','application/json');res.end(JSON.stringify({data:req.method==='GET'?edits:response}));return;
       }
@@ -86,20 +98,20 @@ test('image editor browser: prompt-localized edit, multi-page product replacemen
     assert.equal(await page.getByText('逐像素确认标识区域外没有变化',{exact:false}).count(),1);
     assert.equal(await page.getByText('无需费用确认',{exact:false}).count(),1);
     assert.equal(await page.getByRole('button',{name:'保存草稿',exact:true}).isDisabled(),false);
-    assert.equal(await page.getByRole('button',{name:'生成程序标识预览',exact:true}).isDisabled(),false);
+    assert.equal(await page.getByRole('button',{name:'生成已选 1 张程序标识预览',exact:true}).isDisabled(),false);
     await page.getByRole('button',{name:'保存草稿',exact:true}).click();
     const recentDisclosure=page.getByLabel('最近常用标识文字').getByRole('button',{name:'人工生成',exact:true});
     await recentDisclosure.waitFor();
     assert.deepEqual(await page.evaluate(()=>JSON.parse(localStorage.getItem('xhs.recent-disclosure-texts.v1'))),['人工生成']);
     assert.equal(submitted.operation,'SVG_DISCLOSURE');assert.equal(submitted.overlay.text,'人工生成');assert.equal(submitted.confirmation,undefined);
     submitted=null;
-    await page.getByRole('button',{name:'生成程序标识预览',exact:true}).click();
+    await page.getByRole('button',{name:'生成已选 1 张程序标识预览',exact:true}).click();
     await page.getByRole('heading',{name:'修改前后滑动对比'}).waitFor();
     assert.equal(submitted.operation,'SVG_DISCLOSURE');assert.equal(submitted.confirmation,undefined);
     await page.getByRole('button',{name:'图片模型融合',exact:true}).click();
     submitted=null;
     assert.equal(await page.getByText('系统会校验文字准确性',{exact:false}).count(),1);
-    await page.getByRole('button',{name:'生成模型标识预览',exact:true}).click();
+    await page.getByRole('button',{name:'生成已选 1 张模型标识预览',exact:true}).click();
     await page.getByRole('alert').getByText('请先勾选费用确认',{exact:false}).waitFor();
     assert.equal(submitted,null);
     await page.getByRole('tab',{name:'局部修改'}).click();
@@ -317,19 +329,49 @@ test('image editor browser: prompt-localized edit, multi-page product replacemen
     await page.getByRole('button',{name:'批量替换已采用',exact:true}).waitFor();
     assert.equal(actions.length,actionsBeforeEntityBatch+2);assert.equal(actions.slice(-2).every(item=>item.url.endsWith('/accept')),true);
     await page.getByRole('tab',{name:'添加文字'}).click();
-    await page.getByRole('button',{name:'整套 3 张',exact:true}).click();
-    await page.getByLabel('确认调用图片编辑与视觉验收模型，会产生费用；生成结果需查看并采用后才会替换当前图片。').check();
-    await page.getByRole('button',{name:'生成整套 3 张模型标识预览',exact:true}).click();
+    const selection=page.getByRole('region',{name:'标识应用范围'});
+    assert.equal(await selection.getByLabel('选择第 1 页生成标识').isChecked(),true);
+    assert.equal(await selection.getByLabel('选择第 2 页生成标识').isChecked(),false);
+    assert.equal(await selection.getByLabel('选择第 3 页生成标识').isChecked(),false);
+    await selection.getByRole('button',{name:'清空',exact:true}).click();
+    assert.equal(await page.getByRole('button',{name:'生成已选 0 张模型标识预览',exact:true}).isDisabled(),true);
+    await selection.getByLabel('选择第 1 页生成标识').check();
+    await selection.getByLabel('选择第 3 页生成标识').check();
+    await selection.getByRole('button',{name:'预览第 2 页图片',exact:true}).click();
+    assert.match(await livePreview.locator('img').getAttribute('src'),/\/v1\/assets\/2$/u);
+    assert.equal(await selection.getByLabel('选择第 2 页生成标识').isChecked(),false,'switching the preview must not change selection');
+    assert.equal(await selection.getByLabel('选择第 1 页生成标识').isChecked(),true);
+    assert.equal(await selection.getByLabel('选择第 3 页生成标识').isChecked(),true);
+    const selectionLayout=await selection.evaluate(element=>({clientWidth:element.clientWidth,scrollWidth:element.scrollWidth}));
+    assert.ok(selectionLayout.scrollWidth<=selectionLayout.clientWidth+1,JSON.stringify(selectionLayout));
+    const selectionScreenshot=resolve('.codex_artifacts/disclosure-selection');await mkdir(selectionScreenshot,{recursive:true});
+    await page.screenshot({path:join(selectionScreenshot,'task-editor-selected-pages.png'),animations:'disabled'});
+    await page.getByLabel('确认对已选 2 张图片分别调用图片编辑与视觉验收模型，会产生费用；生成结果需查看并采用后才会替换当前图片。').check();
+    const disclosureBatchRequestCount=batchRequests.length;
+    const disclosureSubmissionStart=submissions.length;
+    await page.getByRole('button',{name:'生成已选 2 张模型标识预览',exact:true}).click();
     await page.getByRole('tab',{name:/任务记录/u}).click();
-    await page.getByRole('button',{name:'一次采用整套标识',exact:true}).waitFor();
-    const batchSubmissions=submissions.slice(-3),batchIds=new Set(batchSubmissions.map(item=>item.batchId));
-    assert.equal(batchSubmissions.length,3);assert.equal(batchIds.size,1);assert.deepEqual(batchSubmissions.map(item=>item.sourceAssetId),[1,2,3]);assert.deepEqual(batchSubmissions.map(item=>item.targetPage),[1,2,3]);assert.ok(batchSubmissions.every(item=>item.operation==='TEXT'));
-    await page.getByRole('button',{name:'一次采用整套标识',exact:true}).click();
+    await page.getByRole('button',{name:'一次采用已选 2 张标识',exact:true}).waitFor();
+    assert.equal(batchRequests.length,disclosureBatchRequestCount+1);
+    const batchSubmissions=batchRequests.at(-1).data.edits,batchIds=new Set(batchSubmissions.map(item=>item.batchId));
+    assert.equal(batchSubmissions.length,2);assert.equal(batchIds.size,1);
+    assert.deepEqual(batchSubmissions.map(item=>item.sourceAssetId),[1,3]);
+    assert.deepEqual(batchSubmissions.map(item=>item.targetPage),[1,3]);
+    assert.deepEqual(submissions.slice(disclosureSubmissionStart).map(item=>item.targetPage),[1,3],'unselected page 2 must not be generated');
+    assert.ok(batchSubmissions.every(item=>item.batchSize===2&&item.operation==='TEXT'));
+    await page.getByRole('button',{name:'一次采用已选 2 张标识',exact:true}).click();
     const actionsBeforeBatchAccept=actions.length;
-    await page.getByLabel('整套标识采用原因').fill('整套预览确认');
+    await page.getByLabel('所选标识采用原因').fill('所选两张预览确认');
     await page.getByRole('button',{name:'确认采用',exact:true}).click();
-    await page.getByRole('button',{name:'整套标识已采用',exact:true}).waitFor();
-    assert.equal(actions.length,actionsBeforeBatchAccept+3);assert.equal(actions.slice(-3).every(item=>item.url.endsWith('/accept')),true);
+    await page.getByRole('button',{name:'已选标识已采用',exact:true}).waitFor();
+    assert.equal(actions.length,actionsBeforeBatchAccept+1);
+    const batchAccept=actions.at(-1);
+    assert.equal(batchAccept.url,`/api/control-plane/v1/tasks/1/image-edits/batch/${batchSubmissions[0].batchId}/accept`);
+    assert.equal(batchAccept.data.imageRunId,runId);
+    assert.match(batchAccept.data.requestId,/^[a-f0-9-]{36}$/u);
+    assert.equal(batchAccept.data.reason,'所选两张预览确认');
+    assert.deepEqual(batchAccept.data.edits.map(item=>item.id).sort(),edits.filter(item=>item.config.batchId===batchSubmissions[0].batchId).map(item=>item.id).sort());
+    assert.ok(batchAccept.data.edits.every(item=>item.version===1));
     await page.getByRole('tab',{name:'局部修改'}).click();
     await page.getByRole('button',{name:'保存草稿',exact:true}).click();
     await page.getByRole('tab',{name:/任务记录/u}).click();

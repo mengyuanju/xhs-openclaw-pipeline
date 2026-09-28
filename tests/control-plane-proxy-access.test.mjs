@@ -125,6 +125,18 @@ test('ordinary users can work on assigned tasks and screen only their visible Qu
   }
 });
 
+test('ordinary users can delete only a specific standalone workspace reference', () => {
+  assert.equal(userCanAccessControlPlaneRoute('/v1/image-editor/workspaces/7/image-edit-references/8', 'DELETE'), true);
+  for (const path of [
+    '/v1/image-editor/workspaces/7',
+    '/v1/image-editor/workspaces/7/image-edit-references',
+    '/v1/image-editor/workspaces/7/image-edit-references/8/extra',
+    '/v1/image-editor/workspaces/0/image-edit-references/8',
+  ]) {
+    assert.equal(userCanAccessControlPlaneRoute(path, 'DELETE'), false, path);
+  }
+});
+
 test('the web proxy applies the narrow Query package exception to every non-administrator role', async () => {
   const source = await readFile(
     new URL('../app/api/control-plane/[...path]/route.ts', import.meta.url),

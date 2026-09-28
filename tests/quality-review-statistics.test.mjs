@@ -29,6 +29,15 @@ test('task union and decision counts differ across stages and rechecks; retries 
   assert.equal(qaMetricRows(rows,'qa','IMAGE','RETURN').length,1);
 });
 
+test('legacy and copy QA v2 item ids have separate reviewer counts',()=>{
+  const legacy=review(1,'COPY',{id:'qa:copy:legacy:1',taskId:1});
+  const current=review(1,'COPY',{id:'copy-v2:1',taskId:2,qaBatchId:9,outcome:'RETURN'});
+  const rows=[legacy,current,{...current}];
+  assert.equal(qaMetricRows(rows).length,2);
+  assert.deepEqual(summarizeQa(rows).COPY,{tasks:2,reviews:2,passed:1,returned:1,escalated:0,rechecks:0,
+    batchImpactReturns:0,pending:0,blocked:0,pendingRechecks:0});
+});
+
 test('batch actions, unknown historical scopes, direct pass, self-review and simulated decisions do not inflate review work',()=>{
   const rows=[review(1),review(2,'COPY',{exclusion:'SELF_REVIEW'}),review(3,'IMAGE',{exclusion:'SIMULATED'}),
     review(4,'COPY',{kind:'QA_DIRECT_PASS'}),review(5,'IMAGE',{kind:'QA_DISCARD'}),

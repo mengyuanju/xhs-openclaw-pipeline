@@ -13,7 +13,7 @@ import pg from 'pg';
 import { createControlPlaneApp } from '../src/http-server.mjs';
 import { migrateDatabase } from '../src/database-migrations.mjs';
 import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
-import { passCopyQaItem } from '../src/copy-quality-control.mjs';
+import { decideCopyQaItemV2 } from '../src/copy-qa-v2.mjs';
 import {
   batchReturnImageQa,
   discardTaskImages,
@@ -257,6 +257,9 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
   await pool.query(`UPDATE workflow_quality_settings SET image_sampling_rate_bps = 10000,
     image_blind_review_enabled = false`);
   const returnedTask = await createTask(6);
+  await pool.query('UPDATE image_runs SET result=$2 WHERE id=$1', [returnedTask.imageRunId, {
+    images: [returnedTask.images[2], returnedTask.images[0], returnedTask.images[1]],
+  }]);
   await submitImageSelfReview(pool, returnedTask.taskId, {
     imageRunId: returnedTask.imageRunId, reviewSessionId: randomUUID(),
   }, worker);
@@ -285,6 +288,9 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
   assert.ok(returnedDetail.imageQaReturn.returnedAt);
 
   const editedRun = await addImageRun(returnedTask.taskId, returnedTask.copyRevisionId, 'edited');
+  await pool.query('UPDATE image_runs SET result=$2 WHERE id=$1', [editedRun.imageRunId, {
+    images: [{ ...editedRun.images[0], pageIndex: 0 }, ...editedRun.images.slice(1)],
+  }]);
   await pool.query(`UPDATE tasks SET state='MANUAL_ARCHIVE', current_stage='MANUAL_ARCHIVE',
     current_image_run_id=$2 WHERE id=$1`, [returnedTask.taskId, editedRun.imageRunId]);
   await submitImageSelfReview(pool, returnedTask.taskId, {
@@ -294,6 +300,23 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
     .find((item) => item.sampleKind === 'MANDATORY_RECHECK' && item.taskId === returnedTask.taskId);
   assert.ok(mandatory);
   assert.equal(mandatory.capabilities.canReturnSingle, true);
+  assert.deepEqual(mandatory.previousReturn, {
+    reasonLabels: ['画面文字错误'], note: '修正第 1 张图片',
+    returnedAt: mandatory.previousReturn.returnedAt,
+    reworkTarget: 'IMAGE', problemPages: [1], copyFields: [],
+  });
+  assert.ok(mandatory.previousReturn.returnedAt);
+  assert.equal(returnedTask.images[0].pageIndex, 1);
+  assert.equal((await pool.query(`
+    SELECT page.ordinality::integer AS array_position
+    FROM image_runs AS run
+    CROSS JOIN LATERAL jsonb_array_elements(run.result->'images')
+      WITH ORDINALITY AS page(image, ordinality)
+    WHERE run.id = $1 AND page.image->>'deliveryAssetId' = $2
+  `, [returnedTask.imageRunId, String(returnedTask.images[0].assetId)])).rows[0].array_position, 2,
+  'historical pageIndex differs from the JSON array position');
+  assert.notEqual(mandatory.assets[0].id, returnedTask.images[0].assetId,
+    'the returned page comes from the old image run rather than the new asset id');
   const firstReturnLink = (await pool.query(`
     SELECT parent.id AS returned_id, recheck.parent_item_id
     FROM image_sampling_items recheck
@@ -322,6 +345,11 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
   assert.ok(secondMandatory);
   assert.notEqual(secondMandatory.id, mandatory.id);
   assert.equal(secondMandatory.capabilities.canReturnSingle, true);
+  assert.deepEqual(secondMandatory.previousReturn, {
+    reasonLabels: ['画面文字错误'], note: '第一页仍有文字错误',
+    returnedAt: secondMandatory.previousReturn.returnedAt,
+    reworkTarget: 'IMAGE', problemPages: [1], copyFields: [],
+  });
   const secondReturnLink = (await pool.query(`
     SELECT parent.id AS returned_id, recheck.parent_item_id
     FROM image_sampling_items recheck
@@ -377,6 +405,11 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
     const recheck = (await listImageQaItems(pool, {}, reviewer)).items
       .find((item) => item.sampleKind === 'MANDATORY_RECHECK' && item.taskId === member.taskId);
     assert.ok(recheck);
+    assert.deepEqual(recheck.previousReturn, {
+      reasonLabels: ['IMAGE_QUALITY_ISSUE'], note: '同批图片风格错误，需要逐项返修',
+      returnedAt: recheck.previousReturn.returnedAt,
+      reworkTarget: 'IMAGE', problemPages: [], copyFields: [],
+    });
     await passImageQaItem(pool, recheck.id, { requestId: randomUUID(), score: 3 }, reviewer);
     const other = batchReturnMembers[1 - index];
     if (index === 0) {
@@ -604,8 +637,12 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
       const approved = await repository.approveCopy(copy.taskId, { revisionId: restoredCopy.currentCopyRevisionId,
         nodeId: 'image-qa-test', decision: 'APPROVE', score: 3, reviewSessionId: randomUUID() }, { actor: admin });
       assert.equal(approved.state, 'COPY_QC_PENDING');
-      const copyItem = (await pool.query("SELECT public_id FROM copy_sampling_items WHERE task_id=$1 AND status='PENDING'", [copy.taskId])).rows[0];
-      await passCopyQaItem(pool, copyItem.public_id, { requestId: randomUUID(), expectedCopyRevisionId: approved.currentCopyRevisionId }, admin);
+      const copyItem = (await pool.query(`SELECT public_id,content_sha256 FROM copy_qa_batch_members_v2
+        WHERE task_id=$1 AND copy_revision_id=$2 AND selected AND status='PENDING'`,
+      [copy.taskId,approved.currentCopyRevisionId])).rows[0];
+      assert.ok(copyItem, 'restored copy must enter the current v2 mandatory QA queue');
+      await decideCopyQaItemV2(pool, copyItem.public_id, { requestId:randomUUID(),decision:'PASS',
+        revisionToken:copyItem.content_sha256 }, admin);
       assert.equal((await repository.getTask(copy.taskId)).state, 'IMAGE_QUEUED');
       assert.equal((await pool.query('SELECT copy_quality_image_eligible(id,current_copy_revision_id,mandatory_copy_qc) AS eligible FROM tasks WHERE id=$1', [copy.taskId])).rows[0].eligible, true);
       assert.equal(Number((await pool.query('SELECT count(*) FROM task_restore_events WHERE task_id=$1', [initial.taskId])).rows[0].count), 2);

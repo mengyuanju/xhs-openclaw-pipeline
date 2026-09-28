@@ -4,6 +4,8 @@ export type BackgroundTask = {
   taskId: number;
   page?: number;
   status: string;
+  ownerUsername?: string;
+  ownerAccountId?: number | null;
   createdAt: number;
   updatedAt?: number;
   read: boolean;
@@ -68,7 +70,8 @@ export function backgroundTaskPath(task: BackgroundTask) {
 }
 
 type Storage = Pick<globalThis.Storage, 'getItem' | 'setItem'>;
-type Snapshot = { status: string; error?: string | null };
+type Snapshot = { status: string; error?: string | null; created_by?: string; created_by_account_id?: number | null;
+  requestedByUsername?: string; requestedByAccountId?: number };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const statuses = new Set(['QUEUED', 'RUNNING', 'SUCCEEDED', 'FAILED', 'STALE', 'PREVIEW_READY', 'ACCEPTED', 'REJECTED', 'CANCELLED', 'UNAVAILABLE', 'DELETED']);
 const advisoryImageEditPreflightErrors = [
@@ -81,9 +84,11 @@ function isAdvisoryImageEditPreflightFailure(task: Pick<BackgroundTask, 'kind' |
     && advisoryImageEditPreflightErrors.some(prefix => task.error?.includes(prefix));
 }
 
-export function createBackgroundTaskStore({ storage, storageKey, request, onComplete }: {
+export function createBackgroundTaskStore({ storage, storageKey, accountUsername, accountId, request, onComplete }: {
   storage?: Storage;
   storageKey: string;
+  accountUsername: string;
+  accountId: number;
   request: (path: string) => Promise<Snapshot>;
   onComplete: (task: BackgroundTask) => void;
 }) {
@@ -92,6 +97,27 @@ export function createBackgroundTaskStore({ storage, storageKey, request, onComp
   const inFlight = new Set<string>();
   const unavailableChecked = new Set<string>();
   let stopped = false;
+  let ownershipDiscarded = false;
+
+  function hasOwner(task: Pick<BackgroundTask, 'ownerUsername' | 'ownerAccountId'>) {
+    return typeof task.ownerUsername === 'string'
+      && (task.ownerAccountId === null || Number.isSafeInteger(task.ownerAccountId));
+  }
+
+  function isOwned(task: Pick<BackgroundTask, 'ownerUsername' | 'ownerAccountId'>) {
+    return Boolean(accountUsername) && Number.isSafeInteger(accountId) && accountId > 0
+      && task.ownerUsername === accountUsername && task.ownerAccountId === accountId;
+  }
+
+  function deletedTask(task: BackgroundTask): BackgroundTask {
+    return { ...task, status: 'DELETED', read: true, error: null, pollError: undefined, payload: undefined,
+      updatedAt: Math.max(Date.now(), (task.updatedAt ?? task.createdAt) + 1) };
+  }
+
+  function dismissTask(id: string) {
+    tasks = tasks.map(task => task.id === id && task.status !== 'DELETED' ? deletedTask(task) : task);
+    publish();
+  }
 
   function readSaved(serialized?: string) {
     try {
@@ -101,13 +127,20 @@ export function createBackgroundTaskStore({ storage, storageKey, request, onComp
       && Number.isSafeInteger(task.taskId) && task.taskId > 0 && statuses.has(task.status)
       && Number.isFinite(task.createdAt) && typeof task.read === 'boolean'
       && (task.updatedAt === undefined || Number.isFinite(task.updatedAt))
+      && (task.ownerUsername === undefined || typeof task.ownerUsername === 'string')
+      && (task.ownerAccountId === undefined || task.ownerAccountId === null || Number.isSafeInteger(task.ownerAccountId))
       && (task.consumed === undefined || typeof task.consumed === 'boolean'))
-      .map(({ payload: _payload, pollError: _pollError, ...task }) => isAdvisoryImageEditPreflightFailure(task)
-        ? { ...task, read: true }
-        : task) : [];
+      .map(({ payload: _payload, pollError: _pollError, ...task }) => {
+        if (task.status !== 'DELETED' && hasOwner(task) && !isOwned(task)) {
+          ownershipDiscarded = true;
+          return deletedTask(task);
+        }
+        return isAdvisoryImageEditPreflightFailure(task) ? { ...task, read: true } : task;
+      }) : [];
     } catch { return []; }
   }
   tasks = readSaved();
+  if (ownershipDiscarded) publish();
 
   function sync(serialized?: string) {
     if (stopped) return;
@@ -131,15 +164,16 @@ export function createBackgroundTaskStore({ storage, storageKey, request, onComp
       if (next.updatedAt !== local.updatedAt || next.status !== local.status || next.read !== local.read
           || Boolean(next.consumed) !== Boolean(local.consumed) || next.error !== local.error) { merged.set(saved.id, next); changed = true; }
     }
-    if (changed || repairDeleted) {
+    if (changed || repairDeleted || ownershipDiscarded) {
       tasks = [...merged.values()].sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
-      if (serialized !== undefined || repairDeleted) publish();
+      if (serialized !== undefined || repairDeleted || ownershipDiscarded) publish();
       else listeners.forEach(listener => listener());
     }
   }
 
   function publish() {
     if (stopped) return;
+    ownershipDiscarded = false;
     // Keep unfinished work and unacknowledged results even when history grows.
     let history = 0;
     tasks = tasks.filter(task => isBackgroundTaskRunning(task) || !task.read
@@ -153,8 +187,20 @@ export function createBackgroundTaskStore({ storage, storageKey, request, onComp
         || !Number.isSafeInteger(input.taskId) || input.taskId <= 0) return;
     sync();
     const current = tasks.find(task => task.id === input.id);
+    // Viewing a task's history does not make its requests personal background work.
+    if (!isOwned(input)) {
+      if (current) dismissTask(current.id);
+      return;
+    }
     if (current?.status === 'DELETED' || tasks.some(task => task.kind === 'STANDALONE_IMAGE_EDIT' && input.kind === task.kind && task.taskId === input.taskId && task.status === 'DELETED')) return;
-    if (current && !restart) return;
+    if (current && !restart) {
+      if (!hasOwner(current)) {
+        tasks = tasks.map(task => task.id === current.id ? { ...current, ...input, createdAt: current.createdAt, read: current.read,
+          updatedAt: Math.max(Date.now(), (current.updatedAt ?? current.createdAt) + 1) } : task);
+        publish();
+      }
+      return;
+    }
     const createdAt = Math.max(Date.now(), (current?.createdAt ?? 0) + 1);
     const candidate: BackgroundTask = { ...input, createdAt, updatedAt: createdAt, read: false };
     const task: BackgroundTask = isAdvisoryImageEditPreflightFailure(candidate) ? { ...candidate, read: true } : candidate;
@@ -177,10 +223,10 @@ export function createBackgroundTaskStore({ storage, storageKey, request, onComp
   async function poll() {
     if (stopped) return;
     sync();
-    await Promise.allSettled(tasks.filter(task => isBackgroundTaskRunning(task)
+    await Promise.allSettled(tasks.filter(task => task.status !== 'DELETED' && (!hasOwner(task) || isBackgroundTaskRunning(task)
       || task.kind === 'STANDALONE_IMAGE_EDIT' && task.status === 'UNAVAILABLE' && !unavailableChecked.has(task.id)
       || ['IMAGE_EDIT','STANDALONE_IMAGE_EDIT'].includes(task.kind) && task.status === 'PREVIEW_READY'
-      || task.kind === 'IMAGE_PLAN' && task.status === 'SUCCEEDED' && !task.consumed && !task.payload).map(async task => {
+      || task.kind === 'IMAGE_PLAN' && task.status === 'SUCCEEDED' && !task.consumed && !task.payload)).map(async task => {
       if (inFlight.has(task.id)) return;
       inFlight.add(task.id);
       if (task.status === 'UNAVAILABLE') unavailableChecked.add(task.id);
@@ -193,8 +239,15 @@ export function createBackgroundTaskStore({ storage, storageKey, request, onComp
           dismissStandaloneWorkspaces([task.taskId]);
           return;
         }
+        const owner = task.kind === 'IMAGE_PLAN'
+          ? { ownerUsername: payload.requestedByUsername, ownerAccountId: payload.requestedByAccountId }
+          : { ownerUsername: payload.created_by, ownerAccountId: payload.created_by_account_id };
+        if (!isOwned({ ...task, ...owner })) {
+          dismissTask(task.id);
+          return;
+        }
         const finished = isBackgroundTaskRunning(task) && !isBackgroundTaskRunning(payload);
-        const candidate = { ...task, status: payload.status, error: payload.error, pollError: undefined, payload, read: finished ? false : task.read,
+        const candidate = { ...task, ...owner, status: payload.status, error: payload.error, pollError: undefined, payload, read: finished ? false : task.read,
           updatedAt: Math.max(Date.now(), (task.updatedAt ?? task.createdAt) + 1) };
         const next = isAdvisoryImageEditPreflightFailure(candidate) ? { ...candidate, read: true } : candidate;
         tasks = tasks.map(item => item.id === task.id ? next : item);
@@ -205,6 +258,10 @@ export function createBackgroundTaskStore({ storage, storageKey, request, onComp
         if (stopped || tasks.find(item => item.id === task.id) !== task) return;
         const status = (error as { status?: number })?.status;
         const unavailable = status === 403 || status === 404;
+        if (unavailable && !hasOwner(task)) {
+          dismissTask(task.id);
+          return;
+        }
         if (!unavailable) unavailableChecked.delete(task.id);
         const next = { ...task, ...(unavailable ? { status: 'UNAVAILABLE', read: false } : {}),
           pollError: unavailable ? undefined : '暂时无法获取进度', updatedAt: Math.max(Date.now(), (task.updatedAt ?? task.createdAt) + 1) };
@@ -216,7 +273,8 @@ export function createBackgroundTaskStore({ storage, storageKey, request, onComp
   }
 
   return {
-    getSnapshot: () => tasks,
+    // Old caches lack creator identity. Validate them before showing even completed history.
+    getSnapshot: () => tasks.filter(task => task.status === 'DELETED' || isOwned(task)),
     subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     track,
     dismissStandaloneWorkspaces,

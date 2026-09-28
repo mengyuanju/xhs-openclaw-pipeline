@@ -18,7 +18,9 @@ export function qaMetricRows(rows, metric = 'qa', stage = '', outcome = '') {
       || metric === 'qaSpecial' && ['QA_DIRECT_PASS','QA_DISCARD'].includes(row.kind) && !row.exclusion && row.accountId != null
       || metric === 'qaPending' && row.kind === 'QA_PENDING' && !row.blocked
       || metric === 'qaBlocked' && row.kind === 'QA_PENDING' && row.blocked;
-    const key = row.kind === 'QA_REVIEW' ? `${row.stage}:${row.samplingItemId ?? row.id}` : row.id;
+    // Legacy sampling items and copy QA v2 members use separate id sequences.
+    const source = row.stage === 'COPY' && row.qaBatchId != null ? 'copy-v2' : 'legacy';
+    const key = row.kind === 'QA_REVIEW' ? `${row.stage}:${source}:${row.samplingItemId ?? row.id}` : row.id;
     if (!matches || seen.has(key)) return false;
     seen.add(key); return true;
   });

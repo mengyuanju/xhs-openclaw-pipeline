@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdtemp,rm,writeFile } from 'node:fs/promises';
+import { mkdtemp,readFile,rm,writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join,resolve } from 'node:path';
 import pg from 'pg';
@@ -13,6 +13,7 @@ import { createPostgresControlPlaneRepository } from '../src/postgres-repository
 import { createControlPlaneApp } from '../src/http-server.mjs';
 import { createControlPlaneClient } from '../../src/control-plane/client.mjs';
 import { createStandaloneImageEditor } from '../src/standalone-image-editor.mjs';
+import { backfillEligibleReferenceCleanup, drainReferenceCleanup } from '../src/image-reference-cleanup.mjs';
 import { processStandaloneImageEdit,parseUploadImageReview } from '../src/standalone-image-editor-renderer.mjs';
 import { imageHash } from '../../src/image-edit-pixels.mjs';
 
@@ -147,6 +148,8 @@ test('standalone uploads: isolation, executor claims, shared capacity, preview, 
     await t.test('owner-only deletion is atomic, hides assets and cancels queued work',async()=>{
       const a=await service.create({...input,requestId:randomUUID()},actor);
       const b=await service.create({...input,requestId:randomUUID()},actor);
+      const reference=await service.uploadReference(a.id,{base64:png.toString('base64'),mediaType:'image/png',purpose:'删除前参考图',source:'测试'},actor);
+      const referencePath=(await pool.query('SELECT storage_path FROM assets WHERE id=$1',[reference.id])).rows[0].storage_path;
       const foreign=await service.create({...input,requestId:randomUUID()},other);
       const adminOwned=await service.create({...input,requestId:randomUUID()},admin);
       assert.equal((await service.list(admin)).total,1);
@@ -160,6 +163,8 @@ test('standalone uploads: isolation, executor claims, shared capacity, preview, 
       const deletion={requestId:randomUUID(),workspaceIds:[a.id,b.id]};
       assert.deepEqual((await service.remove(deletion,actor)).deletedIds,[a.id,b.id]);
       assert.deepEqual((await service.remove(deletion,actor)).deletedIds,[a.id,b.id]);
+      await assert.rejects(readFile(referencePath),{code:'ENOENT'});
+      assert.ok((await pool.query('SELECT content_cleared_at FROM assets WHERE id=$1',[reference.id])).rows[0].content_cleared_at);
       assert.equal((await pool.query('SELECT status FROM image_edit_requests WHERE id=$1',[queued.id])).rows[0].status,'CANCELLED');
       for(const path of [`/v1/image-editor/workspaces/${a.id}`,`/v1/image-editor/workspaces/${a.id}/image-edits`,`/v1/image-editor/assets/${a.assets[0].id}`])assert.equal((await request(path)).status,404);
       const receipt=await request(`/v1/image-editor/edits/${queued.id}`);
@@ -169,6 +174,14 @@ test('standalone uploads: isolation, executor claims, shared capacity, preview, 
       assert.equal((await request(`/v1/image-editor/edits/${queued.id}/retry`,{method:'POST',body:{requestId:randomUUID(),version:queued.version,reason:'不可恢复'}})).status,404);
       assert.equal((await service.list(actor)).items.some(row=>[a.id,b.id].includes(row.id)),false);
       assert.equal(await machine.claimImage('standalone-executor'),null);
+      const legacy=await service.create({...input,requestId:randomUUID()},actor);
+      const legacyReference=await service.uploadReference(legacy.id,{base64:png.toString('base64'),mediaType:'image/png',purpose:'旧删除记录',source:'测试'},actor);
+      const legacyPath=(await pool.query('SELECT storage_path FROM assets WHERE id=$1',[legacyReference.id])).rows[0].storage_path;
+      await pool.query(`INSERT INTO image_edit_events(task_id,action,actor,reason,request_id,detail)
+        VALUES($1,'DELETE_WORKSPACE',$2,'旧版本删除',$3,'{}'::jsonb)`,[legacy.id,actor.username,randomUUID()]);
+      await backfillEligibleReferenceCleanup(pool,{limitTasks:100});
+      await drainReferenceCleanup(pool,root,{taskId:legacy.id});
+      await assert.rejects(readFile(legacyPath),{code:'ENOENT'});
       assert.equal((await service.detail(foreign.id,other)).id,foreign.id);
       await service.remove({requestId:randomUUID(),workspaceIds:[foreign.id]},other);
       await service.remove({requestId:randomUUID(),workspaceIds:[adminOwned.id]},admin);

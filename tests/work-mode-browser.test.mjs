@@ -24,7 +24,7 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     import{BackgroundTasksProvider,BackgroundTaskNotifications}from'./app/components/background-tasks';
     import{Toaster}from'./components/ui/sonner';
     const kinds=['COPY','IMAGE','COPY_QA','IMAGE_QA'];
-    createRoot(document.getElementById('root')).render(<ConfirmDialogProvider><TextInputDialogProvider><BackgroundTasksProvider accountKey="work-mode-browser"><div className="app-shell" data-work-mode="true"><aside className="sidebar" aria-label="应用导航"><div className="sidebar-head">创作工作台</div><nav className="nav-list"><a className="nav-item active" href="/work-mode">作业模式</a></nav></aside><div className="app-workspace"><header className="app-topbar"><span>作业中心 / 作业模式</span><BackgroundTaskNotifications/></header><main className="main-shell"><WorkMode kinds={kinds} role="USER" nodeId="test-only" username="worker" accountId={8}/></main></div></div><Toaster/></BackgroundTasksProvider></TextInputDialogProvider></ConfirmDialogProvider>);
+    createRoot(document.getElementById('root')).render(<ConfirmDialogProvider><TextInputDialogProvider><BackgroundTasksProvider accountKey="work-mode-browser" accountUsername="worker" accountId={8}><div className="app-shell" data-work-mode="true"><aside className="sidebar" aria-label="应用导航"><div className="sidebar-head">创作工作台</div><nav className="nav-list"><a className="nav-item active" href="/work-mode">作业模式</a></nav></aside><div className="app-workspace"><header className="app-topbar"><span>作业中心 / 作业模式</span><BackgroundTaskNotifications/></header><main className="main-shell"><WorkMode kinds={kinds} role="USER" nodeId="test-only" username="worker" accountId={8}/></main></div></div><Toaster/></BackgroundTasksProvider></TextInputDialogProvider></ConfirmDialogProvider>);
   `, resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, outfile: bundle, jsx: 'automatic', platform: 'browser',
     conditions: ['style'], alias: { '@': process.cwd() }, define: { 'process.env.NODE_ENV': '"test"', 'process.env': '{}' } });
   const [js, rawCss] = await Promise.all([readFile(bundle), readFile(join(directory, 'bundle.css'), 'utf8')]);
@@ -59,7 +59,11 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     const id = randomUUID(), number = index + 3;
     return { ...structuredClone(qaItems[0]), id, freezePublicId: randomUUID(), anonymousCode: `QA-${number}`,
       sampleKind: number === 51 ? 'MANDATORY_RECHECK' : 'RANDOM',
-      capabilities: { canPass: true, canReturnSingle: number !== 51, canReturnBatch: false },
+      ...(number === 51 ? { qaVersion: 2, previousReturn: {
+        reasonLabels: ['标题 · 信息不准确', '正文 · 逻辑不清晰'],
+        note: '标题数量与正文不一致；补充适用场景。', returnedAt: '2026-09-23T07:00:00.000Z',
+      } } : {}),
+      capabilities: { canPass: true, canReturnSingle: true, canReturnBatch: false },
       approvedRevision: { ...structuredClone(qaItems[0].approvedRevision),
         content: { ...structuredClone(qaItems[0].approvedRevision.content),
           copy: { ...qaItems[0].approvedRevision.content.copy, title: `匿名待检文案 ${number}` } },
@@ -80,6 +84,10 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     status: 'PENDING', blindReview: i === 1, query: i === 1 ? null : '请核对这组四页收纳图片，确认标题清晰、说明完整、版式一致，并逐页标记需要修改的位置。'.repeat(3), sampleKind: 'RANDOM',
     assets: [...imageTask.assets, ...imageTask.assets.map((asset, index) => ({ ...asset, id: 403 + index, url: `/v1/assets/${403 + index}` }))],
     capabilities: { canPass: i === 1, canReturnSingle: true, canReturnBatch: false, canDiscard: true }, blockers: { pendingImageEdits: i === 1 ? 0 : 1 } }));
+  Object.assign(imageQaItems[1], { sampleKind: 'MANDATORY_RECHECK', previousReturn: {
+    reasonLabels: ['文字遮挡', '版式不统一'], note: '第 2 页标题被遮挡；第 4 页价格和按钮需对齐。',
+    returnedAt: '2026-09-23T08:00:00.000Z', reworkTarget: 'IMAGE', problemPages: [2, 4], copyFields: [],
+  } });
   const requests = []; const jobs = new Map(); let failSubmit = false; let failList = false; let failQaSubmit = false;
   let browser, page;
   let pendingEdits = [], failPendingResolution = false;
@@ -157,6 +165,8 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
       }
       const qa = pathname.match(/\/copy-qa\/items\/([^/]+)\/(pass|return)$/u);
       if (qa) { if (failQaSubmit) { reply('测试质检提交失败', 409); return; } qaItems.find(q => q.id === qa[1]).status = qa[2] === 'pass' ? 'PASSED' : 'RETURNED'; reply({ ok: true }); return; }
+      const qaV2 = pathname.match(/\/v2\/copy-qa\/items\/([^/]+)\/decision$/u);
+      if (qaV2) { qaItems.find(q => q.id === qaV2[1]).status = body.decision === 'PASS' ? 'PASSED' : 'RETURNED'; reply({ ok: true }); return; }
       const imageQa = pathname.match(/\/image-qa\/items\/([^/]+)\/(pass|return|discard)$/u);
       if (imageQa) { imageQaItems.find(q => q.id === imageQa[1]).status = imageQa[2] === 'discard' ? 'DISCARDED' : imageQa[2] === 'pass' ? 'PASSED' : 'RETURNED'; reply({ ok: true }); return; }
       reply('未配置的测试接口 '+pathname, 404);
@@ -305,6 +315,7 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     await page.setViewportSize({ width: 1360, height: 1040 });
     await page.getByRole('button', { name: '文案质检', exact: true }).click();
     await page.getByRole('heading', { name: '匿名待检文案 1' }).waitFor();
+    assert.equal(await page.getByRole('region', { name: '上次打回原因' }).count(), 0, 'first inspections do not show prior reasons');
     const copyQaKinds = page.getByRole('group', { name: '文案质检分类' });
     const qaQueue = page.getByRole('complementary', { name: '待处理作业' });
     assert.deepEqual(await copyQaKinds.getByRole('button').allTextContents(), ['全部', '强制复检', '第一次抽检']);
@@ -315,10 +326,27 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     assert.match(await qaQueue.getByRole('button', { name: /匿名待检文案 51/u }).textContent(), /强制复检/u);
     await copyQaKinds.getByRole('button', { name: '强制复检' }).click();
     await page.getByRole('heading', { name: '匿名待检文案 51' }).waitFor();
+    const copyPrior = page.getByRole('region', { name: '上次打回原因' });
+    await copyPrior.getByText('标题 · 信息不准确', { exact: true }).waitFor();
+    assert.match(await copyPrior.innerText(), /标题数量与正文不一致/u);
+    await copyPrior.getByRole('button', { name: '收起' }).click();
+    assert.equal(await copyPrior.getByText('标题数量与正文不一致', { exact: false }).count(), 0);
+    await copyPrior.getByRole('button', { name: '展开' }).click();
+    assert.match(await copyPrior.innerText(), /标题数量与正文不一致/u);
     assert.equal(await qaQueue.getByRole('button', { name: /匿名待检文案 1\b/u }).count(), 0);
     assert.equal(await qaQueue.getByRole('button', { name: /匿名待检文案 51/u }).getAttribute('aria-pressed'), 'true');
     assert.ok(requests.some(r => r.path.endsWith('/work-mode/items') && new URLSearchParams(r.search).get('sampleKind') === 'MANDATORY_RECHECK'
       && new URLSearchParams(r.search).get('offset') === '0'), 'recheck filter is sent to the server before pagination');
+    await page.getByRole('button', { name: '打回', exact: true }).click();
+    assert.equal(await page.getByRole('button', { name: '提交管理员', exact: true }).count(), 0,
+      'V2 mandatory rechecks use the decision API for automatic escalation');
+    await page.getByPlaceholder('可选：补充具体句子、页码或修改要求').fill('返修后的标题仍缺少依据');
+    await page.getByRole('button', { name: '打回并下一条', exact: true }).click();
+    await page.getByRole('heading', { name: '当前暂无待处理作业' }).waitFor();
+    const v2Decision = requests.find(r => r.path.endsWith(`/v2/copy-qa/items/${qaItems[50].id}/decision`));
+    assert.equal(v2Decision?.body.decision, 'RETURN');
+    assert.equal(v2Decision?.body.revisionToken, qaItems[50].approvedRevision.revisionToken);
+    assert.equal(v2Decision?.body.note, '返修后的标题仍缺少依据');
     await copyQaKinds.getByRole('button', { name: '第一次抽检' }).click();
     await page.getByRole('heading', { name: '匿名待检文案 1' }).waitFor();
     assert.equal(await qaQueue.getByRole('button', { name: /匿名待检文案 51/u }).count(), 0);
@@ -489,6 +517,7 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     assert.equal(pendingEdits.length, 0);
     assert.equal(requests.find(request => request.path.endsWith('/submit-image-self-review')).body.imageRunId, imageTask.currentImageRunId);
     await page.getByRole('button', { name: '图片质检', exact: true }).click();
+    assert.equal(await page.getByRole('region', { name: '上次打回原因' }).count(), 0, 'first image inspections do not show prior reasons');
     const imageQaContent = page.getByRole('region', { name: '图片核对', exact: true });
     const imageQaActions = page.getByRole('complementary', { name: '图片质检操作', exact: true });
     for (const width of [1360, 1280, 1152]) {
@@ -524,6 +553,11 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     assert.equal(await page.getByRole('button', { name: '选择待检图片第 2 页', exact: true }).getAttribute('aria-pressed'), 'true');
     await page.getByRole('button', { name: '通过并下一条', exact: true }).click();
     await page.getByText('IMG-QA-2', { exact: true }).last().waitFor();
+    const imagePrior = page.getByRole('region', { name: '上次打回原因' });
+    await imagePrior.getByText('文字遮挡', { exact: true }).waitFor();
+    assert.match(await imagePrior.innerText(), /仅图片/u);
+    assert.match(await imagePrior.innerText(), /第 2 页、 第 4 页|第 2 页、第 4 页/u);
+    assert.match(await imagePrior.innerText(), /第 2 页标题被遮挡/u);
     assert.equal(await page.getByRole('button', { name: '通过并下一条', exact: true }).isDisabled(), true);
     const queryToggle = page.getByRole('button', { name: /^原始 Query/u });
     await queryToggle.click();
@@ -593,9 +627,9 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     await page.getByRole('button', { name: /#3.*Query 3/u }).click();
     await page.waitForFunction(() => document.querySelector('#review-copy-title')?.value === '桌面收纳文案 3');
     const planId = randomUUID(), runningId = randomUUID();
-    jobs.set(planId, { id: planId, status: 'SUCCEEDED', copyRevisionId: 103,
+    jobs.set(planId, { id: planId, status: 'SUCCEEDED', requestedByUsername: 'worker', requestedByAccountId: 8, copyRevisionId: 103,
       copy: tasks.at(-1).copyRevisions[0].content.copy, result: { imagePlan: tasks.at(-1).copyRevisions[0].content.imagePlan } });
-    jobs.set(runningId, { id: runningId, status: 'RUNNING' });
+    jobs.set(runningId, { id: runningId, status: 'RUNNING', requestedByUsername: 'worker', requestedByAccountId: 8 });
     const storageKey = 'xhs:background-tasks:v1:work-mode-browser';
     await page.evaluate(({ storageKey, planId, runningId }) => {
       localStorage.setItem(storageKey, JSON.stringify([
@@ -675,7 +709,7 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     assert.notEqual(await page.locator('#review-copy-title').inputValue(), '后续作业文案 65');
     // Toast actions also use the guarded in-mode path, including a type switch.
     imageTask.state = 'MANUAL_ARCHIVE';
-    const editId = randomUUID(); jobs.set(editId, { id: editId, status: 'PREVIEW_READY' });
+    const editId = randomUUID(); jobs.set(editId, { id: editId, status: 'PREVIEW_READY', created_by: 'worker', created_by_account_id: 8 });
     await page.evaluate(({ storageKey, editId }) => {
       const rows = JSON.parse(localStorage.getItem(storageKey));
       rows.unshift({ id: editId, kind: 'IMAGE_EDIT', taskId: 4, page: 1, status: 'RUNNING', createdAt: Date.now(), read: false });

@@ -39,10 +39,17 @@ export async function loadWorkModePage(repository, options, actor) {
         rework: task.mandatoryCopyQc === true || task.state === 'IMAGE_REWORK_PENDING', state: task.state,
         version: kind === 'COPY' ? task.currentCopyRevisionId : task.currentImageRunId })) };
   }
+  if (kind === 'COPY_QA') {
+    const page = await repository.listCopyQaWorkItemsV2({ sampleKind, limit, offset,
+      ...(itemId === undefined ? {} : { itemPublicId: itemId }) }, { actor });
+    return { kind, kinds, total: page.total, hasMore: page.hasMore,
+      items: page.items.map(item => ({ id: item.id, kind, label: item.anonymousCode,
+        source: item.blindReview ? null : item.productionBatch?.queryPackageName ?? null,
+        rework: item.sampleKind === 'MANDATORY_RECHECK', qa: item })) };
+  }
   const query = { status: 'PENDING', actionableOnly: true, limit: limit + 1, offset,
     ...(itemId === undefined ? {} : { itemPublicId: itemId }) };
-  const rows = kind === 'COPY_QA' ? await repository.listCopyQaItems({ ...query, sampleKind }, { actor })
-    : (await repository.listImageQaItems(query, { actor })).items;
+  const rows = (await repository.listImageQaItems(query, { actor })).items;
   const hasMore = rows.length > limit;
   return { kind, kinds, total: hasMore ? null : offset + rows.length, hasMore,
     items: rows.slice(0, limit).map(item => ({ id: item.id, kind, label: item.anonymousCode,

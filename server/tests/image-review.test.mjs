@@ -41,6 +41,7 @@ function fixture(overrides = {}, {
     async query(sql, values = []) {
       queries.push({ sql, values });
       if (/^(BEGIN|COMMIT|ROLLBACK)$/u.test(sql)) return { rows: [] };
+      if (sql.includes('SELECT id FROM tasks WHERE id=$1 FOR UPDATE')) return { rows: [{ id: task.id }] };
       if (sql.includes('SELECT * FROM app_users')) return { rows: [{ id: 1, username: 'admin', role: 'ADMIN', status: 'ACTIVE', credential_version: 1 }] };
       if (sql.includes('SELECT * FROM tasks')) return { rows: [{ ...task }] };
       if (sql.includes('INSERT INTO human_quality_review_submissions')) {
@@ -112,6 +113,11 @@ function fixture(overrides = {}, {
         assessments.push(row);
         return { rows: [row] };
       }
+      if (sql.includes('UPDATE delivery_entries SET reference_asset_id_cutoff')) {
+        const delivery = deliveries.find(row => row.id === Number(values[0]));
+        if (delivery) delivery.reference_asset_id_cutoff = 0;
+        return { rows: delivery ? [{ reference_asset_id_cutoff: 0 }] : [] };
+      }
       if (sql.includes('UPDATE delivery_entries')) {
         for (const delivery of deliveries) {
           if (delivery.task_id === Number(values[0]) && delivery.status === 'READY') delivery.status = 'WITHDRAWN';
@@ -124,6 +130,7 @@ function fixture(overrides = {}, {
       if (sql.includes('INSERT INTO delivery_entries')) {
         const row = {
           id: deliveries.length + 1,
+          created_at: new Date(),
           task_id: Number(values[0]),
           copy_revision_id: Number(values[1]),
           image_run_id: values[2],
@@ -134,6 +141,10 @@ function fixture(overrides = {}, {
         deliveries.push(row);
         return { rows: [row] };
       }
+      if (sql.includes('FROM delivery_entries') && sql.includes('reference_asset_id_cutoff')) {
+        return { rows: deliveries.slice(-1) };
+      }
+      if (sql.includes("asset_role='REFERENCE'")) return { rows: [] };
       if (sql.includes('UPDATE tasks SET')) {
         const retry = ['IMAGE_QUEUED', 'COPY_REVIEW_PENDING'].includes(values[1]);
         const copyRework = values[1] === 'COPY_REVIEW_PENDING';

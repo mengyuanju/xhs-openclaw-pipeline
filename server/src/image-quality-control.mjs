@@ -17,6 +17,7 @@ import {
 import { normalizeListPagination } from './list-pagination.mjs';
 import { lockWorkflowQualitySettings, readWorkflowQualitySettings } from './workflow-quality-settings.mjs';
 import { normalizeHumanQualitySettings } from '../../src/human-quality-settings.mjs';
+import { recordQualityReviewCoverage } from './quality-review-coverage.mjs';
 
 export const IMAGE_SAMPLING_ALGORITHM_VERSION = 'account-bps-remainder-v1';
 const IMAGE_BATCH_TAIL_MS = 30 * 60 * 1000;
@@ -313,14 +314,17 @@ async function freezeBlockerCount(client, freezeId) {
 async function releaseFreeze(client, freeze, actor) {
   const approvals = (await client.query(`
     SELECT approval.*, item.id AS item_id, item.status AS item_status,
-      item.sample_kind, item.parent_item_id
+      item.sample_kind, item.parent_item_id,item.selected,
+      COALESCE(image_run.result->'simulation'->>'enabled'='true',false) AS simulated
     FROM image_sampling_items AS item
     JOIN image_approval_events AS approval ON approval.id = item.approval_event_id
+    LEFT JOIN image_runs AS image_run ON image_run.id=approval.image_run_id
     WHERE item.freeze_id = $1 ORDER BY item.id FOR UPDATE OF item
   `, [freeze.id])).rows;
+  const released=[];
   for (const approval of approvals) {
     if (!['NOT_SELECTED', 'PASSED'].includes(approval.item_status)) continue;
-    await releaseApproval(client, approval, actor, '图片抽检批次已通过，进入交付池');
+    if(await releaseApproval(client, approval, actor, '图片抽检批次已通过，进入交付池'))released.push(approval);
   }
   await client.query(`
     UPDATE image_sampling_items SET status = CASE WHEN status = 'PASSED' THEN 'PASSED' ELSE 'RELEASED' END,
@@ -333,10 +337,27 @@ async function releaseFreeze(client, freeze, actor) {
     ) THEN 'RELEASED_WITH_EXCEPTIONS' ELSE 'RELEASED' END, resolved_at = now(), version = version + 1
     WHERE id = $1
   `, [freeze.id]);
-  await client.query(`
+  const releaseRequestId=randomUUID();
+  const releaseEvent=(await client.query(`
     INSERT INTO image_sampling_events(freeze_id, action, actor_account_id, actor_username, request_id, details)
-    VALUES ($1,'RELEASE',$2,$3,$4,$5)
-  `, [freeze.id, actor.userId ?? null, actor.username, randomUUID(), { memberCount: approvals.length }]);
+    VALUES ($1,'RELEASE',$2,$3,$4,$5) RETURNING id
+  `, [freeze.id, actor.userId ?? null, actor.username, releaseRequestId,
+    { memberCount: approvals.length,coverageRecorded:true,
+      releasedCount:released.length }])).rows[0];
+  for(const approval of released){
+    await recordQualityReviewCoverage(client,{
+      accountId:actor.userId??null,taskId:Number(approval.task_id),stage:'IMAGE',
+      reviewItemKey:`IMAGE:legacy:${freeze.id}:${approval.task_id}`,kind:'BATCH_RELEASE',
+      operationKey:`IMAGE:legacy:${freeze.id}:BATCH_RELEASE:${releaseRequestId}`,
+      data:{freezeId:Number(freeze.id),samplingItemId:Number(approval.item_id),
+        approvalId:Number(approval.id),copyRevisionId:Number(approval.copy_revision_id),
+        imageRunId:approval.image_run_id,sampleKind:approval.sample_kind,
+        selected:approval.selected,source:'IMAGE_LEGACY',sourceEventId:releaseEvent?.id,
+        exclusion:approval.simulated===true?'SIMULATED'
+          :actor.userId!=null&&Number(approval.submitted_by_account_id)===Number(actor.userId)
+            ?'SELF_REVIEW':null},
+    });
+  }
   const parentIds = [...new Set(approvals
     .filter((approval) => approval.sample_kind === 'MANDATORY_RECHECK' && approval.parent_item_id)
     .map((approval) => Number(approval.parent_item_id)))];
@@ -526,6 +547,7 @@ export function imageQaItemFrom(row, actor) {
     && row.priority_paused !== true && row.task_state !== 'CANCELLED'
     && (actor.role === 'ADMIN' || (Number(row.submitter_account_id) !== actor.userId
       && row.image_reviewer_batch_return_enabled === true));
+  const previousReturn = imagePreviousReturnFrom(row);
   const item = {
     id: row.public_id,
     freezePublicId: row.freeze_public_id,
@@ -533,6 +555,7 @@ export function imageQaItemFrom(row, actor) {
     status: row.status,
     sampleKind: row.sample_kind,
     blindReview: blind,
+    previousReturn,
     assets: Array.isArray(row.assets) ? row.assets.map((asset) => ({
       id: Number(asset.id), mediaType: asset.media_type, sha256: asset.sha256,
       originalName: asset.original_name, pageIndex: Number(asset.page_index),
@@ -556,6 +579,32 @@ export function imageQaItemFrom(row, actor) {
     submitter: { accountId: Number(row.submitter_account_id), username: row.submitter_username },
     imageRunId: row.image_run_id,
     copyRevisionId: Number(row.copy_revision_id),
+  };
+}
+
+function imagePreviousReturnFrom(row) {
+  if (row.sample_kind !== 'MANDATORY_RECHECK' || !row.previous_return) return null;
+  const previous = row.previous_return;
+  const snapshots = Array.isArray(previous.reasonSnapshots) ? previous.reasonSnapshots : [];
+  const labelsByCode = new Map(snapshots
+    .filter((entry) => entry && typeof entry.code === 'string' && typeof entry.label === 'string')
+    .map((entry) => [entry.code, entry.label]));
+  const codes = Array.isArray(previous.reasonCodes) ? previous.reasonCodes : [];
+  const reasonLabels = codes.length
+    ? codes.filter((code) => typeof code === 'string')
+      .map((code) => labelsByCode.get(code) ?? code)
+    : snapshots.filter((entry) => typeof entry?.label === 'string').map((entry) => entry.label);
+  const returnedAt = previous.returnedAt == null ? null : new Date(previous.returnedAt);
+  return {
+    reasonLabels,
+    note: typeof previous.note === 'string' && previous.note.trim() ? previous.note : null,
+    returnedAt: returnedAt && Number.isFinite(returnedAt.valueOf()) ? returnedAt.toISOString() : null,
+    reworkTarget: ['COPY', 'IMAGE', 'BOTH'].includes(previous.reworkTarget) ? previous.reworkTarget : null,
+    problemPages: Array.isArray(previous.problemPages)
+      ? [...new Set(previous.problemPages.map(Number).filter((page) => Number.isSafeInteger(page) && page > 0))]
+        .toSorted((left, right) => left - right) : [],
+    copyFields: Array.isArray(previous.copyFields)
+      ? previous.copyFields.filter((field) => typeof field === 'string') : [],
   };
 }
 
@@ -613,6 +662,7 @@ export async function listImageQaItems(pool, options = {}, rawActor) {
     SELECT item.*, sampling_freeze.public_id AS freeze_public_id, sampling_freeze.blind_review_enabled,
       task.query, task.priority_paused, task.state AS task_state, task.source_query_package_name AS query_package_name,
       sampling_freeze.production_batch_id, settings.image_reviewer_batch_return_enabled,
+      previous_return.payload AS previous_return,
       (SELECT count(*)::integer FROM image_edit_requests AS edit
         WHERE edit.task_id = item.task_id AND edit.source_image_run_id = item.image_run_id
           AND edit.status = ANY($6::text[])) AS pending_image_edit_count,
@@ -626,6 +676,48 @@ export async function listImageQaItems(pool, options = {}, rawActor) {
     JOIN image_runs AS image_run
       ON image_run.id = item.image_run_id AND image_run.task_id = item.task_id
     CROSS JOIN workflow_quality_settings AS settings
+    LEFT JOIN LATERAL (
+      SELECT jsonb_build_object(
+        'reasonCodes', parent.reason_codes,
+        'reasonSnapshots', return_event.details->'reasonSnapshots',
+        'note', parent.note,
+        'returnedAt', parent.reviewed_at,
+        'reworkTarget', parent.rework_target,
+        'copyFields', parent.copy_fields,
+        'problemPages', COALESCE((
+          SELECT jsonb_agg(DISTINCT old_page_number.page_index ORDER BY old_page_number.page_index)
+          FROM image_runs AS old_run
+          CROSS JOIN LATERAL jsonb_array_elements(
+            CASE WHEN jsonb_typeof(old_run.result->'images') = 'array'
+              THEN old_run.result->'images' ELSE '[]'::jsonb END
+          ) WITH ORDINALITY AS old_page(image, page_index)
+          CROSS JOIN LATERAL (
+            SELECT CASE
+              WHEN (old_page.image->>'pageIndex') ~ '^[1-9][0-9]{0,9}$'
+                THEN CASE WHEN (old_page.image->>'pageIndex')::numeric <= 2147483647
+                  THEN (old_page.image->>'pageIndex')::integer ELSE old_page.page_index::integer END
+              ELSE old_page.page_index::integer
+            END AS page_index
+          ) AS old_page_number
+          WHERE old_run.id = parent.image_run_id AND old_run.task_id = parent.task_id
+            AND COALESCE(old_page.image->>'deliveryAssetId', old_page.image->>'assetId')
+              = ANY(parent.problem_asset_ids::text[])
+        ), '[]'::jsonb)
+      ) AS payload
+      FROM image_sampling_items AS parent
+      LEFT JOIN LATERAL (
+        SELECT event.id, event.details
+        FROM image_sampling_events AS event
+        WHERE (event.action = 'RETURN_SINGLE' AND event.sampling_item_id = parent.id)
+          OR (event.action = 'RETURN_BATCH' AND event.freeze_id = parent.freeze_id
+            AND parent.sample_kind = 'RANDOM')
+        ORDER BY event.created_at DESC, event.id DESC LIMIT 1
+      ) AS return_event ON true
+      WHERE item.sample_kind = 'MANDATORY_RECHECK' AND parent.id = item.parent_item_id
+        AND parent.task_id = item.task_id
+        AND (return_event.id IS NOT NULL OR (parent.reviewed_at IS NOT NULL
+          AND parent.status IN ('RETURNED', 'BATCH_RETURNED', 'SUPERSEDED')))
+    ) AS previous_return ON true
     LEFT JOIN LATERAL jsonb_array_elements(image_run.result->'images')
       WITH ORDINALITY AS page(image, page_index) ON true
     LEFT JOIN image_run_asset_view AS asset
@@ -644,7 +736,7 @@ export async function listImageQaItems(pool, options = {}, rawActor) {
             AND strpos(lower(person_filter.display_name), lower($5)) > 0
         )
       ))
-    GROUP BY item.id, sampling_freeze.id, task.id, settings.singleton
+    GROUP BY item.id, sampling_freeze.id, task.id, settings.singleton, previous_return.payload
     ORDER BY task.priority_sort_at, item.id
     LIMIT $3 OFFSET $4
   `, [...values, PENDING_IMAGE_EDIT_STATUSES, actor.role, ...(itemPublicId === null ? [] : [itemPublicId])]);
@@ -1038,10 +1130,12 @@ export async function batchReturnImageQa(pool, input, rawActor) {
     const reasonSnapshots = imageReasonSnapshots(reasonSettings, reasonCodes);
     const rows = (await client.query(`
       SELECT item.*, sampling_freeze.status AS freeze_status, task.priority_paused,
-        task.current_image_run_id, task.current_copy_revision_id
+        task.current_image_run_id, task.current_copy_revision_id,
+        COALESCE(image_run.result->'simulation'->>'enabled'='true',false) AS simulated
       FROM image_sampling_freezes AS sampling_freeze
       JOIN image_sampling_items AS item ON item.freeze_id = sampling_freeze.id
       JOIN tasks AS task ON task.id = item.task_id
+      LEFT JOIN image_runs AS image_run ON image_run.id=item.image_run_id
       WHERE sampling_freeze.public_id = $1 AND item.sample_kind = 'RANDOM' AND task.state <> 'CANCELLED'
       ORDER BY item.id FOR UPDATE OF sampling_freeze, item, task
     `, [freezePublicId])).rows;
@@ -1084,15 +1178,29 @@ export async function batchReturnImageQa(pool, input, rawActor) {
       UPDATE image_sampling_freezes SET status = 'BATCH_RETURNED', resolved_at = now(), version = version + 1
       WHERE id = $1
     `, [freezeId]);
-    await client.query(`
+    const batchEvent=(await client.query(`
       INSERT INTO image_sampling_events(freeze_id, action, actor_account_id, actor_username,
         request_id, reason_codes, note, details)
-      VALUES ($1,'RETURN_BATCH',$2,$3,$4,$5,$6,$7)
+      VALUES ($1,'RETURN_BATCH',$2,$3,$4,$5,$6,$7) RETURNING id
     `, [freezeId, actor.userId, actor.username, requestId, reasonCodes, note, {
       affectedCount: rows.length,
       affectedTaskIds: rows.map(row => Number(row.task_id)),
       reasonSnapshots,
-    }]);
+      coverageRecorded:true,
+    }])).rows[0];
+    for(const row of rows){
+      await recordQualityReviewCoverage(client,{
+        accountId:actor.userId,taskId:Number(row.task_id),stage:'IMAGE',
+        reviewItemKey:`IMAGE:legacy:${freezeId}:${row.task_id}`,kind:'BATCH_RETURN',
+        operationKey:`IMAGE:legacy:${freezeId}:BATCH_RETURN:${requestId}`,
+        data:{freezeId:Number(freezeId),samplingItemId:Number(row.id),
+          approvalId:Number(row.approval_event_id),copyRevisionId:Number(row.copy_revision_id),
+          imageRunId:row.image_run_id,sampleKind:row.sample_kind,selected:row.selected,
+          source:'IMAGE_LEGACY',sourceEventId:batchEvent?.id,
+          exclusion:row.simulated===true?'SIMULATED'
+            :Number(row.submitter_account_id)===Number(actor.userId)?'SELF_REVIEW':null},
+      });
+    }
     const response = { freezePublicId, status: 'BATCH_RETURNED', affectedCount: rows.length };
     await saveMutation(client, actor, requestId, 'RETURN_BATCH', fingerprint, response);
     return response;

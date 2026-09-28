@@ -6,10 +6,13 @@ import {
 import { resolveEffectiveCopySamplingPolicy } from '../../src/copy-sampling-policy.mjs';
 import { readWorkflowQualitySettings } from './workflow-quality-settings.mjs';
 import { resolveCopyQaReasonSnapshots } from './copy-qa-reason-tags.mjs';
-import { MAX_COPY_QA_REASON_CODES } from '../../src/copy-qa-reasons.mjs';
+import { COPY_QA_REASON_GROUPS, MAX_COPY_QA_REASON_CODES,
+  copyQaReasonDefinition, copyQaReasonLabel } from '../../src/copy-qa-reasons.mjs';
 import { COPY_QA_DISCARD_REASONS } from '../../src/copy-qa-discard-reasons.mjs';
 import { escalateNewCopyQaReturn, cleanReassignmentFiles } from './secondary-assignment.mjs';
 import { withdrawReadyDeliveryEntries } from './final-delivery.mjs';
+import { priorityOrderSql } from './task-priority.mjs';
+import { recordQualityReviewCoverage } from './quality-review-coverage.mjs';
 
 const conflict = (code, message) => { throw new ControlPlaneConflictError(code, message); };
 const fingerprint = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -227,7 +230,10 @@ export async function autoCreateCopyQaBatchesV2(client, accountId) {
 
 export async function routeCopyApprovalV2(client,{task,revision,approval,actor,aiDisclosureEnabled}) {
   const settings=await readWorkflowQualitySettings(client);
-  const mandatoryReview=task.mandatory_copy_qc===true;
+  // A V2 return records the rework obligation separately from the legacy
+  // mandatory flag. Once that rework is approved, it must still be inspected.
+  const mandatoryReview=task.mandatory_copy_qc===true||task.copy_qa_rework_pending===true;
+  const mandatoryOrigin=task.copy_qa_rework_pending===true?'QA_RETURN':task.mandatory_copy_qc_origin;
   const approverAccountId=mandatoryReview?integer(approval.approved_by_account_id):null;
   if(mandatoryReview&&(!approverAccountId||approverAccountId<1)){
     conflict('APPROVER_IDENTITY_MISSING','强制复检缺少最终审核账号');
@@ -249,7 +255,7 @@ export async function routeCopyApprovalV2(client,{task,revision,approval,actor,a
     execution_started_at=NULL,finished_at=NULL,error=NULL,last_activity_at=now(),
     progress_message='文案审核通过，等待质检成批',updated_at=now() WHERE id=$1 RETURNING *`,
   [task.id,revision.id,aiDisclosureEnabled,mandatoryReview,
-    mandatoryReview?task.mandatory_copy_qc_origin:null]);
+    mandatoryReview?mandatoryOrigin:null]);
   if(mandatoryReview){
     await createBatchInTransaction(client,[{
       task_id:task.id,copy_revision_id:revision.id,copy_qa_cycle:task.copy_qa_cycle,
@@ -287,18 +293,190 @@ export async function listCopyQaBatchesV2(pool,actor,view='PENDING') {
     returnTriggerCount:row.return_trigger_count,createdAt:row.created_at}));
 }
 
+// The verdict belongs to the preceding quality cycle member, rather than to
+// whichever old return happens to be latest for the task. Legacy members were
+// migrated into the same return-event ledger, so the same link covers both.
+const PREVIOUS_RETURN_SELECT = `
+  previous_event.id AS previous_return_event_id,
+  previous_event.created_at AS previous_return_event_at,
+  previous_member.reason_codes AS previous_member_reason_codes,
+  previous_member.reason_snapshots AS previous_member_reason_snapshots,
+  previous_member.note AS previous_member_note,
+  previous_member.decided_at AS previous_member_decided_at,
+  previous_legacy.reason_codes AS previous_legacy_reason_codes,
+  previous_legacy.note AS previous_legacy_note,
+  previous_legacy.reviewed_at AS previous_legacy_reviewed_at,
+  previous_legacy_event.reason_codes AS previous_legacy_event_reason_codes,
+  previous_legacy_event.note AS previous_legacy_event_note,
+  previous_legacy_event.created_at AS previous_legacy_event_at,
+  previous_legacy_event.details->'reasonSnapshots' AS previous_legacy_event_reason_snapshots,
+  previous_revision.content->'qualityReturn' AS previous_return_snapshot`;
+
+const PREVIOUS_RETURN_JOINS = `
+  LEFT JOIN LATERAL (
+    SELECT event.id,event.created_at,event.member_id,event.legacy_item_id
+    FROM copy_qa_return_events_v2 AS event
+    WHERE event.task_id=member.task_id AND event.quality_cycle=member.quality_cycle
+      AND event.created_at < member.created_at
+      AND (event.member_id IS NULL OR event.member_id<>member.id)
+    ORDER BY event.created_at DESC,event.id DESC LIMIT 1
+  ) AS previous_event ON true
+  LEFT JOIN copy_qa_batch_members_v2 AS previous_member ON previous_member.id=previous_event.member_id
+  LEFT JOIN copy_sampling_items AS previous_legacy ON previous_legacy.id=previous_event.legacy_item_id
+  LEFT JOIN LATERAL (
+    SELECT event.reason_codes,event.note,event.created_at,event.details
+    FROM copy_sampling_events AS event
+    WHERE previous_legacy.id IS NOT NULL AND event.freeze_id=previous_legacy.freeze_id
+      AND ((event.action='RETURN_SINGLE' AND event.sampling_item_id=previous_legacy.id)
+        OR (event.action='RETURN_BATCH' AND
+          (event.sampling_item_id=previous_legacy.id
+            OR event.details->'affectedItemIds' ? previous_legacy.public_id::text)))
+    ORDER BY event.created_at DESC LIMIT 1
+  ) AS previous_legacy_event ON true
+  LEFT JOIN LATERAL (
+    SELECT returned.content FROM copy_revisions AS returned
+    WHERE returned.task_id=member.task_id AND returned.id<member.copy_revision_id
+      AND returned.revision_origin='QA_RETURN'
+      AND returned.content->'qualityReturn'->>'samplingItemId'
+        = COALESCE(previous_member.public_id,previous_legacy.public_id)::text
+    ORDER BY returned.id DESC LIMIT 1
+  ) AS previous_revision ON true`;
+
+function record(value) {
+  return value && typeof value==='object' && !Array.isArray(value) ? value : null;
+}
+
+function returnDate(value) {
+  if(value===null||value===undefined||value==='')return null;
+  const date=new Date(value);
+  return Number.isNaN(date.getTime())?null:date.toISOString();
+}
+
+const REASON_GROUP_LABELS=new Map(COPY_QA_REASON_GROUPS.map(group=>[group.code,group.label]));
+
+function previousReasonLabels(codes,snapshots) {
+  const entries=codes.length
+    ?codes.map(code=>({code,snapshot:snapshots.find(entry=>entry?.code===code)}))
+    :snapshots.map(snapshot=>({code:snapshot?.code,snapshot}));
+  return entries.flatMap(({code,snapshot})=>{
+    const definition=copyQaReasonDefinition(code);
+    let label=typeof snapshot?.label==='string'&&snapshot.label.trim()
+      ?snapshot.label.trim():copyQaReasonLabel(code,snapshots).trim();
+    if(/^CUSTOM:/iu.test(code)&&label===code)label='历史自定义问题标签';
+    if(!label)return [];
+    const group=REASON_GROUP_LABELS.get(snapshot?.group)
+      ??REASON_GROUP_LABELS.get(definition?.group);
+    return [group&&!label.startsWith(`${group} · `)?`${group} · ${label}`:label];
+  });
+}
+
+function previousReturnFrom(row) {
+  if(row.previous_return_event_id==null)return null;
+  const saved=record(row.previous_return_snapshot);
+  const reasonCodes=[saved?.reasonCodes,row.previous_member_reason_codes,
+    row.previous_legacy_event_reason_codes,row.previous_legacy_reason_codes]
+    .find(value=>Array.isArray(value)&&value.length)??[];
+  const snapshots=[saved?.reasonSnapshots,row.previous_member_reason_snapshots,
+    row.previous_legacy_event_reason_snapshots]
+    .find(value=>Array.isArray(value)&&value.length)??[];
+  const reasonLabels=previousReasonLabels(reasonCodes,snapshots);
+  const rawNote=saved?.note??row.previous_member_note??row.previous_legacy_event_note
+    ??row.previous_legacy_note;
+  return {
+    reasonLabels,
+    note:typeof rawNote==='string'&&rawNote.trim()?rawNote.trim():null,
+    returnedAt:returnDate(saved?.returnedAt??row.previous_member_decided_at
+      ??row.previous_legacy_event_at??row.previous_legacy_reviewed_at??row.previous_return_event_at),
+  };
+}
+
+function sampleKindFrom(row) {
+  return row.mandatory_copy_qc===true||row.previous_return_event_id!=null
+    ?'MANDATORY_RECHECK':'RANDOM';
+}
+
+function opaqueCode(prefix,id) {
+  return `${prefix}-${createHash('sha256').update(String(id)).digest('hex').slice(0,12).toUpperCase()}`;
+}
+
+function workQaItemFrom(row,actor) {
+  const blind=row.blind_review_enabled===true&&actor.role!=='ADMIN';
+  const canReview=actor.role==='ADMIN'||Number(row.approver_account_id)!==Number(actor.userId);
+  const common={
+    qaVersion:2,
+    id:row.public_id,
+    freezePublicId:row.batch_public_id,
+    anonymousCode:opaqueCode('QC',row.public_id),
+    blindReview:blind,
+    status:row.status,
+    sampleKind:sampleKindFrom(row),
+    approvedRevision:{content:blind?blindContent(row.content):row.content,
+      contentSha256:row.content_sha256,revisionToken:row.content_sha256},
+    content:blind?blindContent(row.content):row.content,
+    revisionToken:row.content_sha256,
+    productionBatch:{anonymousCode:opaqueCode('QCB',row.batch_public_id)},
+    capabilities:{canPass:canReview,canReturnSingle:canReview,canReturnBatch:false,canEscalate:false},
+    previousReturn:previousReturnFrom(row),
+    createdAt:row.created_at,
+  };
+  if(blind)return common;
+  return {...common,query:row.query,taskId:Number(row.task_id),
+    approvedRevision:{...common.approvedRevision,id:Number(row.copy_revision_id)},
+    productionBatch:{...common.productionBatch,queryPackageName:row.source_query_package_name??null},
+    source:{finalApproverAccountId:Number(row.approver_account_id),
+      finalApproverUsername:row.approver_username??null}};
+}
+
+export async function listCopyQaWorkItemsV2(pool,{
+  sampleKind='ALL',limit=50,offset=0,itemPublicId=null,
+}={},actor) {
+  if(!['ALL','RANDOM','MANDATORY_RECHECK'].includes(sampleKind))throw new TypeError('sampleKind is invalid');
+  if(!Number.isSafeInteger(Number(limit))||Number(limit)<1||Number(limit)>100)throw new TypeError('limit is invalid');
+  if(!Number.isSafeInteger(Number(offset))||Number(offset)<0||Number(offset)>1_000_000)throw new TypeError('offset is invalid');
+  const itemId=itemPublicId==null?null:normalizeUuid(itemPublicId,'itemPublicId');
+  await activeActor(pool,actor,{qc:true});
+  const own=actor.role==='ADMIN'?null:Number(actor.userId);
+  const rows=(await pool.query(`SELECT member.*,batch.public_id AS batch_public_id,
+      batch.display_name AS batch_display_name,batch.blind_review_enabled,
+      task.query,task.mandatory_copy_qc,revision.content,
+      source_batch.query_package_name AS source_query_package_name,
+      approval.approved_by_username AS approver_username,
+      ${PREVIOUS_RETURN_SELECT}
+    FROM copy_qa_batch_members_v2 AS member
+    JOIN copy_qa_batches_v2 AS batch ON batch.id=member.batch_id AND batch.status='INSPECTING'
+    JOIN tasks AS task ON task.id=member.task_id AND task.state='COPY_QC_PENDING'
+      AND task.current_copy_revision_id=member.copy_revision_id AND task.priority_paused=false
+    JOIN copy_revisions AS revision ON revision.id=member.copy_revision_id
+    JOIN copy_approval_events AS approval ON approval.id=member.approval_event_id
+    LEFT JOIN production_batches AS source_batch ON source_batch.id=task.production_batch_id
+    ${PREVIOUS_RETURN_JOINS}
+    WHERE member.selected AND member.status='PENDING'
+      AND ($1::bigint IS NULL OR member.approver_account_id<>$1)
+      AND ($2::text='ALL' OR CASE WHEN task.mandatory_copy_qc=true
+        OR previous_event.id IS NOT NULL THEN 'MANDATORY_RECHECK' ELSE 'RANDOM' END=$2)
+      AND ($3::uuid IS NULL OR member.public_id=$3)
+    ORDER BY ${priorityOrderSql('task.')},member.id
+    LIMIT $4 OFFSET $5`,[own,sampleKind,itemId,Number(limit)+1,Number(offset)])).rows;
+  const hasMore=rows.length>Number(limit);
+  const page=rows.slice(0,Number(limit));
+  return {items:page.map(row=>workQaItemFrom(row,actor)),hasMore,
+    total:hasMore?null:Number(offset)+page.length};
+}
+
 export async function listCopyQaBatchItemsV2(pool,batchId,actor) {
   const id=normalizeUuid(batchId,'batchId');
   await activeActor(pool,actor,{qc:true});
   const own=actor.role==='ADMIN'?null:Number(actor.userId);
   const batch=(await pool.query('SELECT * FROM copy_qa_batches_v2 WHERE public_id=$1',[id])).rows[0];
   if(!batch)throw new ControlPlaneNotFoundError('质检批次不存在');
-  const rows=(await pool.query(`SELECT member.*,task.query,revision.content,
-      approval.approved_by_username AS approver_username
+  const rows=(await pool.query(`SELECT member.*,task.query,task.mandatory_copy_qc,revision.content,
+      approval.approved_by_username AS approver_username,
+      ${PREVIOUS_RETURN_SELECT}
     FROM copy_qa_batch_members_v2 AS member
     JOIN tasks AS task ON task.id=member.task_id
     JOIN copy_revisions AS revision ON revision.id=member.copy_revision_id
     JOIN copy_approval_events AS approval ON approval.id=member.approval_event_id
+    ${PREVIOUS_RETURN_JOINS}
     WHERE member.batch_id=$1 AND member.selected AND ($2::bigint IS NULL OR member.approver_account_id<>$2)
     ORDER BY member.id`,[batch.id,own])).rows;
   const blind=batch.blind_review_enabled&&actor.role!=='ADMIN';
@@ -308,6 +486,7 @@ export async function listCopyQaBatchItemsV2(pool,batchId,actor) {
       id:row.public_id,taskId:blind?null:Number(row.task_id),
       query:blind?null:row.query,content:blind?blindContent(row.content):row.content,status:row.status,
       approverUsername:blind?null:row.approver_username,revisionToken:row.content_sha256,
+      sampleKind:sampleKindFrom(row),previousReturn:previousReturnFrom(row),
       discardReasonCode:row.status==='DISCARDED'?row.reason_codes?.[0]??null:null,
       dispositionNote:row.status==='DISCARDED'?row.note:null,
       createdAt:row.created_at,
@@ -325,10 +504,22 @@ async function releaseMember(client,member,{reviewed=false}={}) {
   if(updated.rowCount!==1)conflict('STALE_QA_ITEM','任务状态或版本已变化');
 }
 
-async function completeBatch(client,batchId,status) {
+async function completeBatch(client,batchId,status,actor=null) {
   const members=(await client.query(`SELECT * FROM copy_qa_batch_members_v2 WHERE batch_id=$1
     AND status='NOT_SELECTED' ORDER BY task_id FOR UPDATE`,[batchId])).rows;
-  for(const member of members)await releaseMember(client,member);
+  for(const member of members){
+    await releaseMember(client,member);
+    await recordQualityReviewCoverage(client,{
+      accountId:actor?.userId??null,taskId:Number(member.task_id),stage:'COPY',
+      reviewItemKey:`COPY:v2:${member.id}`,kind:'BATCH_RELEASE',
+      operationKey:`COPY:v2:${batchId}:BATCH_RELEASE`,
+      data:{qaBatchId:Number(batchId),samplingItemId:Number(member.id),
+        copyRevisionId:Number(member.copy_revision_id),qualityCycle:Number(member.quality_cycle),
+        selected:false,sampleKind:'RANDOM',source:'COPY_V2',
+        exclusion:actor?.userId!=null&&Number(member.approver_account_id)===Number(actor.userId)
+          ?'SELF_REVIEW':null},
+    });
+  }
   await client.query(`UPDATE copy_qa_batch_members_v2 SET status='RELEASED'
     WHERE batch_id=$1 AND status='NOT_SELECTED'`,[batchId]);
   await client.query(`UPDATE copy_qa_batches_v2 SET status=$2,completed_at=now(),version=version+1
@@ -337,24 +528,31 @@ async function completeBatch(client,batchId,status) {
 
 async function recordQualityOutcome(client,member,actor,outcome,kind) {
   const isSelf=Number(member.approver_account_id)===Number(actor.userId);
-  const context=(await client.query(`SELECT approval.approved_by_username,task.production_batch_id
+  const context=(await client.query(`SELECT approval.approved_by_username,task.production_batch_id,
+    task.mandatory_copy_qc,EXISTS(SELECT 1 FROM copy_qa_return_events_v2 previous
+      WHERE previous.task_id=$2 AND previous.quality_cycle=$3
+        AND previous.member_id IS DISTINCT FROM $4) AS prior_return
     FROM copy_approval_events AS approval JOIN tasks AS task ON task.id=approval.task_id
-    WHERE approval.id=$1`,[member.approval_event_id])).rows[0];
+    WHERE approval.id=$1`,[member.approval_event_id,member.task_id,member.quality_cycle,member.id])).rows[0];
   const data={batchId:context?.production_batch_id==null?null:Number(context.production_batch_id),
     qaBatchId:Number(member.batch_id),samplingItemId:Number(member.id),
     reviewerId:actor.userId,username:context?.approved_by_username??null,
-    selected:member.selected,source:kind};
+    selected:member.selected,source:kind,reviewItemKey:`COPY:v2:${member.id}`,
+    copyRevisionId:Number(member.copy_revision_id),qualityCycle:Number(member.quality_cycle),
+    sampleKind:context?.mandatory_copy_qc===true||context?.prior_return===true
+      ?'MANDATORY_RECHECK':'RANDOM'};
   if(!isSelf)await client.query(`INSERT INTO account_quality_events(
     event_key,task_id,stage,account_id,action,establishes_sample,occurred_at,data)
-    VALUES($1,$2,'COPY',$3,$4,true,clock_timestamp(),$5)
+    VALUES($1,$2,'COPY',$3,$4,true,now(),$5)
     ON CONFLICT DO NOTHING`,[`copy-v2:${member.id}`,member.task_id,member.approver_account_id,
       outcome,data]);
   if(kind!=='BATCH_AFFECTED')await client.query(`INSERT INTO quality_review_activity_events(
     event_key,account_id,task_id,stage,kind,occurred_at,data)
-    VALUES($1,$2,$3,'COPY','QA_REVIEW',clock_timestamp(),$4)
+    VALUES($1,$2,$3,'COPY','QA_REVIEW',now(),$4)
     ON CONFLICT DO NOTHING`,[`copy-v2:${member.id}`,actor.userId,member.task_id,
       {...data,outcome,
         ...(isSelf?{exclusion:'SELF_REVIEW'}:{})}]);
+  return data;
 }
 
 async function returnMember(client,member,actor,{note,reasonCodes=[],reasonSnapshots=[],kind,storageRoot,caseIds}) {
@@ -369,11 +567,11 @@ async function returnMember(client,member,actor,{note,reasonCodes=[],reasonSnaps
   [member.id,kind==='DIRECT'?'RETURNED':'BATCH_AFFECTED',actor.userId,reasonCodes,JSON.stringify(reasonSnapshots),note]);
   await client.query(`INSERT INTO copy_qa_return_events_v2(task_id,quality_cycle,member_id,kind)
     VALUES($1,$2,$3,$4)`,[member.task_id,member.quality_cycle,member.id,kind]);
-  await recordQualityOutcome(client,member,actor,'RETURN',kind);
+  const qualityData=await recordQualityOutcome(client,member,actor,'RETURN',kind);
   if(prior>0){
     const caseId=await escalateNewCopyQaReturn(client,task,member,actor,{note,reasonCodes,storageRoot});
     caseIds?.push(caseId);
-    return;
+    return qualityData;
   }
   const current=(await client.query(`SELECT * FROM copy_revisions WHERE id=$1`,[member.copy_revision_id])).rows[0];
   const revision=(await client.query(`INSERT INTO copy_revisions(task_id,revision,content,parent_revision_id,
@@ -393,6 +591,7 @@ async function returnMember(client,member,actor,{note,reasonCodes=[],reasonSnaps
       ELSE '文案质检驳回，修改并重新审核后按普通规则成批' END,updated_at=now()
     WHERE id=$1`,[member.task_id,revision.id,task.mandatory_copy_qc===true,
     task.mandatory_copy_qc===true?task.mandatory_copy_qc_origin:null]);
+  return qualityData;
 }
 
 async function discardMember(client,member,actor,{reasonCode,note,requestId}) {
@@ -423,11 +622,11 @@ async function discardMember(client,member,actor,{reasonCode,note,requestId}) {
     query:context?.query??null,selected:true,reasonCode,note,source:'COPY_QA_DISCARD'};
   await client.query(`INSERT INTO account_quality_events(
     event_key,task_id,stage,account_id,action,establishes_sample,occurred_at,data)
-    VALUES($1,$2,'COPY',$3,'DISCARD',$4,clock_timestamp(),$5) ON CONFLICT DO NOTHING`,
+    VALUES($1,$2,'COPY',$3,'DISCARD',$4,now(),$5) ON CONFLICT DO NOTHING`,
   [`copy-v2-discard:${member.id}`,member.task_id,member.approver_account_id,!isSelf,data]);
   await client.query(`INSERT INTO quality_review_activity_events(
     event_key,account_id,task_id,stage,kind,occurred_at,data)
-    VALUES($1,$2,$3,'COPY','QA_DISCARD',clock_timestamp(),$4) ON CONFLICT DO NOTHING`,
+    VALUES($1,$2,$3,'COPY','QA_DISCARD',now(),$4) ON CONFLICT DO NOTHING`,
   [`copy-v2-discard:${member.id}`,actor.userId,member.task_id,
     {...data,outcome:'DISCARD',...(isSelf?{exclusion:'SELF_REVIEW'}:{})}]);
 }
@@ -440,12 +639,30 @@ async function maybeCloseBatch(client,batch,actor,storageRoot,caseIds) {
       && Number(stats.returned)>=Number(batch.return_trigger_count)){
     const affected=(await client.query(`SELECT * FROM copy_qa_batch_members_v2
       WHERE batch_id=$1 AND status IN ('PENDING','NOT_SELECTED') ORDER BY task_id FOR UPDATE`,[batch.id])).rows;
-    for(const member of affected)await returnMember(client,member,actor,
-      {note:'达到批次驳回率阈值，系统自动整批驳回',kind:'BATCH_AFFECTED',storageRoot,caseIds});
+    for(const member of affected){
+      const qualityData=await returnMember(client,member,actor,
+        {note:'达到批次驳回率阈值，系统自动整批驳回',kind:'BATCH_AFFECTED',storageRoot,caseIds});
+      await recordQualityReviewCoverage(client,{
+        accountId:actor.userId,taskId:Number(member.task_id),stage:'COPY',
+        reviewItemKey:`COPY:v2:${member.id}`,kind:'BATCH_RETURN',
+        operationKey:`COPY:v2:${batch.id}:BATCH_RETURN`,
+        data:{...qualityData,source:'COPY_V2',
+          exclusion:Number(member.approver_account_id)===Number(actor.userId)?'SELF_REVIEW':null},
+      });
+    }
+    await client.query(`INSERT INTO quality_review_activity_events(
+      event_key,account_id,task_id,stage,kind,occurred_at,data)
+      VALUES($1,$2,NULL,'COPY','QA_BATCH_RETURN',now(),$3)
+      ON CONFLICT(event_key) DO NOTHING`,[
+      `copy-v2-batch-return:${batch.id}`,actor.userId,
+      {qaBatchId:Number(batch.id),operationKey:`COPY:v2:${batch.id}:BATCH_RETURN`,
+        affectedCount:affected.length,affectedTaskIds:affected.map(member=>Number(member.task_id)),
+        source:'COPY_V2',coverageRecorded:true,exclusion:null},
+    ]);
     await client.query(`UPDATE copy_qa_batches_v2 SET status='AUTO_RETURNED',completed_at=now(),
       version=version+1 WHERE id=$1`,[batch.id]);
   }else if(Number(stats.pending)===0){
-    await completeBatch(client,batch.id,'COMPLETED');
+    await completeBatch(client,batch.id,'COMPLETED',actor);
   }
 }
 

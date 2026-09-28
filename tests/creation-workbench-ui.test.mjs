@@ -560,9 +560,11 @@ test('image review fits the complete image, supports exterior controls, and pres
   assert.match(currentImageEditor, /图片模型融合/u);
   assert.match(currentImageEditor, /aria-label="最近常用标识文字"/u);
   assert.match(currentImageEditor, /addRecentDisclosureText\(current,text\)/u);
-  assert.match(currentImageEditor, /整套 \{imageAssets\.length\} 张/u);
-  assert.match(currentImageEditor, /batchId,sourceImageRunId:runId/u);
-  assert.match(currentImageEditor, /一次采用整套标识/u);
+  assert.match(currentImageEditor, /选择第 \$\{targetPage\} 页生成标识/u);
+  assert.match(currentImageEditor, /预览第 \$\{targetPage\} 页图片/u);
+  assert.match(currentImageEditor, /生成已选 \$\{textPages\.length\} 张/u);
+  assert.match(currentImageEditor, /image-edits\/batch/u);
+  assert.match(currentImageEditor, /一次采用已选 \$\{disclosureBatchSize\} 张标识/u);
   assert.match(currentImageEditor, /cancel:'直接删除此修复'/u);
   assert.match(currentImageEditor, /'apply-suggestion':'采用建议并修改'/u);
   assert.match(currentImageEditor, /LOCAL_EDIT_SUGGESTION/u);

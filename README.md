@@ -104,6 +104,8 @@ npm run executor -- --enable-image-worker
 
 ## 提供方与配置
 
+需要并行比较国内搜索服务的实际摘要和来源，可运行独立的[联网搜索 API 对比测试站](search-lab/README.md)：`npm run search:lab`，默认访问 `http://127.0.0.1:3077`。测试站在页面临时接收各产品的 Key，不修改生产搜索配置。
+
 生成引擎固定 `CODEX`。`XHS_COPY_GENERATION_PROVIDER` 支持 `CODEX`、`DOTS`；`XHS_WEB_SEARCH_PROVIDER` 支持 `CODEX`、`DEEPSEEK`，默认 DeepSeek Flash。文案和搜索的切换相互独立。
 
 生产配置中保存的非空值优先于执行机环境变量，`null` 表示继承环境或默认值。中心配置进入后续执行快照，已领取任务使用原快照。页面搜索面板只修改搜索字段，保留其他生产参数。Key 由实际调用服务的主机提供，不保存到配置 JSON。

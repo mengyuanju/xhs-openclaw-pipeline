@@ -61,26 +61,39 @@ test('work mode rechecks live account permission and stable identity', async () 
   }
 });
 
-test('quality work delegates redaction and shared-queue filtering to existing QA stores and preserves pagination', async () => {
+test('quality work delegates copy items to the active V2 queue and preserves pagination', async () => {
   const reviewer = { ...user, role: 'REVIEWER', copyQcEnabled: true, imageQcEnabled: true };
   const qa = Array.from({ length: 3 }, (_, i) => ({ id: `opaque-${i}`, anonymousCode: `QA-${i}`, blindReview: true,
     status: 'PENDING', sampleKind: 'MANDATORY_RECHECK', capabilities: { canPass: true, canReturnSingle: true },
-    approvedRevision: { revisionToken: 'opaque-token' }, productionBatch: { anonymousCode: 'batch' } }));
+    approvedRevision: { revisionToken: 'opaque-token' }, productionBatch: { anonymousCode: 'batch' },
+    previousReturn: { reasonLabels: ['标题不准确'], note: '请核对标题', returnedAt: '2026-09-23T10:00:00Z' } }));
   const calls = [];
   const repository = { getUserByUsername: async () => reviewer,
-    listCopyQaItems: async (options, context) => { calls.push({ options, context }); return qa.slice(options.offset, options.offset + options.limit); },
+    listCopyQaItems: () => { throw new Error('retired copy queue must not be read'); },
+    listCopyQaWorkItemsV2: async (options, context) => {
+      calls.push({ options, context });
+      const items = qa.slice(options.offset, options.offset + options.limit);
+      const hasMore = options.offset + items.length < qa.length;
+      return { items, hasMore, total: hasMore ? null : qa.length };
+    },
     listImageQaItems: async (options, context) => { calls.push({ options, context }); return { items: qa.slice(options.offset, options.offset + options.limit) }; } };
   for (const kind of ['COPY_QA', 'IMAGE_QA']) {
     const page = await loadWorkModePage(repository, { kind, limit: 2 }, { ...actor, role: 'REVIEWER' });
     assert.equal(page.items.length, 2); assert.equal(page.hasMore, true); assert.equal(page.total, null);
     assert.equal(page.items[0].source, null); assert.equal(page.items[0].taskId, undefined);
-    assert.equal(calls.at(-1).options.actionableOnly, true); assert.equal(calls.at(-1).options.status, 'PENDING');
+    if (kind === 'COPY_QA') {
+      assert.deepEqual(page.items[0].qa.previousReturn, qa[0].previousReturn);
+      assert.equal(calls.at(-1).options.limit, 2);
+      assert.equal(calls.at(-1).options.sampleKind, 'ALL');
+    } else {
+      assert.equal(calls.at(-1).options.actionableOnly, true);
+      assert.equal(calls.at(-1).options.status, 'PENDING');
+    }
     assert.equal(calls.at(-1).context.actor.userId, user.id);
     const publicId = '71717171-7171-4717-8717-717171717171';
     await loadWorkModePage(repository, { kind, itemId: publicId }, { ...actor, role: 'REVIEWER' });
     assert.equal(calls.at(-1).options.itemPublicId, publicId);
-    assert.equal(calls.at(-1).options.actionableOnly, true);
-    if (kind === 'COPY_QA') assert.equal(calls.at(-1).options.sampleKind, 'ALL');
+    if (kind === 'IMAGE_QA') assert.equal(calls.at(-1).options.actionableOnly, true);
   }
 });
 
@@ -93,10 +106,12 @@ test('copy QA kind is applied before pagination and is rejected for other work',
   const calls = [];
   const repository = {
     getUserByUsername: async () => reviewer,
-    listCopyQaItems: async options => {
+    listCopyQaWorkItemsV2: async options => {
       calls.push(options);
       const matching = mixed.filter(item => options.sampleKind === 'ALL' || item.sampleKind === options.sampleKind);
-      return matching.slice(options.offset, options.offset + options.limit);
+      const items = matching.slice(options.offset, options.offset + options.limit);
+      const hasMore = options.offset + items.length < matching.length;
+      return { items, hasMore, total: hasMore ? null : matching.length };
     },
   };
   const reviewerActor = { ...actor, role: 'REVIEWER' };
@@ -158,7 +173,7 @@ test('HTTP work endpoint forwards copy quality type and rejects invalid values',
   const reviewer = { ...user, role: 'REVIEWER', copyQcEnabled: true };
   let filters;
   const repository = { getUserByUsername: async () => reviewer,
-    listCopyQaItems: async options => { filters = options; return []; } };
+    listCopyQaWorkItemsV2: async options => { filters = options; return { items: [], hasMore: false, total: 0 }; } };
   const app = createControlPlaneApp({ repository, storageRoot: 'test-storage' });
   const server = app.listen(0, '127.0.0.1'); await new Promise(resolve => server.once('listening', resolve));
   const base = `http://127.0.0.1:${server.address().port}/v1/work-mode/items`;

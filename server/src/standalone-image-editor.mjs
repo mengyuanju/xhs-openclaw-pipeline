@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile, unlink, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { createImageEditingService, editTransaction, editStoragePath } from './image-editing.mjs';
+import { drainReferenceCleanup, scheduleReferenceCleanupForDeletedWorkspace } from './image-reference-cleanup.mjs';
 import { decodeReference, imageHash, shortText } from '../../src/image-edit-pixels.mjs';
 import { STANDALONE_IMAGE_EDITOR_LIMITS as LIMITS } from '../../src/standalone-image-editor-config.mjs';
 import { normalizeTaskId, normalizeUuid, ControlPlaneAuthorizationError, ControlPlaneNotFoundError, ControlPlaneConflictError } from './domain.mjs';
@@ -65,18 +66,8 @@ export function createStandaloneImageEditor({ pool, storageRoot }) {
   }
   const writableEdits=(id,actor)=>createImageEditingService({pool:writablePool(id,actor),storageRoot});
   async function createBatch(id,input,actor) {
-    if(!Array.isArray(input.edits)||!input.edits.length||input.edits.length>LIMITS.maxImages)throw new TypeError('请选择 1 至 5 张图片');
-    if(new Set(input.edits.map(item=>Number(item.targetPage))).size!==input.edits.length)throw new TypeError('同一批次不能重复提交同一张图片');
-    return editTransaction(writablePool(id,actor),async c=>{
-      // create() writes only database rows. Join all child creates to this
-      // transaction so no executor can claim a partially submitted image set.
-      const joined={query:c.query.bind(c),release(){}};
-      const joinedPool={query:joined.query,connect:async()=>({...joined,query:(sql,values)=>
-        ['BEGIN','COMMIT','ROLLBACK'].includes(sql)?Promise.resolve({rows:[]}):joined.query(sql,values)})};
-      const service=createImageEditingService({pool:joinedPool,storageRoot}),created=[];
-      for(const item of input.edits)created.push(await service.create(id,item,actor));
-      return created;
-    });
+    await access(id,actor);
+    return writableEdits(id,actor).createBatch(id,input,actor);
   }
   async function detail(id, actor) {
     const workspace = await access(id, actor);
@@ -157,7 +148,8 @@ export function createStandaloneImageEditor({ pool, storageRoot }) {
     if(!Array.isArray(input.workspaceIds)||!input.workspaceIds.length||input.workspaceIds.length>100)throw new TypeError('请选择 1 至 100 条图片编辑记录');
     const ids=[...new Set(input.workspaceIds.map(normalizeTaskId))].sort((a,b)=>a-b);
     const requestId=normalizeUuid(input.requestId,'requestId');
-    return editTransaction(pool,async c=>{
+    const newlyDeleted=[];
+    const result=await editTransaction(pool,async c=>{
       await c.query('SELECT id FROM app_users WHERE id=$1 FOR UPDATE',[actor.userId]);
       await currentActor(c,actor);
       const rows=(await c.query(`SELECT w.task_id,w.owner_id,${visibleWorkspace('w')} AS visible
@@ -177,9 +169,13 @@ export function createStandaloneImageEditor({ pool, storageRoot }) {
           WHERE task_id=$1 AND status IN ('DRAFT','QUEUED')`,[row.task_id]);
         await c.query(`INSERT INTO image_edit_events(task_id,action,actor,reason,request_id,detail)
           VALUES($1,'DELETE_WORKSPACE',$2,'删除图片编辑',$3,$4)`,[row.task_id,actor.username,requestId,{workspaceIds:ids}]);
+        await scheduleReferenceCleanupForDeletedWorkspace(c,row.task_id);
+        newlyDeleted.push(Number(row.task_id));
       }
       return {deletedIds:ids};
     });
+    for(const taskId of newlyDeleted)await drainReferenceCleanup(pool,storageRoot,{taskId}).catch(()=>{});
+    return result;
   }
   return {
     limits:LIMITS,access,detail,create,remove,createBatch,
@@ -205,7 +201,7 @@ export function createStandaloneImageEditor({ pool, storageRoot }) {
     async listEdits(id,actor) {
       await access(id,actor);
       const items=await edits.list(id);
-      const refs=(await pool.query("SELECT id,sha256 FROM assets WHERE task_id=$1 AND asset_role='REFERENCE'",[id])).rows;
+      const refs=(await pool.query("SELECT id,sha256 FROM assets WHERE task_id=$1 AND asset_role='REFERENCE' AND content_cleared_at IS NULL",[id])).rows;
       return items.map(edit=>({...edit,referenceAssets:refs.filter(ref=>edit.config.references.some(value=>Number(value.assetId)===Number(ref.id)))
         .map(ref=>({id:Number(ref.id),sha256:ref.sha256,url:assetUrl(ref.id),purpose:edit.config.references.find(value=>Number(value.assetId)===Number(ref.id)).purpose}))}));
     },
@@ -217,10 +213,12 @@ export function createStandaloneImageEditor({ pool, storageRoot }) {
       return workspace.deleted?{id:edit.id,task_id:edit.task_id,status:'DELETED'}:edit;
     },
     async createEdit(id,input,actor) {await access(id,actor);return writableEdits(id,actor).create(id,input,actor);},
+    async acceptBatch(id,batchId,input,actor) {await access(id,actor);return writableEdits(id,actor).acceptBatch(id,batchId,input,actor);},
     async uploadReference(id,input,actor) {await access(id,actor);const a=await writableEdits(id,actor).upload(id,input,actor);return {...a,url:assetUrl(a.id)};},
+    async deleteReference(id,assetId,actor) {await access(id,actor);return writableEdits(id,actor).deleteReference(id,assetId,actor);},
     async action(id,action,input,actor) {const edit=await editAccess(id,actor);return writableEdits(edit.task_id,actor).action(id,action,input,actor);},
     async asset(id,actor) {
-      const asset=(await pool.query('SELECT * FROM assets WHERE id=$1',[normalizeTaskId(id)])).rows[0];
+      const asset=(await pool.query('SELECT * FROM assets WHERE id=$1 AND content_cleared_at IS NULL',[normalizeTaskId(id)])).rows[0];
       if(!asset)throw new ControlPlaneNotFoundError('图片不存在');
       await access(asset.task_id,actor);
       const bytes=await readFile(editStoragePath(storageRoot,asset.storage_path));

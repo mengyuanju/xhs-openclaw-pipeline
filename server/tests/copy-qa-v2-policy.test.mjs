@@ -68,3 +68,33 @@ test('mandatory copy review refuses a missing approver before changing task stat
     aiDisclosureEnabled:true,
   }),{code:'APPROVER_IDENTITY_MISSING'});
 });
+
+test('V2 quality return remains a mandatory single-item recheck after copy rework',async()=>{
+  const queries=[];
+  const client={async query(sql,values=[]){
+    const source=String(sql).replace(/\s+/gu,' ').trim();
+    queries.push({sql:source,values});
+    if(source==='SELECT * FROM workflow_quality_settings WHERE singleton = 1'){
+      return {rows:[{version:1,copy_sampling_enabled:false,copy_sampling_rate_bps:0,
+        copy_batch_return_threshold_bps:5000,blind_review_enabled:true}]};
+    }
+    if(source.startsWith("UPDATE tasks SET state='COPY_QC_PENDING'")){
+      return {rows:[{state:'COPY_QC_PENDING',mandatory_copy_qc:values[3],mandatory_copy_qc_origin:values[4]}]};
+    }
+    if(source.startsWith('INSERT INTO copy_qa_batches_v2'))return {rows:[{id:88,public_id:'batch-88'}]};
+    if(source.startsWith('INSERT INTO copy_qa_batch_members_v2'))return {rows:[]};
+    throw new Error(`unexpected SQL: ${source}`);
+  }};
+  const result=await routeCopyApprovalV2(client,{
+    task:{id:101,copy_qa_cycle:0,mandatory_copy_qc:false,copy_qa_rework_pending:true},
+    revision:{id:204},approval:{id:704,approved_by_account_id:41,content_sha256:'a'.repeat(64)},
+    actor:{userId:41},aiDisclosureEnabled:true,
+  });
+  assert.equal(result.task.mandatory_copy_qc,true);
+  assert.equal(result.task.mandatory_copy_qc_origin,'QA_RETURN');
+  assert.equal(queries.some(({sql})=>sql.includes("state='IMAGE_QUEUED'")),false);
+  assert.deepEqual(queries.find(({sql})=>sql.startsWith('INSERT INTO copy_qa_batches_v2')).values.slice(0,9),
+    ['PERSONAL_AUTO',41,true,true,10000,5000,1,1,1]);
+  assert.deepEqual(queries.find(({sql})=>sql.startsWith('INSERT INTO copy_qa_batch_members_v2')).values,
+    [88,101,204,704,41,0,'a'.repeat(64),true,'PENDING']);
+});

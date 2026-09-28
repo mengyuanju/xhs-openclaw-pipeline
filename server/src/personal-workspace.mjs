@@ -1,12 +1,14 @@
 import { readAccountQualityFacts } from './account-quality-statistics.mjs';
 import { summarizeAccountQuality } from '../../src/account-quality-statistics.mjs';
-import { normalizePersonalFilters, selectPersonalTasks, summarizePersonalWorkspace } from '../../src/personal-workspace.mjs';
+import { normalizePersonalFilters, selectPersonalTasks, summarizePersonalToday, summarizePersonalWorkspace } from '../../src/personal-workspace.mjs';
 import { normalizeRange } from '../../src/web-statistics/summary.mjs';
 import { ControlPlaneAuthenticationError } from './domain.mjs';
 import { createHash } from 'node:crypto';
 import { readQaFacts } from './quality-review-statistics.mjs';
 import { readInspectionRounds } from './quality-rounds.mjs';
 import { qaMetricRows, summarizeQa, uniqueTaskCount } from '../../src/quality-review-statistics.mjs';
+import { buildPersonalQaActivity, personalQaMetricRows } from '../../src/personal-qa-statistics.mjs';
+import { readPersonalQaCoverage } from './personal-qa-coverage.mjs';
 
 const MAX_FACTS = 50_000;
 const iso = value => value instanceof Date ? value.toISOString() : value ?? null;
@@ -110,6 +112,51 @@ export const PERSONAL_EVENTS_SQL = `WITH personal_events AS (
     COALESCE(data->'reasons','[]'::jsonb) AS reasons,NULL::bigint AS round
   FROM events ORDER BY at,id LIMIT ${MAX_FACTS + 1}`;
 
+// One row is one valid manual submission. The account on the event is the
+// original submitter, so a later reassignment never moves their contribution.
+export const PERSONAL_SUBMISSIONS_SQL = `SELECT e.event_key AS id,e.task_id,e.stage,e.occurred_at AS at,
+    NOT EXISTS (SELECT 1 FROM operator_performance_events previous
+      WHERE previous.task_id=e.task_id AND previous.stage=e.stage
+        AND previous.kind='SUBMIT' AND previous.data->>'exclusion' IS NULL
+        AND (previous.occurred_at,previous.sequence_id)<(e.occurred_at,e.sequence_id)) AS first_submission,
+    e.data->>'rework'='true' AS rework
+  FROM operator_performance_events e
+  WHERE e.account_id=$1 AND e.occurred_at >= $2 AND e.occurred_at < $3
+    AND e.kind='SUBMIT' AND e.data->>'exclusion' IS NULL
+  ORDER BY e.occurred_at,e.event_key LIMIT ${MAX_FACTS + 1}`;
+
+// Copy QA v2 and some older receipts do not store sampleKind. Infer a repeat
+// review from an earlier valid verdict; the event with the same key is this decision.
+export const PERSONAL_QA_EVENTS_SQL = `SELECT e.*,
+    CASE WHEN e.data->>'sampleKind' IS NOT NULL THEN e.data->>'sampleKind'
+      WHEN e.kind='QA_REVIEW' THEN
+        CASE WHEN EXISTS (SELECT 1 FROM account_quality_events previous
+          WHERE previous.task_id=e.task_id AND previous.stage=e.stage
+            AND previous.event_key<>e.event_key AND previous.action IN ('PASS','RETURN')
+            AND previous.data->>'exclusion' IS NULL AND previous.occurred_at<e.occurred_at)
+        THEN 'MANDATORY_RECHECK' ELSE 'RANDOM' END
+      ELSE NULL END AS effective_sample_kind
+  FROM quality_review_activity_events e
+  WHERE e.account_id=$1 AND e.occurred_at >= $2 AND e.occurred_at < $3
+  ORDER BY e.occurred_at,e.event_key LIMIT ${MAX_FACTS + 1}`;
+
+async function readPersonalSubmissions(client, actor, range) {
+  const rows=(await client.query(PERSONAL_SUBMISSIONS_SQL,[actor.userId,
+    new Date(range.startMs).toISOString(),new Date(range.endMs).toISOString()])).rows;
+  if(rows.length>MAX_FACTS)throw new RangeError('今日提交记录超出统计上限');
+  return rows.map(row=>({id:row.id,taskId:Number(row.task_id),kind:'COMPLETE',stage:row.stage,
+    at:iso(row.at),firstSubmission:row.first_submission===true,rework:row.rework===true}));
+}
+
+async function readPersonalQaEvents(client, actor, range) {
+  const rows=(await client.query(PERSONAL_QA_EVENTS_SQL,[actor.userId,
+    new Date(range.startMs).toISOString(),new Date(range.endMs).toISOString()])).rows;
+  if(rows.length>MAX_FACTS)throw new RangeError('今日质检记录超出统计上限');
+  return rows.map(row=>({...row.data,id:row.event_key,taskId:row.task_id==null?null:Number(row.task_id),
+    accountId:Number(row.account_id),stage:row.stage,kind:row.kind,at:iso(row.occurred_at),
+    sampleKind:row.effective_sample_kind??row.data?.sampleKind??null}));
+}
+
 const BATCH_SQL = `SELECT b.id AS batch_id,
     CASE WHEN confirmation.item_id IS NOT NULL THEN 'DELIVERED' ELSE 'DOWNLOADED' END AS status,
     confirmation.confirmed_at AS delivered_at,confirmation.actor_account_id=$1 AS confirmed_by_me,
@@ -126,7 +173,10 @@ const BATCH_SQL = `SELECT b.id AS batch_id,
 export async function readPersonalWorkspace(pool, actor, input, { report = false, blindSql, loadTasks } = {}) {
   if (!Number.isSafeInteger(actor.userId) || actor.userId <= 0) throw new ControlPlaneAuthenticationError();
   const now = Date.now();
-  const filters = normalizePersonalFilters(input, now);
+  const section=report ? input?.section??'' : '';
+  if(section && !['personal','jobs'].includes(section))throw new TypeError('个人数据板块无效');
+  const filters = normalizePersonalFilters(section==='personal'
+    ? {...input,period:'today',from:undefined,to:undefined} : input, now);
   if (filters.createdFrom || filters.createdTo) {
     const date = filters.createdFrom || filters.createdTo;
     normalizeRange({ period:'custom',from:filters.createdFrom||date,to:filters.createdTo||date });
@@ -134,6 +184,24 @@ export async function readPersonalWorkspace(pool, actor, input, { report = false
   const client = await pool.connect();
   try {
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    if(section==='personal') {
+      const submissions=await readPersonalSubmissions(client,actor,filters.range);
+      const qualityFacts=await readAccountQualityFacts(client,{start:new Date(filters.range.startMs).toISOString(),
+        end:new Date(filters.range.endMs).toISOString(),accountId:actor.userId});
+      const qaFacts=await readPersonalQaEvents(client,actor,filters.range);
+      const coverageFacts=await readPersonalQaCoverage(client,actor,filters.range);
+      const output=summarizePersonalToday(submissions,qualityFacts,qaFacts,filters.range,now,coverageFacts);
+      await client.query('COMMIT');return output;
+    }
+    if(section==='jobs') {
+      const rows=(await client.query(personalFactsSql(blindSql),[actor.userId,[],actor.role,
+        filters.personalScope,true])).rows;
+      if(rows.length>MAX_FACTS)throw new RangeError('个人作业超出统计上限，暂时无法完整汇总');
+      const {updatedAt,scope,counts,rework,background,missingDates}=summarizePersonalWorkspace(
+        rows.map(factFrom),[],[],filters,now);
+      await client.query('COMMIT');
+      return {section:'jobs',updatedAt,scope,counts,rework,background,missingDates};
+    }
     let events = [], historyAvailable = true, deliveryAvailable = true, batches = [];
     if (report || filters.mode !== 'CURRENT') {
       await client.query('SAVEPOINT personal_history');
@@ -216,13 +284,50 @@ export async function readPersonalQualityActivity(pool,actor,input={}) {
   const allowed=new Set(['period','from','to','metric','stage','sampleSet','page','pageSize']);
   if(Object.keys(input).some(key=>!allowed.has(key)) || Object.values(input).some(Array.isArray)) throw new TypeError('质检历史筛选无效');
   const metric=input.metric || 'qa';
-  if(!['contributed','qaAll','qa','qaRecheck','qaBatch','qaSpecial','qaPending','qaBlocked'].includes(metric)
+  const receiptMetrics=new Set(['submitAll','submitFirst','submitRework','annotationOverall','qaFirst','qaPassed','qaReturned','qaRecheck',
+    'qaActual','qaCoverage','qaBatchReturned','qaBatchReleased','qaDiscarded','qaEscalated']);
+  if(!['contributed','qaAll','qa','qaRecheck','qaBatch','qaSpecial','qaPending','qaBlocked',...receiptMetrics].includes(metric)
     || input.stage && !['COPY','IMAGE'].includes(input.stage)
-    || input.sampleSet && !['all','passed','failed'].includes(input.sampleSet)) throw new TypeError('质检指标无效');
+    || input.sampleSet && !['all','first','passed','failed'].includes(input.sampleSet)
+    || input.sampleSet==='first' && metric!=='annotationOverall') throw new TypeError('质检指标无效');
   const filters=normalizePersonalFilters(input),client=await pool.connect();
   try {
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
     await client.query("SET LOCAL statement_timeout='15s'");
+    if(receiptMetrics.has(metric)) {
+      let rows,coverageIncomplete=false;
+      if(metric.startsWith('submit')) {
+        const submissions=await readPersonalSubmissions(client,actor,filters.range);
+        rows=submissions.filter(row=>(!filters.stage||row.stage===filters.stage) &&
+          (metric==='submitAll' || (metric==='submitFirst' ? row.firstSubmission && !row.rework : row.rework)))
+          .map(row=>({...row,kind:'SUBMIT',submissionType:row.rework?'REWORK':row.firstSubmission?'FIRST':'REPEAT'}));
+      } else if(metric==='annotationOverall') {
+        const facts=await readAccountQualityFacts(client,{start:new Date(filters.range.startMs).toISOString(),
+          end:new Date(filters.range.endMs).toISOString(),accountId:actor.userId,stage:filters.stage});
+        rows=facts.filter(row=>row.kind==='ANNOTATION_QUALITY' && !row.exclusion
+          && ['PASS','RETURN'].includes(row.outcome)
+          && (input.sampleSet==='first' ? row.firstPassed===true
+            : input.sampleSet==='passed' ? row.outcome==='PASS'
+            : input.sampleSet==='failed' ? row.outcome==='RETURN' : true));
+      } else {
+        const qa=await readPersonalQaEvents(client,actor,filters.range);
+        const needsCoverage=['qaCoverage','qaBatchReturned','qaBatchReleased'].includes(metric);
+        const coverage=needsCoverage ? await readPersonalQaCoverage(client,actor,filters.range) : [];
+        rows=personalQaMetricRows(qa,coverage,metric,filters.stage);
+        coverageIncomplete=needsCoverage && buildPersonalQaActivity(qa,coverage,filters.stage).coverageIncomplete;
+      }
+      rows.sort((a,b)=>Date.parse(b.at)-Date.parse(a.at)||String(a.id).localeCompare(String(b.id)));
+      const page=Math.min(filters.page,Math.max(1,Math.ceil(rows.length/filters.pageSize)));
+      const result={total:rows.length,page,pageSize:filters.pageSize,coverageIncomplete,
+        items:rows.slice((page-1)*filters.pageSize,page*filters.pageSize).map(row=>{
+          const token=createHash('sha256').update(String(row.id)).digest('hex').slice(0,12).toUpperCase();
+          return {id:`receipt:${token}`,code:`ACT-${token}`,stage:row.stage,kind:row.kind,at:row.at,
+            outcome:row.outcome??null,sampleKind:row.sampleKind??null,
+            submissionType:row.submissionType??null,firstPassed:row.firstPassed===true,
+            ...(row.coverageSources ? {coverageSources:row.coverageSources,manualKinds:row.manualKinds} : {})};
+        })};
+      await client.query('COMMIT');return result;
+    }
     const facts=await readInspectionRounds(client,await readQaFacts(client,{range:filters.range,accountId:actor.userId,stage:filters.stage}),new Date().toISOString());
     let rows=qaMetricRows(facts,metric==='contributed'?'qa':metric,filters.stage,input.sampleSet==='passed'?'PASS':input.sampleSet==='failed'?'RETURN':'');
     if(metric==='contributed') {

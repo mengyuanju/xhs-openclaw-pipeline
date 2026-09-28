@@ -121,12 +121,16 @@ function normalizeSources(result, provider, retrievedAt) {
   return { summary: summary || null, sources };
 }
 
-function hasGroundedSummary(evidence, provider) {
-  // Codex Hosted Search returns a synthesized answer with citation URLs, but its
-  // citation records do not include per-source snippets.
+export function normalizeResearchEvidence(result, provider, retrievedAt) {
+  return normalizeSources(result, normalizedProvider(provider), normalizedTimestamp(retrievedAt, 'research source retrievedAt'));
+}
+
+function hasGroundedSummary(evidence, provider, citationOnlyProviders) {
+  // Codex Hosted Search and selected citation-only APIs return a synthesized
+  // answer with citation URLs, but may omit per-source snippets.
   return Boolean(evidence?.summary
     && evidence.sources.length > 0
-    && (provider === 'codex'
+    && (citationOnlyProviders.has(provider)
       || evidence.sources.some((source) => typeof source.snippet === 'string' && source.snippet)));
 }
 
@@ -263,9 +267,16 @@ export async function createResearchSnapshot({
   limit = MAX_SOURCES,
   now = () => new Date().toISOString(),
   requireAuthoritative = false,
+  supplementalSearch = true,
+  citationOnlyProviders = ['codex'],
 }) {
   if (!client?.runWebSearch) throw new TypeError('Model web search client is required');
   if (typeof requireAuthoritative !== 'boolean') throw new TypeError('requireAuthoritative must be boolean');
+  if (typeof supplementalSearch !== 'boolean') throw new TypeError('supplementalSearch must be boolean');
+  if (!Array.isArray(citationOnlyProviders) || citationOnlyProviders.some((value) => typeof value !== 'string')) {
+    throw new TypeError('citationOnlyProviders must be provider names');
+  }
+  const citationOnly = new Set(citationOnlyProviders.map((value) => normalizedProvider(value)));
   const normalizedQuery = String(query ?? '').replace(/\s+/gu, ' ').trim().slice(0, 500);
   if (!normalizedQuery) throw new RangeError('research query is required');
   if (!Array.isArray(providers) || providers.length < 1 || providers.length > 5) {
@@ -275,7 +286,9 @@ export async function createResearchSnapshot({
   const attempts = [];
   const unavailableProviders = new Set();
   const supplementalQuery = supplementalResearchQuery(normalizedQuery, requireAuthoritative);
-  const queryVariants = [...new Set([normalizedQuery, supplementalQuery])];
+  const queryVariants = supplementalSearch
+    ? [...new Set([normalizedQuery, supplementalQuery])]
+    : [normalizedQuery];
   let bestFallback = null;
   searchLoop:
   for (const searchQuery of queryVariants) {
@@ -296,7 +309,7 @@ export async function createResearchSnapshot({
           continue;
         }
         const authorityScore = Math.max(...evidence.sources.map(sourceAuthorityScore));
-        const groundedSummary = hasGroundedSummary(evidence, actualProvider);
+        const groundedSummary = hasGroundedSummary(evidence, actualProvider, citationOnly);
         if (authorityScore === 0 && (requireAuthoritative || !groundedSummary)) {
           attempts.push({
             provider,
@@ -307,7 +320,7 @@ export async function createResearchSnapshot({
         }
         attempts.push({ provider, status: 'COMPLETED', error: null });
         if (authorityScore > 0 || (!requireAuthoritative && (
-          (actualProvider === 'codex' && groundedSummary)
+          (citationOnly.has(actualProvider) && groundedSummary)
           || (actualProvider === 'deepseek' && hasSufficientDeepSeekEvidence(evidence))))) {
           return normalizeResearchSnapshot({
             schemaVersion: RESEARCH_SCHEMA_VERSION,

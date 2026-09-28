@@ -26,7 +26,7 @@ test('browser: image plan comparison allows equivalent formatting and identifies
       import {Toaster} from './components/ui/sonner';
       createRoot(document.getElementById('root')).render(
         <ConfirmDialogProvider><TextInputDialogProvider>
-          <BackgroundTasksProvider accountKey="image-plan-review-test">
+          <BackgroundTasksProvider accountKey="image-plan-review-test" accountUsername="worker" accountId={8}>
             <TaskReviewDialog taskId={41} nodeId="fixture" role="USER" currentUsername="worker"
               currentAccountId={8} embedded onOpenChange={()=>{}} onUpdated={async()=>{}}/>
             <Toaster/>

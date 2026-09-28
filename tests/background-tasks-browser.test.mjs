@@ -34,7 +34,7 @@ test('background tasks browser: close, reload, recover planning draft and receiv
         <TaskReviewDialog taskId={taskId} nodeId="fixture" role="USER" currentUsername="worker" currentAccountId={22} onOpenChange={open=>{if(!open)setTaskId(null)}} onUpdated={async()=>{}}/>
         {editor&&<CurrentImageEditor taskId={11} runId="${runId}" copyRevisionId={1} asset={{id:1,sha256:'a'.repeat(64),url:'/v1/assets/1'}} page={1} runs={[]} onChanged={async()=>{}}/>}
       </>}
-      createRoot(document.getElementById('root')).render(<ConfirmDialogProvider><TextInputDialogProvider><BackgroundTasksProvider accountKey="browser-fixture"><App/></BackgroundTasksProvider><Toaster/></TextInputDialogProvider></ConfirmDialogProvider>);
+      createRoot(document.getElementById('root')).render(<ConfirmDialogProvider><TextInputDialogProvider><BackgroundTasksProvider accountKey="browser-fixture" accountUsername="worker" accountId={22}><App/></BackgroundTasksProvider><Toaster/></TextInputDialogProvider></ConfirmDialogProvider>);
     `, resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, outfile: join(root, 'bundle.js'), jsx: 'automatic', platform: 'browser', conditions: ['style'], alias: { '@': process.cwd() }, define: { 'process.env.NODE_ENV': '"test"' } });
     const [js, rawCss] = await Promise.all([readFile(join(root, 'bundle.js')), readFile(join(root, 'bundle.css'), 'utf8')]);
     const { default: postcss } = await import('postcss'), { default: tailwind } = await import('@tailwindcss/postcss');
@@ -55,11 +55,11 @@ test('background tasks browser: close, reload, recover planning draft and receiv
           if (req.method === 'POST') { res.statusCode = 405; response = null; }
           else response = { baseCopyRevisionId: 1, drafts: [] };
         } else if (req.url.endsWith('/regenerate-image-plan')) {
-          job = { id: planId, status: 'QUEUED', copyRevisionId: 1, copy: { body: data.copy.body, tags: data.copy.tags, title: data.copy.title }, result: null };
+          job = { id: planId, status: 'QUEUED', requestedByUsername: 'worker', requestedByAccountId: 22, copyRevisionId: 1, copy: { body: data.copy.body, tags: data.copy.tags, title: data.copy.title }, result: null };
           response = { created: true, job };
         } else if (req.url.endsWith(`/regenerate-image-plan/${planId}`)) response = job;
         else if (req.url.endsWith('/tasks/11/image-edits')) {
-          if (req.method === 'POST') { const edit = { id: editId, target_page: 1, status: 'QUEUED', version: 1, operation: 'SVG_DISCLOSURE', config: data, error: null }; edits = [edit]; response = edit; }
+          if (req.method === 'POST') { const edit = { id: editId, target_page: 1, status: 'QUEUED', created_by: 'worker', created_by_account_id: 22, version: 1, operation: 'SVG_DISCLOSURE', config: data, error: null }; edits = [edit]; response = edit; }
           else response = edits;
         } else if (req.url.endsWith(`/image-edits/${editId}`)) response = edits[0];
         else { res.statusCode = 404; response = null; }
@@ -75,6 +75,8 @@ test('background tasks browser: close, reload, recover planning draft and receiv
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     await page.getByRole('button', { name: '打开规划任务', exact: true }).click();
     await page.getByRole('button', { name: '按当前文案重新生成规划', exact: true }).click();
+    const overwritePlan = page.getByRole('alertdialog', { name: '覆盖当前图片文案规划？' });
+    if (await overwritePlan.isVisible()) await overwritePlan.getByRole('button', { name: '覆盖并重新生成', exact: true }).click();
     await page.getByRole('button', { name: '关闭，后台继续处理', exact: true }).click();
     await page.getByRole('dialog').waitFor({ state: 'hidden' });
     assert.equal(job.status, 'QUEUED');
@@ -85,6 +87,8 @@ test('background tasks browser: close, reload, recover planning draft and receiv
     await page.getByRole('button', { name: '后台任务，0 项处理中，1 条未读提醒', exact: true }).waitFor();
     await page.getByRole('button', { name: '打开规划任务', exact: true }).click();
     await page.getByRole('button', { name: '载入新规划', exact: true }).click();
+    const loadPlan = page.getByRole('alertdialog', { name: '载入已完成的新规划？' });
+    if (await loadPlan.isVisible()) await loadPlan.getByRole('button', { name: '载入新规划', exact: true }).click();
     await page.waitForFunction(() => document.querySelector('#review-plan-headline-0')?.value === '后台完成的新规划');
     await page.waitForFunction(() => JSON.parse(localStorage.getItem('xhs:background-tasks:v1:browser-fixture')).some(task => task.kind === 'IMAGE_PLAN' && task.consumed));
     assert.equal(requests.some(([method, path]) => method === 'POST' && path.endsWith('/copy-review-drafts')), false,
@@ -96,7 +100,7 @@ test('background tasks browser: close, reload, recover planning draft and receiv
     await page.getByRole('button', { name: '修改图片', exact: true }).click();
     await page.getByLabel('人工生成标识文字', { exact: true }).fill('人工生成');
     await page.getByRole('button', { name: '程序叠加（SVG + Sharp）', exact: true }).click();
-    await page.getByRole('button', { name: '生成程序标识预览', exact: true }).click();
+    await page.getByRole('button', { name: '生成已选 1 张程序标识预览', exact: true }).click();
     await page.getByText('修改请求已提交，可关闭窗口；完成或失败后会在“后台任务”中提醒。', { exact: true }).waitFor();
     await page.getByRole('button', { name: '关闭弹窗', exact: true }).click();
     await page.getByRole('button', { name: '离开图片工作区', exact: true }).click();

@@ -17,6 +17,7 @@ import { pipeline } from 'node:stream/promises';
 import { bodyParser } from '@koa/bodyparser';
 import Router from '@koa/router';
 import Koa from 'koa';
+import pg from 'pg';
 import { importCopyKnowledgeLabels, listCopyAnalysisPrompts, retireKnowledge, saveCopyAnalysisPrompt } from './knowledge-admin.mjs';
 import { analyzeAndSaveExcellentCopy, CopyAnalysisServiceError } from './deepseek-copy-analysis.mjs';
 import {
@@ -44,6 +45,8 @@ import {
 } from './delivery-spreadsheet.mjs';
 import { IMAGE_FORMATS } from './image-options.mjs';
 import { createImageEditingService } from './image-editing.mjs';
+import { backfillEligibleReferenceCleanup, drainReferenceCleanup } from './image-reference-cleanup.mjs';
+import { PostgresControlPlaneRepository } from './postgres-repository.mjs';
 import { installStandaloneImageEditorRoutes } from './standalone-image-editor-routes.mjs';
 import {
   addDeliveryPreviewUrls,
@@ -395,6 +398,7 @@ async function quarantineTaskStorage(storageRoot, taskId) {
   const locations = [
     { source: safeStoragePath(storageRoot, 'tasks', String(taskId)), target: safeStoragePath(quarantineRoot, 'task') },
     { source: safeStoragePath(storageRoot, 'thumbnails', String(taskId)), target: safeStoragePath(quarantineRoot, 'thumbnails') },
+    { source: safeStoragePath(storageRoot, 'image-edits', String(taskId)), target: safeStoragePath(quarantineRoot, 'image-edits') },
   ];
   const moved = [];
   async function restoreMovedLocations() {
@@ -991,6 +995,20 @@ function installRoutes(
       .catch((error) => console.error('failed to freeze expired image QA tails', error));
   }, 60_000);
   imageQualitySweep.unref?.();
+  let referenceCleanupDrain = Promise.resolve();
+  const sweepReferences = () => {
+    if (!(repository instanceof PostgresControlPlaneRepository) || !(repository.pool instanceof pg.Pool)) {
+      return referenceCleanupDrain;
+    }
+    referenceCleanupDrain = referenceCleanupDrain.then(async () => {
+      await backfillEligibleReferenceCleanup(repository.pool, { limitTasks: 50 });
+      await drainReferenceCleanup(repository.pool, storageRoot, { limit: 100 });
+    }).catch((error) => console.error('failed to clean image edit references', error));
+    return referenceCleanupDrain;
+  };
+  void sweepReferences();
+  const referenceCleanupSweep = setInterval(() => { void sweepReferences(); }, 15_000);
+  referenceCleanupSweep.unref?.();
   const passwordLimiters = new Map();
   const currentPasswordLimiters = new Map();
   function limiterFor(limiters, userId) {
@@ -1384,7 +1402,9 @@ function installRoutes(
   });
   router.post('/v1/image-qa/items/:itemId/pass', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
-    json(ctx, 200, await repository.passImageQaItem(ctx.params.itemId, requireJson(ctx), { actor }));
+    const result = await repository.passImageQaItem(ctx.params.itemId, requireJson(ctx), { actor });
+    json(ctx, 200, result);
+    void sweepReferences();
   });
   router.post('/v1/image-qa/items/:itemId/return', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN', 'REVIEWER']);
@@ -1400,7 +1420,9 @@ function installRoutes(
   });
   router.post('/v1/image-qa/close-tail', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
-    json(ctx, 200, await repository.closeImageSamplingTail(requireJson(ctx), { actor }));
+    const result = await repository.closeImageSamplingTail(requireJson(ctx), { actor });
+    json(ctx, 200, result);
+    void sweepReferences();
   });
 
   router.post('/v1/nodes', async (ctx) => {
@@ -2324,11 +2346,13 @@ function installRoutes(
   router.post('/v1/tasks/:taskId/submit-image-self-review', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN', 'USER']);
     await assertTaskAccess(ctx, repository, { ownerOnly: true });
-    json(ctx, 200, await repository.submitImageSelfReview(
+    const result = await repository.submitImageSelfReview(
       ctx.params.taskId,
       requireJson(ctx),
       { actor },
-    ));
+    );
+    json(ctx, 200, result);
+    void sweepReferences();
   });
   router.post('/v1/tasks/:taskId/review-images', async () => {
     throw new HttpError(410, 'IMAGE_REVIEW_MOVED', '图片初审已改由任务负责人提交；图片质检请在图片质检池处理');
@@ -2418,10 +2442,25 @@ function installRoutes(
     await assertTaskAccess(ctx, repository, { ownerOnly: actor.role !== 'ADMIN' });
     json(ctx, 201, await imageEditing.upload(ctx.params.taskId, requireJson(ctx), actor));
   });
+  router.delete('/v1/tasks/:taskId/image-edit-references/:assetId', async ctx => {
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
+    await assertTaskAccess(ctx, repository, { ownerOnly: actor.role !== 'ADMIN' });
+    json(ctx, 200, await imageEditing.deleteReference(ctx.params.taskId, ctx.params.assetId, actor));
+  });
   router.post('/v1/tasks/:taskId/image-edits', async ctx => {
     const actor = requestActor(ctx, ['ADMIN', 'USER']);
     await assertTaskAccess(ctx, repository, { ownerOnly: actor.role !== 'ADMIN' });
     json(ctx, 201, await imageEditing.create(ctx.params.taskId, requireJson(ctx), actor));
+  });
+  router.post('/v1/tasks/:taskId/image-edits/batch', async ctx => {
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
+    await assertTaskAccess(ctx, repository, { ownerOnly: actor.role !== 'ADMIN' });
+    json(ctx, 201, await imageEditing.createBatch(ctx.params.taskId, requireJson(ctx), actor));
+  });
+  router.post('/v1/tasks/:taskId/image-edits/batch/:batchId/accept', async ctx => {
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
+    await assertTaskAccess(ctx, repository, { ownerOnly: actor.role !== 'ADMIN' });
+    json(ctx, 200, await imageEditing.acceptBatch(ctx.params.taskId, ctx.params.batchId, requireJson(ctx), actor));
   });
   router.get('/v1/tasks/:taskId/image-edits', async ctx => {
     const actor = requestActor(ctx, ['ADMIN', 'USER']);
@@ -2699,7 +2738,9 @@ function installRoutes(
     clearInterval(deliveryExportSweep);
     clearInterval(previewRevocationSweep);
     clearInterval(imageQualitySweep);
+    clearInterval(referenceCleanupSweep);
     await revocationDrain;
+    await referenceCleanupDrain;
     await deliveryExportRegistry.dispose();
     await disposeSharedDelivery();
   };

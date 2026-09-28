@@ -13,8 +13,10 @@ export function installStandaloneImageEditorRoutes(router,repository,storageRoot
   router.get(`${base}/workspaces/:workspaceId`,async ctx=>json(ctx,200,await service.detail(ctx.params.workspaceId,actor(ctx))));
   router.get(`${base}/workspaces/:workspaceId/image-edits`,async ctx=>json(ctx,200,await service.listEdits(ctx.params.workspaceId,actor(ctx))));
   router.post(`${base}/workspaces/:workspaceId/image-edits/batch`,async ctx=>json(ctx,201,await service.createBatch(ctx.params.workspaceId,requireJson(ctx),actor(ctx))));
+  router.post(`${base}/workspaces/:workspaceId/image-edits/batch/:batchId/accept`,async ctx=>json(ctx,200,await service.acceptBatch(ctx.params.workspaceId,ctx.params.batchId,requireJson(ctx),actor(ctx))));
   router.post(`${base}/workspaces/:workspaceId/image-edits`,async ctx=>json(ctx,201,await service.createEdit(ctx.params.workspaceId,requireJson(ctx),actor(ctx))));
   router.post(`${base}/workspaces/:workspaceId/image-edit-references`,async ctx=>json(ctx,201,await service.uploadReference(ctx.params.workspaceId,requireJson(ctx),actor(ctx))));
+  router.delete(`${base}/workspaces/:workspaceId/image-edit-references/:assetId`,async ctx=>json(ctx,200,await service.deleteReference(ctx.params.workspaceId,ctx.params.assetId,actor(ctx))));
   router.post(`${base}/workspaces/:workspaceId/image-versions/:runId/restore`,async ctx=>json(ctx,201,await service.createEdit(ctx.params.workspaceId,
     {...requireJson(ctx),operation:'RESTORE',restoreRunId:ctx.params.runId},actor(ctx))));
   router.get(`${base}/edits/:editId`,async ctx=>json(ctx,200,await service.getEdit(ctx.params.editId,actor(ctx))));

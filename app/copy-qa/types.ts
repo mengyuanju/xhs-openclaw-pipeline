@@ -1,3 +1,5 @@
+import { normalizeQaPreviousReturn, type QaPreviousReturn } from '../components/qa-previous-return.mjs';
+
 export type CopyQaStatus = 'PENDING' | 'PASSED' | 'RETURNED' | 'RELEASED' | 'BATCH_RETURNED' | 'BATCH_AFFECTED' | 'SUPERSEDED' | 'ADMIN_ESCALATED';
 export type CopyQaSampleKind = 'RANDOM' | 'MANDATORY_RECHECK';
 
@@ -22,11 +24,13 @@ export type CopyQaCommon = {
   blindReview: boolean;
   status: CopyQaStatus;
   sampleKind: CopyQaSampleKind;
+  qaVersion?: 2;
   query: string | null;
   approvedRevision: ApprovedCopyRevision;
   productionBatch: { anonymousCode: string };
   capabilities: CopyQaCapabilities;
   createdAt?: string;
+  previousReturn?: QaPreviousReturn;
 };
 
 export type CopyQaBlindItem = CopyQaCommon & { blindReview: true };
@@ -172,6 +176,8 @@ export function normalizeCopyQaItem(
   const anonymousBatchCode = typeof batch?.anonymousCode === 'string' ? batch.anonymousCode.trim() : '';
   if (!id || !freezePublicId || !revision || !revisionToken || !anonymousBatchCode || !status) return null;
   const capability = record(row.capabilities);
+  const previousReturn = row.sampleKind === 'MANDATORY_RECHECK'
+    ? normalizeQaPreviousReturn(row.previousReturn) : null;
   const common: CopyQaCommon = {
     id,
     freezePublicId,
@@ -184,6 +190,7 @@ export function normalizeCopyQaItem(
     blindReview: row.blindReview === true && role !== 'ADMIN',
     status,
     sampleKind: row.sampleKind === 'MANDATORY_RECHECK' ? 'MANDATORY_RECHECK' : 'RANDOM',
+    ...(row.qaVersion === 2 ? { qaVersion: 2 } : {}),
     ...(typeof row.prioritySummary === 'string' && /^(?:已暂停|生效 (?:10|100|150|200|300|350|400|500)) · 系统 (?:100|150|200|300|400) \/ 人工 (?:—|10|100|350|500)$/u.test(row.prioritySummary) ? { prioritySummary: row.prioritySummary } : {}),
     query: typeof row.query === 'string' && row.query.trim() ? row.query : null,
     approvedRevision: {
@@ -195,10 +202,11 @@ export function normalizeCopyQaItem(
     capabilities: {
       canPass: capability?.canPass === true,
       canEscalate: capability?.canEscalate === true,
-      canReturnSingle: capability?.canReturnSingle === true && row.sampleKind !== 'MANDATORY_RECHECK',
+      canReturnSingle: capability?.canReturnSingle === true && (row.sampleKind !== 'MANDATORY_RECHECK' || row.qaVersion === 2),
       canReturnBatch: capability?.canReturnBatch === true,
     },
     createdAt: typeof row.createdAt === 'string' ? row.createdAt : undefined,
+    ...(previousReturn ? { previousReturn } : {}),
   };
 
   // Blind records are reduced to a strict allow-list before they enter React state.

@@ -39,7 +39,14 @@ export function createAssetDelivery({ storageRoot }) {
         await sharp(sourcePath, { limitInputPixels: 40_000_000, failOn: 'error' })
           .rotate().resize({ width: 480, height: 480, fit: 'inside', withoutEnlargement: true })
           .webp({ quality: 75, alphaQuality: 100 }).toFile(temporary);
+        if (!await fileInfo(sourcePath)) {
+          throw new AssetDeliveryError(404, 'ASSET_FILE_MISSING', '图片文件不存在');
+        }
         await rename(temporary, path);
+        if (!await fileInfo(sourcePath)) {
+          await rm(path, { force: true });
+          throw new AssetDeliveryError(404, 'ASSET_FILE_MISSING', '图片文件不存在');
+        }
         return { path, info: await stat(path) };
       } finally { await rm(temporary, { force: true }).catch(() => {}); }
     });

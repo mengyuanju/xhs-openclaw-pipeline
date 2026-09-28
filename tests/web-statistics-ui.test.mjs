@@ -48,10 +48,12 @@ test('personal workbench exposes completion dates, stage totals, current states 
   assert.match(styles, /\.personal-completion-task-list/u);
 });
 
-test('personal statistics and paged task lookup are split and share server filters', async () => {
-  const [workbench, controls, dashboard, page] = await Promise.all([
+test('personal statistics keeps today activity and current jobs in separate tabs', async () => {
+  const [workbench, controls, dashboard, activity, page] = await Promise.all([
     source('app/workbench/creation-workbench.tsx'), source('app/workbench/personal-controls.tsx'),
-    source('app/workbench/personal-statistics/personal-statistics-dashboard.tsx'), source('app/workbench/personal-statistics/page.tsx'),
+    source('app/workbench/personal-statistics/personal-statistics-dashboard.tsx'),
+    source('app/workbench/personal-statistics/personal-activity-dialog.tsx'),
+    source('app/workbench/personal-statistics/page.tsx'),
   ]);
   assert.match(page, /readServerSession/u);
   assert.match(workbench, /personal-workspace\/tasks/u);
@@ -61,8 +63,34 @@ test('personal statistics and paged task lookup are split and share server filte
   assert.match(controls, /PERSONAL_WORK_FILTERS\.map/u);
   assert.match(controls, /onCategory\(value\)/u);
   assert.match(dashboard, /personal-workspace\/statistics/u);
-  assert.match(dashboard, /historyHref\('REWORK'\)/u);
-  assert.match(dashboard, /reworkType:'BOTH'/u);
+  assert.match(dashboard, /section: 'personal'/u);
+  assert.match(dashboard, /section: 'jobs'/u);
+  assert.match(dashboard, /value="personal">个人数据/u);
+  assert.match(dashboard, /value="jobs">作业数据/u);
+  assert.match(dashboard, /文案首次提交/u);
+  assert.match(dashboard, /图片返修初审提交/u);
+  assert.match(dashboard, /今日全部提交/u);
+  assert.match(dashboard, /一次通过率/u);
+  assert.match(dashboard, /整体通过率/u);
+  assert.match(dashboard, /jobHref\('rework', \{ reworkType: 'BOTH' \}\)/u);
+  assert.match(dashboard, /deliveryOpen && <OperatorDeliveryHistory/u);
+  assert.match(activity, /personal-workspace\/qa-activities/u);
+  assert.match(activity, /submitAll/u);
+  assert.match(activity, /再次提交/u);
+  assert.match(activity, /共 \{data\.total\} 次记录/u);
+  for (const label of ['今日实际逐条操作量', '今日处理覆盖量（含批量）', '批量退回影响', '自动放行覆盖', '逐条废弃', '升级处理']) {
+    assert.ok(dashboard.includes(label), `personal QA exposes ${label}`);
+  }
+  for (const metric of ['qaActual', 'qaCoverage', 'qaBatchReturned', 'qaBatchReleased', 'qaDiscarded', 'qaEscalated']) {
+    assert.ok(dashboard.includes(`'${metric}'`), `${metric} opens its own drilldown`);
+    assert.ok(activity.includes(`'${metric}'`), `${metric} is supported by the detail dialog`);
+  }
+  assert.match(dashboard, /个人覆盖量不可直接相加作为系统总量/u);
+  assert.match(dashboard, /历史覆盖记录不完整/u);
+  assert.match(activity, /coverageSources\?: string\[\]/u);
+  assert.match(activity, /sources\.has\('BATCH_RELEASE'\)/u);
+  assert.match(activity, /item\.outcome === 'RELEASE'/u);
+  assert.match(activity, /当前空明细不代表没有处理/u);
   assert.match(workbench, /task\.canOpen === false/u);
 });
 

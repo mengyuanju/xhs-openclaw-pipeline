@@ -19,9 +19,13 @@ const BackgroundTasksContext = createContext<{
 
 export function useBackgroundTasks() { return useContext(BackgroundTasksContext); }
 
-export function BackgroundTasksProvider({ accountKey, children }: { accountKey: string; children: ReactNode }) {
+export function BackgroundTasksProvider({ accountKey, accountUsername, accountId, children }: {
+  accountKey: string; accountUsername: string; accountId: number; children: ReactNode;
+}) {
   const [store, setStore] = useState<Store | null>(null);
   const [tasks, setTasks] = useState<BackgroundTask[]>([]);
+  const accountScope = `${accountKey}:${accountId}:${accountUsername}`;
+  const [storeScope, setStoreScope] = useState('');
   const storeRef = useRef<Store | null>(null);
   const openerRef = useRef<TaskOpener | null>(null);
   const registerTaskOpener = useCallback((opener: TaskOpener) => {
@@ -52,7 +56,7 @@ export function BackgroundTasksProvider({ accountKey, children }: { accountKey: 
     try { storage = window.localStorage; } catch {}
     const storageKey = `xhs:background-tasks:v1:${accountKey}`;
     const next = createBackgroundTaskStore({
-      storage, storageKey,
+      storage, storageKey, accountUsername, accountId,
       request: path => apiRequest(`/api/control-plane${path}`, { signal: AbortSignal.timeout(15_000), cache: 'no-store' }),
       onComplete: task => {
         notifyWorkspaceUpdated();
@@ -62,6 +66,7 @@ export function BackgroundTasksProvider({ accountKey, children }: { accountKey: 
       },
     });
     setStore(next);
+    setStoreScope(accountScope);
     storeRef.current = next;
     setTasks(next.getSnapshot().filter(task => task.status !== 'DELETED'));
     const unsubscribe = next.subscribe(() => {
@@ -86,8 +91,9 @@ export function BackgroundTasksProvider({ accountKey, children }: { accountKey: 
       next.getSnapshot().forEach(task => toast.dismiss(`background:${task.id}`));
       window.clearInterval(timer); window.removeEventListener('focus', poll); window.removeEventListener('storage', sync);
     };
-  }, [accountKey, openTask]);
-  return <BackgroundTasksContext.Provider value={{ tasks, store, openTask, registerTaskOpener }}>{children}</BackgroundTasksContext.Provider>;
+  }, [accountKey, accountUsername, accountId, accountScope, openTask]);
+  return <BackgroundTasksContext.Provider value={{ tasks: storeScope === accountScope ? tasks : [],
+    store: storeScope === accountScope ? store : null, openTask, registerTaskOpener }}>{children}</BackgroundTasksContext.Provider>;
 }
 
 export function BackgroundTaskNotifications() {

@@ -1,4 +1,6 @@
 import { chinaDay, normalizeRange } from './web-statistics/summary.mjs';
+import { summarizeAnnotationOverall } from './operator-performance.mjs';
+import { summarizePersonalQa } from './personal-qa-statistics.mjs';
 
 export const PERSONAL_WORK_FILTERS = Object.freeze([
   ['ALL', '全部'], ['actionable', '我需处理'], ['review', '待审核'], ['rework', '待返修'],
@@ -122,6 +124,28 @@ function deduplicate(tasks, enabled) {
   });
 }
 const inRange = (date, range) => Date.parse(date) >= range.startMs && Date.parse(date) < range.endMs;
+
+// This compact view counts durable events, rather than distinct tasks. The
+// annotation rates use the same verdict-day denominator as the admin report.
+export function summarizePersonalToday(submissions, qualityFacts, qaFacts, range, now = Date.now(), coverageFacts = []) {
+  const annotation = {}, qa = {};
+  for (const stage of ['COPY', 'IMAGE']) {
+    const submitted = submissions.filter(row => row.kind === 'COMPLETE' && row.stage === stage);
+    const firstSubmissions = submitted.filter(row => row.firstSubmission === true && row.rework !== true);
+    const reworkSubmissions = submitted.filter(row => row.rework === true);
+    // Ordinary repeat submissions belong in the total even when neither
+    // firstSubmission nor rework is set.
+    const result = summarizeAnnotationOverall(qualityFacts.filter(row => row.stage === stage));
+    annotation[stage] = { firstSubmissions:firstSubmissions.length,
+      reworkSubmissions:reworkSubmissions.length, submissions:submitted.length,
+      quality:{firstPassed:result.firstPassed,passed:result.passed,decided:result.decided,
+        firstPassRate:result.decided ? result.firstPassRate : null,
+        rate:result.decided ? result.rate : null} };
+    qa[stage] = summarizePersonalQa(qaFacts, coverageFacts, stage);
+  }
+  return {section:'personal',updatedAt:new Date(now).toISOString(),timezone:'Asia/Shanghai',
+    range:{from:range.from,to:range.to},annotation,qa,notices:[]};
+}
 
 export function selectPersonalTasks(facts, events, filters, now = Date.now()) {
   const history = new Map();

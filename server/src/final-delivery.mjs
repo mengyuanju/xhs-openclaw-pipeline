@@ -7,6 +7,7 @@ import {
   redactExecutionError,
 } from './domain.mjs';
 import { resolveDeliveryArchiveSource } from './delivery-source.mjs';
+import { scheduleReferenceCleanupForTask } from './image-reference-cleanup.mjs';
 import { IMAGE_FORMATS } from './image-options.mjs';
 import { normalizeListPagination } from './list-pagination.mjs';
 import { normalizeClientBatchCode } from './client-batch.mjs';
@@ -248,6 +249,7 @@ export async function createReadyDeliveryEntry(client, {
     ) VALUES ($1, $2, $3, $4, $5)
     RETURNING *
   `, [taskId, copyRevisionId, imageRunId, actor?.userId ?? null, actor?.username ?? 'system']);
+  await scheduleReferenceCleanupForTask(client, taskId, { before: result.rows[0].created_at });
   return result.rows[0];
 }
 

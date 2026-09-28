@@ -11,9 +11,24 @@ import { orderedImageFileName } from '../../src/image-file-name.mjs';
 import { normalizeImageEditRepairMaxAttempts } from '../../src/production-settings.mjs';
 import { createPromptRuntime } from '../../src/prompt-runtime.mjs';
 import { selectLocalEditAlternative } from '../../src/local-edit-alternatives.mjs';
+import { scheduleReferenceCleanupForAsset, scheduleReferenceCleanupForEdit, drainReferenceCleanup } from './image-reference-cleanup.mjs';
+
+const REFERENCE_TASK_LIMIT_BYTES = 100 * 1024 * 1024;
+export function assertReferenceQuota({ count, bytes }, incomingBytes) {
+  if (Number(count) >= 20 || Number(bytes) + Number(incomingBytes) > REFERENCE_TASK_LIMIT_BYTES) {
+    throw new TypeError('任务参考图存储已达上限');
+  }
+}
 
 const conflict = message => { throw new ControlPlaneConflictError('IMAGE_EDIT_CONFLICT', message); };
 const actorName = actor => { if(!['ADMIN','USER'].includes(actor?.role) || !actor.username) throw new ControlPlaneAuthorizationError('当前账号不能修改图片'); return actor.username; };
+// Reused usernames must not attach historical requests to a newer account.
+const IMAGE_EDIT_CREATOR_ACCOUNT_SQL = `(SELECT creator.id FROM app_users creator
+  WHERE creator.username=e.created_by AND creator.created_at<e.created_at)`;
+function imageEditWithCreator(row) {
+  return { ...row, created_by_account_id: row.created_by_account_id == null
+    ? null : Number(row.created_by_account_id) };
+}
 async function lockEditor(c,actor,taskId) {
   actorName(actor);
   const row=(await c.query(`SELECT u.id FROM app_users u JOIN tasks t ON t.id=$4
@@ -121,6 +136,35 @@ export function normalizeEdit(input) {
     mask: operation === 'AI_LOCAL' && input.mask != null ? normalizeMask(input.mask) : null,
     target,references,replacements,referenceMode,targetMode, confirmation: usesBillableModel&&confirmed ? input.confirmation : null, draft,
     restoreRunId: operation === 'RESTORE' ? normalizeUuid(input.restoreRunId,'restoreRunId') : null };
+}
+export function normalizeEditBatch(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)
+    || Object.keys(input).some(key => key !== 'edits')
+    || !Array.isArray(input.edits) || input.edits.length < 1 || input.edits.length > 5) {
+    throw new TypeError('请选择 1 至 5 张图片');
+  }
+  const edits = input.edits.map(normalizeEdit);
+  if (new Set(edits.map(edit => edit.targetPage)).size !== edits.length) {
+    throw new TypeError('同一批次不能重复提交同一张图片');
+  }
+  if (new Set(edits.map(edit => edit.requestId)).size !== edits.length) {
+    throw new TypeError('同一批次不能重复使用请求编号');
+  }
+  if (edits.length > 1 && edits.some(edit => !edit.batchId || edit.batchSize !== edits.length
+    || edit.batchId !== edits[0].batchId || edit.operation !== edits[0].operation
+    || edit.sourceImageRunId !== edits[0].sourceImageRunId
+    || edit.copyRevisionId !== edits[0].copyRevisionId)) {
+    throw new TypeError('批次编号、张数、生成方式或图片版本不一致');
+  }
+  if (edits.length > 1 && ['TEXT','SVG_DISCLOSURE'].includes(edits[0].operation)
+    && edits.some(edit => !sameJson(edit.overlay,edits[0].overlay)
+      || edit.instruction !== edits[0].instruction || edit.preserve !== edits[0].preserve
+      || edit.negative !== edits[0].negative || edit.draft !== edits[0].draft
+      || edit.confirmation !== edits[0].confirmation)) {
+    throw new TypeError('同一标识批次的文字、说明和费用确认必须一致');
+  }
+  if (edits.length === 1 && edits[0].batchId) throw new TypeError('单张图片不应使用批次编号');
+  return edits;
 }
 export function imageAssetIds(result) {
   return [...new Set((result?.images ?? []).flatMap(i=>[i.assetId,i.sourceAssetId,i.deliveryAssetId]).filter(Number.isSafeInteger))];
@@ -314,7 +358,7 @@ export function createImageEditingService({ pool, storageRoot }) {
     // An existing one-page edit remains valid when only other pages have been
     // adopted since it was created. Acceptance rebases it onto the latest run.
     const source=await assertEditSource(c,Number(e.task_id),e.config,{allowCompatibleCurrentRun:true});
-    const refs=(await c.query('SELECT a.* FROM image_edit_reference_assets r JOIN assets a ON a.id=r.asset_id WHERE r.request_id=$1 ORDER BY r.sort_order',[e.id])).rows;
+    const refs=(await c.query('SELECT a.* FROM image_edit_reference_assets r JOIN assets a ON a.id=r.asset_id AND a.content_cleared_at IS NULL WHERE r.request_id=$1 ORDER BY r.sort_order',[e.id])).rows;
     const bindings=(await c.query('SELECT asset_id,sha256 FROM image_edit_reference_assets WHERE request_id=$1',[e.id])).rows;
     if(refs.length!==e.config.references.length||refs.some(a=>!bindings.some(b=>Number(b.asset_id)===Number(a.id)&&b.sha256===a.sha256))) conflict('参考图绑定或校验值变化');
     const settings=(await c.query("SELECT value FROM global_settings WHERE key='production'")).rows[0]?.value ?? {};
@@ -334,18 +378,19 @@ export function createImageEditingService({ pool, storageRoot }) {
     return {...source,run,refs,settings:executorSettings,restored,imageEditPrompt,repairSource};
   }
   async function get(id) {
-    const row=(await pool.query(`SELECT e.*,row_to_json(r) AS result,
+    const row=(await pool.query(`SELECT e.*,${IMAGE_EDIT_CREATOR_ACCOUNT_SQL} AS created_by_account_id,row_to_json(r) AS result,
       (SELECT json_agg(a ORDER BY a.id) FROM image_edit_events a WHERE a.edit_id=e.id) AS events
       FROM image_edit_requests e LEFT JOIN image_edit_results r ON r.request_id=e.id WHERE e.id=$1`,[normalizeUuid(id,'editId')])).rows[0];
     if(!row) throw new ControlPlaneNotFoundError('image edit not found');
-    return row;
+    return imageEditWithCreator(row);
   }
   async function applyAction(c,id,action,input,actor) {
     const username=actorName(actor), requestId=normalizeUuid(input.requestId,'requestId'), version=boundedNumber(input.version,1,2147483647), reason=shortText(input.reason,1000);
-    const e=(await c.query('SELECT * FROM image_edit_requests WHERE id=$1 FOR UPDATE',[id])).rows[0];
+    const e=(await c.query(`SELECT e.*,${IMAGE_EDIT_CREATOR_ACCOUNT_SQL} AS created_by_account_id
+      FROM image_edit_requests e WHERE e.id=$1 FOR UPDATE OF e`,[id])).rows[0];
     const previous=(await c.query('SELECT * FROM image_edit_events WHERE task_id=$1 AND request_id=$2',[e.task_id,requestId])).rows[0];
     if(previous) { if(previous.edit_id !== id || previous.action !== action || previous.reason !== reason || previous.actor !== username
-      || (action==='apply-suggestion' && (previous.detail?.suggestionId??null)!==(input.suggestionId??null))) conflict('requestId 已用于其他操作'); return e; }
+      || (action==='apply-suggestion' && (previous.detail?.suggestionId??null)!==(input.suggestionId??null))) conflict('requestId 已用于其他操作'); return imageEditWithCreator(e); }
     if(e.version !== version) conflict('编辑状态已更新，请刷新');
     const states={queue:['DRAFT'],retry:['FAILED'],'apply-suggestion':['FAILED'],cancel:['DRAFT','QUEUED','RUNNING','PREVIEW_READY','FAILED'],reject:['PREVIEW_READY'],accept:['PREVIEW_READY','FAILED']};
     if(!states[action]?.includes(e.status)) conflict('当前编辑状态不允许此操作');
@@ -456,11 +501,48 @@ export function createImageEditingService({ pool, storageRoot }) {
       last_activity_at=now(),finished_at=now()
       WHERE id=$1 AND status='RUNNING'`,[e.execution_id]);
     await audit(c,e.task_id,id,action,username,reason,requestId,auditDetail);
-    return updated;
+    if(action==='reject'||action==='cancel')await scheduleReferenceCleanupForEdit(c,id);
+    return imageEditWithCreator({ ...updated, created_by_account_id: e.created_by_account_id });
+  }
+  async function createInTransaction(c,taskId,requestedConfig,actor) {
+    const username=actorName(actor);
+    await lockEditor(c,actor,taskId);
+    await c.query('SELECT id FROM tasks WHERE id=$1 FOR UPDATE',[taskId]);
+    const prior=(await c.query(`SELECT e.*,${IMAGE_EDIT_CREATOR_ACCOUNT_SQL} AS created_by_account_id
+      FROM image_edit_requests e WHERE e.task_id=$1 AND e.request_id=$2`,[taskId,requestedConfig.requestId])).rows[0];
+    if(prior) {
+      // JSONB omits undefined values from the stored request.
+      if(!sameJson(requestEditConfig(prior.config),JSON.parse(JSON.stringify(requestedConfig)))) {
+        conflict('requestId 已用于不同请求');
+      }
+      return imageEditWithCreator(prior);
+    }
+    const productionSettings=(await c.query("SELECT value FROM global_settings WHERE key='production'")).rows[0]?.value ?? {};
+    const usesImageModel=requestedConfig.operation==='TEXT'||requestedConfig.operation.startsWith('AI_');
+    const imageEditPrompt=usesImageModel?await publishedImageEditPrompt(c):null;
+    const config={...requestedConfig,
+      imageEditRepairMaxAttempts:normalizeImageEditRepairMaxAttempts(productionSettings.imageEditRepairMaxAttempts),
+      ...(imageEditPrompt?{imageEditPrompt}:{}),
+    };
+    await assertEditSource(c,taskId,config);
+    let bytes=0,pixels=0;
+    for(const ref of config.references) {
+      const a=(await c.query("SELECT * FROM assets WHERE id=$1 AND task_id=$2 AND asset_role='REFERENCE' AND content_cleared_at IS NULL",[ref.assetId,taskId])).rows[0];
+      if(!a) throw new TypeError('参考图片不属于当前任务');
+      bytes+=Number(a.byte_size); pixels+=a.edit_metadata.width*a.edit_metadata.height;
+    }
+    if(bytes > 20*1024*1024 || pixels > 32_000_000) throw new TypeError('参考图总大小或像素超限');
+    const id=randomUUID();
+    const row=(await c.query(`INSERT INTO image_edit_requests(id,task_id,request_id,source_image_run_id,source_asset_id,copy_revision_id,source_sha256,target_page,operation,config,status,created_by)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,[id,taskId,config.requestId,config.sourceImageRunId,config.sourceAssetId,config.copyRevisionId,config.sha256,config.targetPage,config.operation,config,config.draft?'DRAFT':'QUEUED',username])).rows[0];
+    for(const [i,ref] of config.references.entries()) await c.query('INSERT INTO image_edit_reference_assets(request_id,asset_id,purpose,sort_order,sha256) SELECT $1,id,$3,$4,sha256 FROM assets WHERE id=$2',[id,ref.assetId,ref.purpose,i]);
+    // Drafts and previews leave the approved version deliverable until acceptance.
+    await audit(c,taskId,id,'CREATE',username,config.instruction || config.operation);
+    return imageEditWithCreator({ ...row, created_by_account_id: actor.userId });
   }
   return {
     get,
-    async asset(id,taskId) { const a=(await pool.query('SELECT * FROM assets WHERE id=$1 AND task_id=$2',[normalizeTaskId(id),normalizeTaskId(taskId)])).rows[0];if(!a)throw new ControlPlaneNotFoundError('asset not found');return a; },
+    async asset(id,taskId) { const a=(await pool.query('SELECT * FROM assets WHERE id=$1 AND task_id=$2 AND content_cleared_at IS NULL',[normalizeTaskId(id),normalizeTaskId(taskId)])).rows[0];if(!a)throw new ControlPlaneNotFoundError('asset not found');return a; },
     async executorContext(executionId,editId,leaseToken) {
       return tx(async c=>loadContext(c,await lockedExecutorEdit(c,executionId,editId,leaseToken)));
     },
@@ -476,7 +558,7 @@ export function createImageEditingService({ pool, storageRoot }) {
         }
         const normalized=normalizeTaskId(assetId);
         if(!allowed.has(normalized))throw new ControlPlaneAuthorizationError('该资产不属于当前图片修改执行');
-        const asset=(await c.query('SELECT * FROM assets WHERE id=$1 AND task_id=$2',[normalized,e.task_id])).rows[0];
+        const asset=(await c.query('SELECT * FROM assets WHERE id=$1 AND task_id=$2 AND content_cleared_at IS NULL',[normalized,e.task_id])).rows[0];
         if(!asset)throw new ControlPlaneNotFoundError('asset not found');
         const bytes=await readFile(editStoragePath(storageRoot,asset.storage_path));
         if(imageHash(bytes)!==asset.sha256)throw new Error('资产完整性校验失败');
@@ -548,12 +630,12 @@ export function createImageEditingService({ pool, storageRoot }) {
       return get(e.id);
     },
     async list(taskId, { pendingOnly = false } = {}) {
-      return (await pool.query(`SELECT e.*,row_to_json(r) AS result,
+      return (await pool.query(`SELECT e.*,${IMAGE_EDIT_CREATOR_ACCOUNT_SQL} AS created_by_account_id,row_to_json(r) AS result,
         (SELECT json_agg(a ORDER BY a.id) FROM image_edit_events a WHERE a.edit_id=e.id) AS events
         FROM image_edit_requests e LEFT JOIN image_edit_results r ON r.request_id=e.id
         WHERE task_id=$1 ${pendingOnly ? 'AND e.status = ANY($2::text[])' : ''}
         ORDER BY e.created_at DESC, e.id ${pendingOnly ? '' : 'LIMIT 100'}`,
-      pendingOnly ? [normalizeTaskId(taskId), PENDING_IMAGE_EDIT_STATUSES] : [normalizeTaskId(taskId)])).rows;
+      pendingOnly ? [normalizeTaskId(taskId), PENDING_IMAGE_EDIT_STATUSES] : [normalizeTaskId(taskId)])).rows.map(imageEditWithCreator);
     },
     async resolvePending(taskId, input, actor) {
       taskId = normalizeTaskId(taskId);
@@ -569,7 +651,7 @@ export function createImageEditingService({ pool, storageRoot }) {
       }).sort((a, b) => a.id.localeCompare(b.id));
       if (new Set(decisions.map(item => item.id)).size !== decisions.length) throw new TypeError('图片修改不能重复提交');
       const snapshot = { imageRunId, decisions };
-      return tx(async c => {
+      const result = await tx(async c => {
         await lockEditor(c, actor, taskId);
         const task = (await c.query('SELECT * FROM tasks WHERE id=$1 FOR UPDATE', [taskId])).rows[0];
         const prior = (await c.query('SELECT * FROM image_edit_events WHERE task_id=$1 AND request_id=$2', [taskId, requestId])).rows[0];
@@ -611,65 +693,166 @@ export function createImageEditingService({ pool, storageRoot }) {
         await audit(c, taskId, null, 'RESOLVE_PENDING', username, '初审前集中处理图片修改', requestId, { snapshot, result });
         return result;
       });
+      if (decisions.some(item => item.action === 'reject' || item.action === 'cancel')) {
+        await drainReferenceCleanup(pool, storageRoot, { taskId }).catch(() => {});
+      }
+      return result;
     },
     async upload(taskId,input,actor) {
       const username=actorName(actor); taskId=normalizeTaskId(taskId);
+      const replaceAssetId=input?.replaceAssetId==null?null:normalizeTaskId(input.replaceAssetId);
       if(typeof input?.base64 !== 'string' || input.base64.length > 7_000_000 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(input.base64)) throw new TypeError('图片编码无效');
       const purpose=shortText(input.purpose,200), source=shortText(input.source,1000);
       const decoded=await decodeReference(Buffer.from(input.base64,'base64'),input.mediaType);
-      return tx(async c=> {
+      const {saved,cleanupAssetId}=await tx(async c=> {
         await lockEditor(c,actor,taskId);
         const task=(await c.query('SELECT * FROM tasks WHERE id=$1 FOR UPDATE',[taskId])).rows[0];
         if(!task?.current_image_run_id || !['MANUAL_ARCHIVE','IMAGE_REWORK_PENDING','REVIEWED'].includes(task.state)) conflict('当前任务无可编辑图片');
-        const quota=(await c.query("SELECT count(*)::integer AS count, COALESCE(sum(byte_size),0)::bigint AS bytes FROM assets WHERE task_id=$1 AND asset_role='REFERENCE'",[taskId])).rows[0];
-        if(quota.count >= 20 || Number(quota.bytes)+decoded.bytes.length > 50*1024*1024) throw new TypeError('任务参考图存储已达上限');
+        const old=replaceAssetId==null?null:(await c.query(
+          "SELECT id,sha256 FROM assets WHERE id=$1 AND task_id=$2 AND asset_role='REFERENCE' AND content_cleared_at IS NULL FOR UPDATE",
+          [replaceAssetId,taskId])).rows[0];
+        if(replaceAssetId!=null&&!old)throw new ControlPlaneNotFoundError('reference asset not found');
+        // Re-uploading the currently selected image is a no-op. If another live
+        // asset has the same normalized pixels, reuse it instead of spending a
+        // quota slot or leaving another orphan when the editor is reopened.
+        const reusable=old?.sha256===decoded.sha256?old:(await c.query(
+          "SELECT id,sha256 FROM assets WHERE task_id=$1 AND asset_role='REFERENCE' AND content_cleared_at IS NULL AND sha256=$2 ORDER BY id DESC LIMIT 1",
+          [taskId,decoded.sha256])).rows[0];
+        let cleanupAssetId=null,oldReferenceRetained=false;
+        if(old&&Number(old.id)!==Number(reusable?.id)) {
+          try {await scheduleReferenceCleanupForAsset(c,taskId,replaceAssetId);cleanupAssetId=replaceAssetId;}
+          catch(error) {
+            if(error?.code!=='IMAGE_REFERENCE_IN_USE')throw error;
+            oldReferenceRetained=true;
+          }
+        }
+        if(reusable) {
+          const assetId=Number(reusable.id);
+          await audit(c,taskId,null,'REUSE_REFERENCE',username,source,null,{assetId,sha256:decoded.sha256,
+            replacementRequestedAssetId:replaceAssetId,replacedAssetId:cleanupAssetId,oldReferenceRetained});
+          return {saved:{id:assetId,sha256:decoded.sha256,width:decoded.width,height:decoded.height,
+            url:`/v1/assets/${assetId}`,...(replaceAssetId!=null?{oldReferenceRetained}:{})},cleanupAssetId};
+        }
+        const quota=(await c.query(`SELECT count(DISTINCT a.sha256)::integer AS count, COALESCE(sum(a.byte_size),0)::bigint AS bytes
+          FROM assets a WHERE a.task_id=$1 AND a.asset_role='REFERENCE'
+            AND ($2::bigint IS NULL OR a.id<>$2)
+            AND (a.content_cleared_at IS NULL OR EXISTS (
+              SELECT 1 FROM image_reference_cleanup_jobs job
+              WHERE job.asset_id=a.id
+            ))`,[taskId,cleanupAssetId])).rows[0];
+        assertReferenceQuota(quota,decoded.bytes.length);
         const run=(await c.query('SELECT * FROM image_runs WHERE id=$1',[task.current_image_run_id])).rows[0];
         const asset=await storeAsset(c,taskId,run,decoded.bytes,'REFERENCE',{ ...decoded,bytes:undefined,uploadedBy:username,purpose,source });
-        await audit(c,taskId,null,'UPLOAD_REFERENCE',username,source,null,{assetId:Number(asset.id),sha256:asset.sha256});
-        return { id:Number(asset.id),sha256:asset.sha256,width:decoded.width,height:decoded.height,url:`/v1/assets/${asset.id}` };
+        await audit(c,taskId,null,'UPLOAD_REFERENCE',username,source,null,{assetId:Number(asset.id),sha256:asset.sha256,
+          replacementRequestedAssetId:replaceAssetId,replacedAssetId:cleanupAssetId,oldReferenceRetained});
+        return {saved:{ id:Number(asset.id),sha256:asset.sha256,width:decoded.width,height:decoded.height,
+          url:`/v1/assets/${asset.id}`,...(replaceAssetId!=null?{oldReferenceRetained}: {}) },cleanupAssetId};
       });
+      if(cleanupAssetId!=null)await drainReferenceCleanup(pool,storageRoot,{assetId:cleanupAssetId}).catch(()=>{});
+      return saved;
     },
     async create(taskId,input,actor) {
-      const username=actorName(actor), requestedConfig=normalizeEdit(input); taskId=normalizeTaskId(taskId);
-      return tx(async c=> {
-        await lockEditor(c,actor,taskId);
-        await c.query('SELECT id FROM tasks WHERE id=$1 FOR UPDATE',[taskId]);
-        const prior=(await c.query('SELECT * FROM image_edit_requests WHERE task_id=$1 AND request_id=$2',[taskId,requestedConfig.requestId])).rows[0];
-        if(prior) { if(JSON.stringify(requestEditConfig(prior.config)) !== JSON.stringify(JSON.parse(JSON.stringify(requestedConfig)))) {
-          // jsonb key order differs: compare normalized content structurally.
-          if(!sameJson(requestEditConfig(prior.config),requestedConfig)) conflict('requestId 已用于不同请求');
-        } return prior; }
-        const productionSettings=(await c.query("SELECT value FROM global_settings WHERE key='production'")).rows[0]?.value ?? {};
-        const usesImageModel=requestedConfig.operation==='TEXT'||requestedConfig.operation.startsWith('AI_');
-        const imageEditPrompt=usesImageModel?await publishedImageEditPrompt(c):null;
-        const config={...requestedConfig,
-          imageEditRepairMaxAttempts:normalizeImageEditRepairMaxAttempts(productionSettings.imageEditRepairMaxAttempts),
-          ...(imageEditPrompt?{imageEditPrompt}:{}),
-        };
-        await assertEditSource(c,taskId,config);
-        let bytes=0,pixels=0;
-        for(const ref of config.references) {
-          const a=(await c.query("SELECT * FROM assets WHERE id=$1 AND task_id=$2 AND asset_role='REFERENCE'",[ref.assetId,taskId])).rows[0];
-          if(!a) throw new TypeError('参考图片不属于当前任务');
-          bytes+=Number(a.byte_size); pixels+=a.edit_metadata.width*a.edit_metadata.height;
+      actorName(actor);
+      const requestedConfig=normalizeEdit(input);
+      taskId=normalizeTaskId(taskId);
+      return tx(c=>createInTransaction(c,taskId,requestedConfig,actor));
+    },
+    async createBatch(taskId,input,actor) {
+      actorName(actor);
+      const edits=normalizeEditBatch(input);
+      taskId=normalizeTaskId(taskId);
+      return tx(async c=>{
+        if(edits.length>1) {
+          await lockEditor(c,actor,taskId);
+          await c.query('SELECT id FROM tasks WHERE id=$1 FOR UPDATE',[taskId]);
+          const existing=(await c.query("SELECT request_id,target_page FROM image_edit_requests WHERE task_id=$1 AND config->>'batchId'=$2",
+            [taskId,edits[0].batchId])).rows;
+          if(existing.some(row=>!edits.some(edit=>edit.requestId===row.request_id && edit.targetPage===Number(row.target_page)))) {
+            conflict('批次编号已用于其他图片修改');
+          }
         }
-        if(bytes > 20*1024*1024 || pixels > 32_000_000) throw new TypeError('参考图总大小或像素超限');
-        const id=randomUUID();
-        const row=(await c.query(`INSERT INTO image_edit_requests(id,task_id,request_id,source_image_run_id,source_asset_id,copy_revision_id,source_sha256,target_page,operation,config,status,created_by)
-          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,[id,taskId,config.requestId,config.sourceImageRunId,config.sourceAssetId,config.copyRevisionId,config.sha256,config.targetPage,config.operation,config,config.draft?'DRAFT':'QUEUED',username])).rows[0];
-        for(const [i,ref] of config.references.entries()) await c.query('INSERT INTO image_edit_reference_assets(request_id,asset_id,purpose,sort_order,sha256) SELECT $1,id,$3,$4,sha256 FROM assets WHERE id=$2',[id,ref.assetId,ref.purpose,i]);
-        // Drafts and previews leave the approved version deliverable until acceptance.
-        await audit(c,taskId,id,'CREATE',username,config.instruction || config.operation);
-        return row;
+        const created=[];
+        for(const edit of edits) created.push(await createInTransaction(c,taskId,edit,actor));
+        return created;
+      });
+    },
+    async acceptBatch(taskId,rawBatchId,input,actor) {
+      const username=actorName(actor), batchId=normalizeUuid(rawBatchId,'batchId');
+      taskId=normalizeTaskId(taskId);
+      if(!input || typeof input!=='object' || Array.isArray(input)
+        || Object.keys(input).some(key=>!['requestId','imageRunId','edits','reason'].includes(key))) {
+        throw new TypeError('批量采用参数无效');
+      }
+      const requestId=normalizeUuid(input.requestId,'requestId');
+      const imageRunId=normalizeUuid(input.imageRunId,'imageRunId');
+      const reason=shortText(input.reason??'批量采用图片修改预览',1000);
+      if(!Array.isArray(input.edits)||input.edits.length<2||input.edits.length>5) {
+        throw new TypeError('请选择 2 至 5 张批次图片');
+      }
+      const selected=input.edits.map(item=>({id:normalizeUuid(item?.id,'editId'),
+        version:boundedNumber(item?.version,1,2147483647)})).sort((a,b)=>a.id.localeCompare(b.id));
+      if(new Set(selected.map(item=>item.id)).size!==selected.length)throw new TypeError('图片修改不能重复提交');
+      const snapshot={batchId,imageRunId,edits:selected,reason};
+      return tx(async c=>{
+        await lockEditor(c,actor,taskId);
+        const task=(await c.query('SELECT * FROM tasks WHERE id=$1 FOR UPDATE',[taskId])).rows[0];
+        const prior=(await c.query('SELECT * FROM image_edit_events WHERE task_id=$1 AND request_id=$2',[taskId,requestId])).rows[0];
+        if(prior) {
+          if(prior.action!=='BATCH_ACCEPT'||prior.actor!==username||!sameJson(prior.detail?.snapshot,snapshot)) {
+            conflict('requestId 已用于其他操作');
+          }
+          return prior.detail.result;
+        }
+        if(!task||!['MANUAL_ARCHIVE','IMAGE_REWORK_PENDING','REVIEWED'].includes(task.state)
+          ||task.current_image_run_id!==imageRunId||task.current_execution_id||task.mandatory_copy_qc) {
+          conflict('任务或图片版本已变化，请刷新后重新采用');
+        }
+        const rows=(await c.query("SELECT * FROM image_edit_requests WHERE task_id=$1 AND config->>'batchId'=$2 ORDER BY target_page,id FOR UPDATE",
+          [taskId,batchId])).rows;
+        if(rows.length!==selected.length || rows.some(row=>Number(row.config?.batchSize)!==selected.length
+          || !selected.some(item=>item.id===row.id&&item.version===row.version)
+          || row.status!=='PREVIEW_READY')) {
+          conflict('批次结果尚未全部就绪，或图片修改已变化，请刷新');
+        }
+        if(new Set(rows.map(row=>Number(row.target_page))).size!==rows.length) {
+          conflict('批次包含重复页面，不能采用');
+        }
+        const results=(await c.query('SELECT request_id,validation FROM image_edit_results WHERE request_id=ANY($1::uuid[])',
+          [selected.map(item=>item.id)])).rows;
+        if(results.length!==selected.length||results.some(result=>result.validation?.passed!==true
+          ||result.validation?.mock===true))conflict('批次中有未通过验收的图片');
+        for(const row of rows)await applyAction(c,row.id,'accept',{
+          requestId:randomUUID(),version:row.version,reason,
+        },actor);
+        const current=(await c.query('SELECT current_image_run_id FROM tasks WHERE id=$1',[taskId])).rows[0];
+        const result={imageRunId:current.current_image_run_id,processed:rows.length};
+        await audit(c,taskId,null,'BATCH_ACCEPT',username,reason,requestId,{snapshot,result});
+        return result;
       });
     },
     async action(id,action,input,actor) {
       const initial=await get(id);
-      return tx(async c=> {
+      const updated=await tx(async c=> {
         await lockEditor(c,actor,initial.task_id);
         await c.query('SELECT id FROM tasks WHERE id=$1 FOR UPDATE',[initial.task_id]);
         return applyAction(c,initial.id,action,input,actor);
       });
+      if(action==='reject'||action==='cancel')await drainReferenceCleanup(pool,storageRoot,{taskId:initial.task_id}).catch(()=>{});
+      return updated;
+    },
+    async deleteReference(taskId,assetId,actor) {
+      actorName(actor);taskId=normalizeTaskId(taskId);assetId=normalizeTaskId(assetId);
+      await tx(async c=>{
+        await lockEditor(c,actor,taskId);
+        const asset=(await c.query("SELECT id FROM assets WHERE id=$1 AND task_id=$2 AND asset_role='REFERENCE'",[assetId,taskId])).rows[0];
+        if(!asset)throw new ControlPlaneNotFoundError('reference asset not found');
+        await scheduleReferenceCleanupForAsset(c,taskId,assetId);
+        await audit(c,taskId,null,'DELETE_REFERENCE',actor.username,'用户删除上传的参考图',null,{assetId});
+      });
+      await drainReferenceCleanup(pool,storageRoot,{assetId}).catch(()=>{});
+      const pending=await pool.query('SELECT 1 FROM image_reference_cleanup_jobs WHERE asset_id=$1',[assetId])
+        .then(result=>result.rows.length>0,()=>true);
+      return {id:assetId,deleted:true,cleanupPending:pending};
     },
     async claim(worker) {
       shortText(worker,128);
