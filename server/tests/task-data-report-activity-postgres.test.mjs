@@ -4,6 +4,7 @@ import test from 'node:test';
 
 import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 import { readTaskDataReport } from '../src/task-data-report.mjs';
+import { TASK_ACTIVITY_QA_CTES } from '../src/task-activity-qa-facts.mjs';
 import { recordQualityReviewCoverage } from '../src/quality-review-coverage.mjs';
 import { startTemporaryPostgres18 } from './helpers/personal-postgres.mjs';
 
@@ -95,11 +96,13 @@ test('activity overview counts lifecycle first reviews and historical operations
         session, SHA, occurredAt])).rows[0].id);
       return fixture.copyApprovalId;
     }
-    async function image(fixture, occurredAt, { approval = true, owner = fixture.owner, session = randomUUID() } = {}) {
-      fixture.imageRunId = randomUUID();
-      await db.query(`INSERT INTO image_runs(id,task_id,copy_revision_id,status,result,image_production_chain_id)
-        VALUES($1,$2,$3,'COMPLETED','{}',$1)`, [fixture.imageRunId, fixture.taskId, fixture.copyRevisionId]);
-      await db.query('UPDATE tasks SET current_image_run_id=$2 WHERE id=$1', [fixture.taskId, fixture.imageRunId]);
+    async function image(fixture, occurredAt, { approval = true, owner = fixture.owner, session = randomUUID(), reuseRun = false } = {}) {
+      if (!reuseRun) {
+        fixture.imageRunId = randomUUID();
+        await db.query(`INSERT INTO image_runs(id,task_id,copy_revision_id,status,result,image_production_chain_id)
+          VALUES($1,$2,$3,'COMPLETED','{}',$1)`, [fixture.imageRunId, fixture.taskId, fixture.copyRevisionId]);
+        await db.query('UPDATE tasks SET current_image_run_id=$2 WHERE id=$1', [fixture.taskId, fixture.imageRunId]);
+      }
       if (approval) fixture.imageApprovalId = Number((await db.query(`INSERT INTO image_approval_events(task_id,
         copy_revision_id,image_run_id,submitted_by_account_id,submitted_by_username,review_session_id,
         image_set_sha256,submitted_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
@@ -349,6 +352,59 @@ test('activity overview counts lifecycle first reviews and historical operations
       assert.deepEqual(difference(await activity(), initial), {
         ...ZERO, imageReview: 1, imageQa: 2, imageQaPassed: 1,
       }, 'an initial failed inspection and its successful recheck remain two historical operations');
+    });
+
+    await t.test('IMAGE QA discard preserves the sampled submitter across same-run resubmissions without assignment history', async () => {
+      const initial = await activity();
+      const initialA = (await activity(DAY, [annotator(a)])).imageQa;
+      const initialB = (await activity(DAY, [annotator(b)])).imageQa;
+      assert.ok(a.userId < b.userId, 'the earlier account must not win the historical attribution by numeric order');
+      async function discard(fixture, samplingItemId = null) {
+        await db.query(`INSERT INTO image_task_dispositions(task_id,copy_revision_id,image_run_id,
+          sampling_item_id,from_state,note,actor_account_id,actor_username,actor_role,request_id,created_at)
+          VALUES($1,$2,$3,$4,'IMAGE_QC_PENDING','同图多轮初审归属回归',$5,$6,'ADMIN',$7,$8)`,
+        [fixture.taskId, fixture.copyRevisionId, fixture.imageRunId, samplingItemId,
+          admin.userId, admin.username, randomUUID(), at(DAY, '12:00:00')]);
+        await db.query('DELETE FROM task_assignment_records WHERE task_id=$1', [fixture.taskId]);
+        await db.query('DELETE FROM task_assignment_events WHERE task_id=$1', [fixture.taskId]);
+      }
+      async function assertDiscardOwner(fixture, expectedAccountId) {
+        const facts = (await db.query(`WITH ${TASK_ACTIVITY_QA_CTES}
+          SELECT subject_account_id FROM qa_image_discard WHERE task_id=$1`, [fixture.taskId])).rows;
+        assert.equal(facts.length, 1, 'one disposition must not fan out to all approvals for the image run');
+        assert.equal(facts[0].subject_account_id === null ? null : Number(facts[0].subject_account_id),
+          expectedAccountId);
+      }
+
+      const sampled = await task('同图采样项固定归属标注乙');
+      await copyApproval(sampled, at(BEFORE));
+      await image(sampled, at(BEFORE), { owner: a });
+      await image(sampled, at(DAY, '08:00:00'), { owner: b, reuseRun: true });
+      const target = await sample({ ...sampled, owner: b }, 'IMAGE', await freeze('IMAGE', { owner: b }));
+      await image(sampled, at(DAY, '10:00:00'), { owner: a, reuseRun: true });
+      await discard(sampled, target.itemId);
+      await assertDiscardOwner(sampled, b.userId);
+
+      const historical = await task('缺采样项按废弃时点归属标注乙');
+      await copyApproval(historical, at(BEFORE));
+      await image(historical, at(BEFORE), { owner: a });
+      await image(historical, at(DAY, '08:00:00'), { owner: b, reuseRun: true });
+      await discard(historical);
+      await image(historical, at(DAY, '16:00:00'), { owner: a, reuseRun: true });
+      await assertDiscardOwner(historical, b.userId);
+
+      const unknown = await task('缺采样项且废弃前没有可信初审');
+      await copyApproval(unknown, at(BEFORE));
+      await image(unknown, at(DAY, '16:00:00'), { owner: a });
+      await discard(unknown);
+      await assertDiscardOwner(unknown, null);
+
+      assert.equal((await activity()).imageQa - initial.imageQa, 3,
+        'each discard contributes one operation even when its submitter is unknown');
+      assert.equal((await activity(DAY, [annotator(b)])).imageQa - initialB, 2,
+        'without assignment history both known discards belong to the correct submitted approval');
+      assert.equal((await activity(DAY, [annotator(a)])).imageQa, initialA,
+        'other same-run submissions and future approvals cannot acquire historical discard operations');
     });
 
     await t.test('COPY V2 decisions and migrated legacy duplicates retain one operation per real outcome', async () => {
