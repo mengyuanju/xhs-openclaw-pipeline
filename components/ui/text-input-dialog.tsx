@@ -99,7 +99,7 @@ export function TextInputDialogProvider({ children }: { children: ReactNode }) {
           if (!open && resolverRef.current) settle(null);
         }}
       >
-        <DialogContent className="text-input-dialog-content">
+        <DialogContent className="text-input-dialog-content" overlayClassName="text-input-dialog-overlay">
           <form className="text-input-dialog-form" key={request?.id} onSubmit={submit}>
             <header className="text-input-dialog-header">
               <DialogTitle>{request?.title}</DialogTitle>

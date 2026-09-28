@@ -5,7 +5,7 @@ import { toast, Toaster as Sonner } from 'sonner';
 
 type ToasterProps = ComponentProps<typeof Sonner>;
 
-export function Toaster(props: ToasterProps) {
+export function Toaster({ style, ...props }: ToasterProps) {
   return <Sonner
     closeButton
     duration={6_000}
@@ -13,6 +13,8 @@ export function Toaster(props: ToasterProps) {
     position="top-center"
     richColors
     visibleToasts={4}
+    // Radix modals disable pointer events on body; messages need their own hit area.
+    style={{ pointerEvents: 'auto', ...style }}
     {...props}
   />;
 }

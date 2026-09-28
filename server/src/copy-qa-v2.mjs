@@ -272,7 +272,6 @@ export async function listCopyQaBatchesV2(pool,actor,view='PENDING') {
   if(!['PENDING','FINISHED'].includes(view))throw new TypeError('view is invalid');
   const sortDirection=view==='PENDING'?'ASC':'DESC';
   await activeActor(pool,actor,{qc:true});
-  const own=actor.role==='ADMIN'?null:Number(actor.userId);
   const result=await pool.query(`SELECT batch.*,
     count(*) FILTER(WHERE member.status='PENDING' AND member.selected) AS pending_count,
     count(*) FILTER(WHERE member.status='PASSED') AS passed_count,
@@ -281,10 +280,9 @@ export async function listCopyQaBatchesV2(pool,actor,view='PENDING') {
     count(*) FILTER(WHERE member.status='BATCH_AFFECTED') AS affected_count
     FROM copy_qa_batches_v2 AS batch
     JOIN copy_qa_batch_members_v2 AS member ON member.batch_id=batch.id
-    WHERE (($2='PENDING' AND batch.status='INSPECTING')
-      OR ($2='FINISHED' AND batch.status IN ('COMPLETED','AUTO_RETURNED')))
-      AND ($1::bigint IS NULL OR member.approver_account_id<>$1)
-    GROUP BY batch.id ORDER BY batch.created_at ${sortDirection},batch.id ${sortDirection}`,[own,view]);
+    WHERE (($1='PENDING' AND batch.status='INSPECTING')
+      OR ($1='FINISHED' AND batch.status IN ('COMPLETED','AUTO_RETURNED')))
+    GROUP BY batch.id ORDER BY batch.created_at ${sortDirection},batch.id ${sortDirection}`,[view]);
   return result.rows.map(row=>({id:row.public_id,displayName:row.display_name,mode:row.mode,status:row.status,
     accountId:row.account_id==null?null:Number(row.account_id),
     fullInspection:row.full_inspection,memberCount:row.member_count,sampleCount:row.sample_count,
@@ -401,7 +399,6 @@ function opaqueCode(prefix,id) {
 
 function workQaItemFrom(row,actor) {
   const blind=row.blind_review_enabled===true&&actor.role!=='ADMIN';
-  const canReview=actor.role==='ADMIN'||Number(row.approver_account_id)!==Number(actor.userId);
   const common={
     qaVersion:2,
     id:row.public_id,
@@ -415,7 +412,7 @@ function workQaItemFrom(row,actor) {
     content:blind?blindContent(row.content):row.content,
     revisionToken:row.content_sha256,
     productionBatch:{anonymousCode:opaqueCode('QCB',row.batch_public_id)},
-    capabilities:{canPass:canReview,canReturnSingle:canReview,canReturnBatch:false,canEscalate:false},
+    capabilities:{canPass:true,canReturnSingle:true,canReturnBatch:false,canEscalate:false},
     previousReturn:previousReturnFrom(row),
     createdAt:row.created_at,
   };
@@ -435,7 +432,6 @@ export async function listCopyQaWorkItemsV2(pool,{
   if(!Number.isSafeInteger(Number(offset))||Number(offset)<0||Number(offset)>1_000_000)throw new TypeError('offset is invalid');
   const itemId=itemPublicId==null?null:normalizeUuid(itemPublicId,'itemPublicId');
   await activeActor(pool,actor,{qc:true});
-  const own=actor.role==='ADMIN'?null:Number(actor.userId);
   const rows=(await pool.query(`SELECT member.*,batch.public_id AS batch_public_id,
       batch.display_name AS batch_display_name,batch.blind_review_enabled,
       task.query,task.mandatory_copy_qc,revision.content,
@@ -451,12 +447,11 @@ export async function listCopyQaWorkItemsV2(pool,{
     LEFT JOIN production_batches AS source_batch ON source_batch.id=task.production_batch_id
     ${PREVIOUS_RETURN_JOINS}
     WHERE member.selected AND member.status='PENDING'
-      AND ($1::bigint IS NULL OR member.approver_account_id<>$1)
-      AND ($2::text='ALL' OR CASE WHEN task.mandatory_copy_qc=true
-        OR previous_event.id IS NOT NULL THEN 'MANDATORY_RECHECK' ELSE 'RANDOM' END=$2)
-      AND ($3::uuid IS NULL OR member.public_id=$3)
+      AND ($1::text='ALL' OR CASE WHEN task.mandatory_copy_qc=true
+        OR previous_event.id IS NOT NULL THEN 'MANDATORY_RECHECK' ELSE 'RANDOM' END=$1)
+      AND ($2::uuid IS NULL OR member.public_id=$2)
     ORDER BY ${priorityOrderSql('task.')},member.id
-    LIMIT $4 OFFSET $5`,[own,sampleKind,itemId,Number(limit)+1,Number(offset)])).rows;
+    LIMIT $3 OFFSET $4`,[sampleKind,itemId,Number(limit)+1,Number(offset)])).rows;
   const hasMore=rows.length>Number(limit);
   const page=rows.slice(0,Number(limit));
   return {items:page.map(row=>workQaItemFrom(row,actor)),hasMore,
@@ -466,7 +461,6 @@ export async function listCopyQaWorkItemsV2(pool,{
 export async function listCopyQaBatchItemsV2(pool,batchId,actor) {
   const id=normalizeUuid(batchId,'batchId');
   await activeActor(pool,actor,{qc:true});
-  const own=actor.role==='ADMIN'?null:Number(actor.userId);
   const batch=(await pool.query('SELECT * FROM copy_qa_batches_v2 WHERE public_id=$1',[id])).rows[0];
   if(!batch)throw new ControlPlaneNotFoundError('质检批次不存在');
   const rows=(await pool.query(`SELECT member.*,task.query,task.mandatory_copy_qc,revision.content,
@@ -477,8 +471,8 @@ export async function listCopyQaBatchItemsV2(pool,batchId,actor) {
     JOIN copy_revisions AS revision ON revision.id=member.copy_revision_id
     JOIN copy_approval_events AS approval ON approval.id=member.approval_event_id
     ${PREVIOUS_RETURN_JOINS}
-    WHERE member.batch_id=$1 AND member.selected AND ($2::bigint IS NULL OR member.approver_account_id<>$2)
-    ORDER BY member.id`,[batch.id,own])).rows;
+    WHERE member.batch_id=$1 AND member.selected
+    ORDER BY member.id`,[batch.id])).rows;
   const blind=batch.blind_review_enabled&&actor.role!=='ADMIN';
   return {batch:{id:batch.public_id,displayName:batch.display_name,mode:batch.mode,status:batch.status,
     memberCount:batch.member_count,sampleCount:batch.sample_count,fullInspection:batch.full_inspection,
@@ -701,9 +695,6 @@ export async function decideCopyQaItemV2(pool,itemId,input,actor,{storageRoot}={
       WHERE public_id=$1 FOR UPDATE`,[id])).rows[0];
     if(!member.selected||member.status!=='PENDING'||member.content_sha256!==token){
       conflict('STALE_QA_ITEM','质检项已变化，请刷新');
-    }
-    if(reviewer.role!=='ADMIN'&&Number(member.approver_account_id)===Number(reviewer.id)){
-      throw new ControlPlaneAuthorizationError('不能质检自己审核通过的文案');
     }
     const reasonSnapshots=decision==='RETURN'
       ?await resolveCopyQaReasonSnapshots(client,reasonCodes,actor):[];

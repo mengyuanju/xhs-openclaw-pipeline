@@ -7,12 +7,13 @@ import { join,resolve } from 'node:path';
 import pg from 'pg';
 import sharp from 'sharp';
 import { startTemporaryPostgres18 } from './temporary-postgres18.mjs';
-import { requestIdAt } from './fixtures/claim-request-id.mjs';
 import { migrateDatabase } from '../src/database-migrations.mjs';
 import { createPostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 import { createControlPlaneApp } from '../src/http-server.mjs';
 import { createControlPlaneClient } from '../../src/control-plane/client.mjs';
 import { createStandaloneImageEditor } from '../src/standalone-image-editor.mjs';
+import { createImageEditingService } from '../src/image-editing.mjs';
+import { processImageEdit } from '../src/image-edit-renderer.mjs';
 import { backfillEligibleReferenceCleanup, drainReferenceCleanup } from '../src/image-reference-cleanup.mjs';
 import { processStandaloneImageEdit,parseUploadImageReview } from '../src/standalone-image-editor-renderer.mjs';
 import { imageHash } from '../../src/image-edit-pixels.mjs';
@@ -44,7 +45,7 @@ test('upload review fails closed on malformed, low-confidence, missing-text and 
   assert.throws(()=>parseUploadImageReview('{}'));
 });
 
-test('standalone uploads: isolation, executor claims, shared capacity, preview, adoption, download and cancellation',
+test('standalone uploads: isolation, programmatic and model claims, shared capacity, preview, adoption, download and cancellation',
   {skip:process.env.RUN_POSTGRES_E2E!=='1',timeout:150000},async t=>{
   const db=await startTemporaryPostgres18('standalone-editor-pg-');
   const pool=new pg.Pool({connectionString:db.connectionString});
@@ -54,6 +55,7 @@ test('standalone uploads: isolation, executor claims, shared capacity, preview, 
     await migrateDatabase(pool);
     const repository=createPostgresControlPlaneRepository({pool});
     const service=createStandaloneImageEditor({pool,storageRoot:root});
+    const center=createImageEditingService({pool,storageRoot:root});
     const makeUser=async username=>{
       const user=(await pool.query("INSERT INTO app_users(username,display_name,role,password_hash,must_change_password) VALUES($1,$1,'USER','test-only',false) RETURNING *",[username])).rows[0];
       return {userId:Number(user.id),username,role:'USER',credentialVersion:user.credential_version};
@@ -96,13 +98,11 @@ test('standalone uploads: isolation, executor claims, shared capacity, preview, 
       operation:'SVG_DISCLOSURE',overlay:{text:'AI生成'},...extra});
     const edit=await service.createEdit(id,makeEdit(),actor);
     assert.equal((await service.list(actor,{queue:true})).items[0].status,'QUEUED');
-    assert.equal(await repository.claimImage('standalone-executor',1,2,12),null,'old executors must not claim uploads');
-    const requestId=requestIdAt();
-    const batch=await machine.claimImageBatch({nodeId:'standalone-executor',limit:1,requestId});
-    const claim=batch.claims[0];assert.equal(claim.imageEdit.id,edit.id);
-    assert.equal(claim.execution.snapshot.task.kind,'STANDALONE_IMAGE_EDIT');
-    assert.equal((await machine.claimImageBatch({nodeId:'standalone-executor',limit:1,requestId})).claims[0].execution.id,claim.execution.id);
-    assert.equal(await machine.claimImage('standalone-executor'),null,'shared IMAGE capacity is occupied');
+    assert.equal(await repository.claimImage('standalone-executor',1,2,12),null);
+    assert.equal(await machine.claimImage('standalone-executor'),null,'programmatic uploads bypass image executors');
+    const claim={imageEdit:await center.claimProgrammatic('standalone-center',{editId:edit.id})};
+    assert.equal(claim.imageEdit.id,edit.id);assert.equal(claim.imageEdit.execution_id,null);
+    assert.equal((await pool.query('SELECT count(*)::integer AS count FROM task_executions')).rows[0].count,0);
     assert.equal((await service.detail(id,actor)).status,'RUNNING');
     const runningBody={requestId:randomUUID(),version:claim.imageEdit.version,reason:'不允许修改执行中的图片'};
     for(const path of [`/v1/image-editor/workspaces/${id}/image-edits`,`/v1/image-editor/workspaces/${id}/image-versions/${workspace.runId}/restore`]) {
@@ -122,7 +122,7 @@ test('standalone uploads: isolation, executor claims, shared capacity, preview, 
       heartbeat:()=>machine.heartbeatImageEdit(claim.execution.id,claim.imageEdit),
       async complete(_e,{bytes,validation}){await machine.stageImageEditValidation(claim.execution.id,claim.imageEdit,validation);return machine.completeImageEdit(claim.execution.id,claim.imageEdit,bytes);},
       fail:(_e,error,preview)=>preview?.bytes?machine.rejectImageEdit(claim.execution.id,claim.imageEdit,preview.bytes,error):machine.failImageEdit(claim.execution.id,claim.imageEdit,error)});
-    const result=await processStandaloneImageEdit({service:remote(claim),storageRoot:root,workerId:'standalone-executor',edit:claim.imageEdit,
+    const result=await processImageEdit({service:center,storageRoot:root,workerId:'standalone-center',edit:claim.imageEdit,
       agentClient:{runVision:()=>assert.fail('SVG must not call models'),runImageEdit:()=>assert.fail('SVG must not call models')}});
     assert.equal(result.status,'PREVIEW_READY',result.error);
     const ready=await service.getEdit(edit.id,actor);assert.equal(ready.status,'PREVIEW_READY');
@@ -136,6 +136,70 @@ test('standalone uploads: isolation, executor claims, shared capacity, preview, 
     assert.equal(Number((await pool.query('SELECT count(*) FROM delivery_entries WHERE task_id=$1',[id])).rows[0].count),0);
     await assert.rejects(()=>service.createEdit(id,makeEdit(),actor),/已更新/u);
 
+    await t.test('programmatic standalone notifications cover single, batch, draft queue and retry with a custom solid center preview',async()=>{
+      const notices=[];
+      const notifying=createStandaloneImageEditor({pool,storageRoot:root,onProgrammaticReady:async ids=>{
+        const committed=(await pool.query('SELECT id,status FROM image_edit_requests WHERE id=ANY($1::uuid[])',[ids])).rows;
+        assert.equal(committed.length,ids.length);
+        assert.ok(committed.every(edit=>edit.status==='QUEUED'));
+        notices.push(ids);
+      }});
+      const fresh=await notifying.create({...input,requestId:randomUUID(),images:[input.images[0],input.images[0]]},actor);
+      const editInput=(extra={})=>({...makeEdit(),sourceImageRunId:fresh.runId,sourceAssetId:fresh.assets[0].id,
+        copyRevisionId:fresh.copyRevisionId,sha256:fresh.assets[0].sha256,...extra});
+      const act=async(edit,action)=>notifying.action(edit.id,action,{requestId:randomUUID(),
+        version:(await notifying.getEdit(edit.id,actor)).version,reason:'programmatic test'},actor);
+      const created=[];
+      try {
+        const solid=await notifying.createEdit(fresh.id,editInput({overlay:{text:'AI生成',badgeVariant:'solid-pill',badgeColor:'#14253a'}}),actor);
+        created.push(solid);assert.deepEqual(notices,[[solid.id]]);
+        const queued=(await notifying.list(actor,{queue:true})).items.find(item=>item.id===fresh.id);
+        assert.equal(queued.status,'QUEUED');assert.equal(queued.operation,'SVG_DISCLOSURE');
+        const claim=await center.claimProgrammatic('standalone-center-solid',{editId:solid.id});
+        assert.equal((await notifying.detail(fresh.id,actor)).status,'RUNNING');
+        assert.equal((await notifying.detail(fresh.id,actor)).operation,'SVG_DISCLOSURE');
+        await assert.rejects(()=>notifying.createEdit(fresh.id,editInput(),actor),/仅支持查看/u);
+        const modelCalls=(await pool.query('SELECT count(*)::integer AS count FROM model_call_traces')).rows[0].count;
+        const renderingService={...center,async context(edit){
+          const context=await center.context(edit);
+          return {...context,settings:new Proxy(context.settings,{get(target,key,receiver){
+            if(key==='modelApi')assert.fail('programmatic rendering must not initialize a model client');
+            return Reflect.get(target,key,receiver);
+          }})};
+        }};
+        const output=await processImageEdit({service:renderingService,storageRoot:root,
+          workerId:'standalone-center-solid',edit:claim,environment:{}});
+        assert.equal(output.status,'PREVIEW_READY',output.error);
+        const ready=await notifying.getEdit(solid.id,actor);
+        assert.equal(ready.execution_id,null);assert.equal(ready.validation.renderer.style.variant,'solid-pill');
+        assert.equal(ready.config.overlay.badgeColor,'#14253A');
+        assert.equal(ready.validation.renderer.style.colorSource,'USER_SELECTED');
+        assert.equal(ready.validation.renderer.style.colorRole,'custom');
+        assert.equal(ready.validation.renderer.style.backgroundColor,'#14253A');
+        assert.equal(ready.validation.renderer.style.borderColor,'#14253A');
+        assert.equal(ready.validation.renderer.style.textColor,'#FFFFFF');
+        assert.ok(ready.validation.renderer.style.contrastRatio>=4.5);
+        assert.equal(ready.validation.billedImageGeneration,false);assert.equal(ready.validation.generationAttempts,0);
+        assert.equal((await pool.query('SELECT count(*)::integer AS count FROM model_call_traces')).rows[0].count,modelCalls);
+        assert.equal((await notifying.detail(fresh.id,actor)).runId,fresh.runId);
+        const draft=await notifying.createEdit(fresh.id,editInput({draft:true}),actor);created.push(draft);
+        assert.equal(notices.length,1);
+        await act(draft,'queue');assert.deepEqual(notices.at(-1),[draft.id]);
+        const failedClaim=await center.claimProgrammatic('standalone-center-retry',{editId:draft.id});
+        await center.fail(failedClaim,new Error('fake programmatic failure'));
+        await act(draft,'retry');assert.deepEqual(notices.at(-1),[draft.id]);
+        await act(draft,'cancel');
+        const batchId=randomUUID();
+        const batchInputs=fresh.assets.map((asset,index)=>editInput({requestId:randomUUID(),sourceAssetId:asset.id,
+          sha256:asset.sha256,targetPage:index+1,batchId,batchSize:2}));
+        const batch=await notifying.createBatch(fresh.id,{edits:batchInputs},actor);created.push(...batch);
+        assert.deepEqual(notices.at(-1),batch.map(edit=>edit.id));
+        assert.equal(notices.length,4);
+      } finally {
+        for(const edit of created)if((await notifying.getEdit(edit.id,actor)).status!=='CANCELLED')await act(edit,'cancel');
+        await notifying.remove({requestId:randomUUID(),workspaceIds:[fresh.id]},actor);
+      }
+    });
     await t.test('completed editing accepts changed parameters as a new queued request',async()=>{
       const current=await service.detail(id,actor);
       const next=await service.createEdit(id,{...makeEdit(),sourceImageRunId:current.runId,sourceAssetId:current.assets[0].id,
@@ -190,7 +254,7 @@ test('standalone uploads: isolation, executor claims, shared capacity, preview, 
       const fresh=await service.create({...input,requestId:randomUUID(),images:[input.images[0],input.images[0]]},actor);
       const batchId=randomUUID();
       const items=fresh.assets.map((asset,index)=>({...makeEdit(),sourceImageRunId:fresh.runId,sourceAssetId:asset.id,
-        sha256:asset.sha256,copyRevisionId:fresh.copyRevisionId,targetPage:index+1,batchId}));
+        sha256:asset.sha256,copyRevisionId:fresh.copyRevisionId,targetPage:index+1,batchId,batchSize:2}));
       const endpoint=`/v1/image-editor/workspaces/${fresh.id}/image-edits/batch`;
       assert.equal((await request(endpoint,{method:'POST',body:{edits:[items[0],{...items[1],sha256:'b'.repeat(64)}]}})).status,409);
       assert.equal((await service.listEdits(fresh.id,actor)).length,0,'failed second image rolls back the first');
@@ -198,12 +262,14 @@ test('standalone uploads: isolation, executor claims, shared capacity, preview, 
       const response=await request(endpoint,{method:'POST',body:{edits:items}});assert.equal(response.status,201);
       const created=(await response.json()).data;assert.equal(created.length,2);
       assert.deepEqual((await service.createBatch(fresh.id,{edits:items},actor)).map(item=>item.id),created.map(item=>item.id));
-      const claim=await machine.claimImage('standalone-executor');assert.equal(claim.task.id,fresh.id);
+      assert.equal(await machine.claimImage('standalone-executor'),null);
+      const claim=await center.claimProgrammatic('standalone-center-batch',{editId:created[0].id});
+      assert.equal(Number(claim.task_id),fresh.id);
       assert.equal((await request(endpoint,{method:'POST',body:{edits:items.map(item=>({...item,requestId:randomUUID()}))}})).status,409);
       const untouched=await service.create({...input,requestId:randomUUID()},actor);
       await assert.rejects(()=>service.remove({requestId:randomUUID(),workspaceIds:[untouched.id,fresh.id]},actor),/仅支持查看/u);
       assert.equal((await service.detail(untouched.id,actor)).id,untouched.id);
-      await machine.failImageEdit(claim.execution.id,claim.imageEdit,'测试结束');
+      await center.fail(claim,new Error('测试结束'));
       await service.remove({requestId:randomUUID(),workspaceIds:[untouched.id,fresh.id]},actor);
     });
     await t.test('AI adapter compares uploaded text and calls the image model once',async()=>{
@@ -213,7 +279,10 @@ test('standalone uploads: isolation, executor claims, shared capacity, preview, 
       await pool.query("INSERT INTO prompt_versions(template_id,version,content,content_sha256,status,published_at) VALUES($1,1,$2,$3,'PUBLISHED',now())",[template.id,content,imageHash(Buffer.from(content))]);
       const e=await service.createEdit(fresh.id,{...makeEdit({operation:'TEXT',confirmation:'LIVE_IMAGE_COST_ACCEPTED'}),
         sourceImageRunId:fresh.runId,sourceAssetId:fresh.assets[0].id,copyRevisionId:fresh.copyRevisionId},actor);
+      assert.equal(await repository.claimImage('standalone-executor',1,2,12),null,'model uploads still require version 13');
       const claim=await machine.claimImage('standalone-executor');assert.equal(claim.imageEdit.id,e.id);
+      assert.equal(claim.execution.snapshot.task.kind,'STANDALONE_IMAGE_EDIT');
+      assert.equal(await machine.claimImage('standalone-executor'),null,'shared model IMAGE capacity is occupied');
       let generations=0;const reviews=[];
       const output=await processStandaloneImageEdit({service:remote(claim),storageRoot:root,workerId:'standalone-executor',edit:claim.imageEdit,
         agentClient:{async runImageEdit({outputPath}){generations++;await writeFile(outputPath,png);return {model:'fake-image'};},
@@ -268,15 +337,16 @@ test('standalone uploads: isolation, executor claims, shared capacity, preview, 
       assert.equal(decoded.info.width,1086);assert.equal(decoded.info.height,1448);
       assert.deepEqual(decoded.data,pixels);
     });
-    await t.test('running workspace is read-only and executor failure frees the shared slot',async()=>{
+    await t.test('running programmatic workspace is read-only and failure fences its local lease',async()=>{
       const fresh=await service.create({...input,requestId:randomUUID()},actor);
       const e=await service.createEdit(fresh.id,{...makeEdit(),sourceImageRunId:fresh.runId,sourceAssetId:fresh.assets[0].id,copyRevisionId:fresh.copyRevisionId},actor);
-      const claim=await machine.claimImage('standalone-executor');assert.equal(claim.imageEdit.id,e.id);
+      const claim=await center.claimProgrammatic('standalone-center-readonly',{editId:e.id});assert.equal(claim.id,e.id);
       const running=await service.getEdit(e.id,actor);
       await assert.rejects(()=>service.action(e.id,'cancel',{requestId:randomUUID(),version:running.version,reason:'取消编辑'},actor),/仅支持查看/u);
-      await machine.failImageEdit(claim.execution.id,claim.imageEdit,'测试执行失败');
-      await assert.rejects(()=>machine.stageImageEditValidation(claim.execution.id,claim.imageEdit,{passed:true}),/取消|租约/u);
-      await assert.rejects(()=>machine.completeImageEdit(claim.execution.id,claim.imageEdit,png),/取消|租约/u);
+      await center.fail(claim,new Error('测试执行失败'));
+      assert.equal(await center.heartbeat(claim),false);
+      await assert.rejects(()=>center.complete(claim,{bytes:png,validation:{passed:true,
+        integrity:{sha256:imageHash(png)}}}),/取消|租约/u);
     });
   }finally{
     if(server)await new Promise(r=>server.close(r));

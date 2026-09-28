@@ -425,11 +425,13 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
       const targetText=config.overlay.text;
       const storedStyle=currentImage?.aiDisclosureStyle;
       const visualPlan=validationContext.run.result?.visualPlan?.value??validationContext.run.result?.visualPlan;
-      const visualStyle=typeof storedStyle?.color==='string'
-        ?{disclosureColor:storedStyle.color}
-        :resolveAiDisclosureVisualStyle(visualPlan);
-      const style=createAiDisclosureStyle({text:targetText,visualStyle});
-      const svg=aiDisclosureBadgeSvg({text:targetText,visualStyle});
+      const visualStyle=resolveAiDisclosureVisualStyle(visualPlan);
+      const badgeInput={text:targetText,visualStyle,storedStyle,variant:config.overlay.badgeVariant??'outline-pill',
+        badgeColor:config.overlay.badgeColor};
+      const resolvedStyle=createAiDisclosureStyle(badgeInput);
+      const style={...resolvedStyle,textColor:resolvedStyle.textColor??resolvedStyle.color,
+        backgroundColor:resolvedStyle.backgroundColor??null,borderColor:resolvedStyle.color};
+      const svg=aiDisclosureBadgeSvg(badgeInput);
       const result=await sharp(source,{limitInputPixels:16_000_000})
         .composite([{input:Buffer.from(svg,'utf8'),top:0,left:0}]).png().toBuffer();
       const mask=await renderRegionsMask([{x:style.x,y:style.y,width:style.width,height:style.height}]);

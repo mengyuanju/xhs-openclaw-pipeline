@@ -11,6 +11,7 @@ import { ChevronLeft, ChevronRight, ExternalLink, Images, LoaderCircle } from 'l
 import { useEffect, useState } from 'react';
 
 import { apiRequest } from '../components/api-client';
+import { ImageManualModificationNote } from '../components/image-manual-modification-note';
 import styles from './delivery-pool.module.css';
 import {
   normalizeDeliveryContentPreview,
@@ -123,6 +124,7 @@ export function DeliveryPreviewDialog({
         </section>
 
         <section className={styles.previewCopy} aria-label="交付文案预览">
+          <ImageManualModificationNote note={preview.manualModificationNote} />
           <div className={styles.previewQuery}><span>原始 Query</span><p>{preview.query || '未记录'}</p></div>
           <article>
             <span>发布标题</span>

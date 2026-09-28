@@ -17,6 +17,8 @@ function databaseRow() {
     query_package_name: '九月选题',
     submitter_account_id: 64,
     submitter_username: 'worker',
+    manual_modification_note: '第 2 张右下角文字需手动调整，后续替换',
+    note: '质检员的审核结论备注',
     assigned_review_account_id: 91,
     image_run_id: 'image-run-1',
     copy_revision_id: 902,
@@ -38,9 +40,12 @@ test('image QA server ignores blind redaction for administrators only', () => {
   assert.equal(admin.productionBatch.queryPackageName, '九月选题');
   assert.equal(admin.submitter.username, 'worker');
   assert.equal(admin.previousReturn, null);
+  assert.equal(admin.manualModificationNote, row.manual_modification_note);
 
   assert.equal(reviewer.blindReview, true);
   assert.equal(reviewer.previousReturn, null);
+  assert.equal(reviewer.manualModificationNote, row.manual_modification_note);
+  assert.notEqual(reviewer.manualModificationNote, row.note);
   for (const key of ['taskId', 'query', 'productionBatch', 'submitter', 'imageRunId', 'copyRevisionId']) {
     assert.equal(Object.hasOwn(reviewer, key), false, key);
   }
@@ -147,6 +152,8 @@ test('administrator image QA list filters by submitter display name or account n
   assert.match(fixture.listCall.sql,
     /strpos\(lower\(item\.submitter_username\), lower\(\$5\)\)[\s\S]*person_filter\.display_name/u);
   assert.match(fixture.listCall.sql, /edit\.status = ANY\(\$6::text\[\]\)/u);
+  assert.match(fixture.listCall.sql, /JOIN image_approval_events AS approval ON approval\.id = item\.approval_event_id/u);
+  assert.match(fixture.listCall.sql, /approval\.manual_modification_note/u);
 });
 
 test('reviewers cannot request the administrator personnel filter for image QA', async () => {

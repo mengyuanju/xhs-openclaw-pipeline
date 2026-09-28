@@ -26,7 +26,7 @@ test('distributed mode routes copy creation and global data through the control 
   assert.match(navigation, /href: '\/workbench', label: '作业中心'/u);
 });
 
-test('image worker polling is opt-in and manual edits run on the same executor image lane', async () => {
+test('image worker polling is opt-in and model edits share the executor image lane', async () => {
   const [executor, repository, readme,centerCli] = await Promise.all([
     source('src/executor/agent.mjs'),
     source('server/src/postgres-repository.mjs'),
@@ -41,12 +41,13 @@ test('image worker polling is opt-in and manual edits run on the same executor i
   assert.match(repository, /STALE_EXECUTION/u);
   assert.match(repository, /current_execution_id/u);
   assert.match(repository,/imageEditExecutorVersion: 13/u);
-  assert.match(repository,/edit\.operation = 'SVG_DISCLOSURE' THEN 8/u);
+  assert.match(repository,/edit\.operation <> 'SVG_DISCLOSURE'/u);
   assert.match(repository,/edit\.operation = 'TEXT' OR edit\.operation LIKE 'AI_%' THEN 7/u);
   assert.match(repository,/image_edit_request_id/u);
   assert.match(executor,/executeImageEditClaim/u);
   assert.match(executor,/claim\.imageEdit/u);
   assert.doesNotMatch(centerCli,/startImageEditProcessing|image-edit-once/u);
+  assert.match(centerCli,/startProgrammaticImageEditProcess/u);
   assert.match(readme, /--disable-image-worker/u);
   assert.match(readme, /--enable-image-worker/u);
   assert.match(readme, /中心机器不需要安装 Codex/u);

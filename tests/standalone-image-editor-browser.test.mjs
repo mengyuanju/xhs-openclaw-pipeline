@@ -31,14 +31,14 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
         let result;
         if(path==='/v1/image-editor/workspaces/delete'){deletions.push(data.workspaceIds);for(const id of data.workspaceIds)deleted.add(id);result={deletedIds:data.workspaceIds};}
         else if(path==='/v1/image-editor/workspaces'&&req.method==='POST'){uploaded=true;deleted.delete(workspace.id);assert.equal(data.images.length,workspace.assets.length);result={...workspace,status:'UPLOADED'};}
-        else if(path==='/v1/image-editor/workspaces'){assert.equal(new URL(req.url,'http://localhost').searchParams.get('queue'),'true');const items=[...(edits.length?[{id:501,title:workspace.title,owner:'本人',status:edits[0].status,error:edits[0].error}]:[]),...extraRows].filter(item=>!deleted.has(item.id));result={total:items.length,items};}
+        else if(path==='/v1/image-editor/workspaces'){assert.equal(new URL(req.url,'http://localhost').searchParams.get('queue'),'true');const items=[...(edits.length?[{id:501,title:workspace.title,owner:'本人',status:edits[0].status,operation:edits[0].operation,nodeId:null,error:edits[0].error}]:[]),...extraRows].filter(item=>!deleted.has(item.id));result={total:items.length,items};}
         else if(path.startsWith('/v1/image-editor/edits/')) {
           const edit=edits.find(item=>path.endsWith(item.id)||path.endsWith(`${item.id}/accept`));
           if(!edit){res.statusCode=404;result=null;}
           else if(path.endsWith('/accept')&&req.method==='POST') {individualAcceptCalls+=1;edit.status='ACCEPTED';result=edit;}
           else result=deleted.has(501)?{id:edit.id,task_id:501,status:'DELETED'}:edit;
         }
-        else if(path==='/v1/image-editor/workspaces/501')result={...workspace,status:edits[0]?.status??'UPLOADED'};
+        else if(path==='/v1/image-editor/workspaces/501')result={...workspace,status:edits[0]?.status??'UPLOADED',operation:edits[0]?.operation};
         else if(path==='/v1/image-editor/workspaces/501/image-edits/batch') {
           batchSubmissions+=1;batchPayload=data;assert.equal(data.edits.length,2);
           const created=data.edits.map(item=>({id:randomUUID(),status:'QUEUED',version:1,attempts:0,operation:item.operation,target_page:item.targetPage,source_asset_id:item.sourceAssetId,created_by:'本人',created_by_account_id:8,config:item,result:null}));
@@ -63,6 +63,7 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
     browser=await chromium.launch({headless:true,channel:process.env.IMAGE_EDIT_BROWSER_CHANNEL??'msedge'});
     const page=await browser.newPage({viewport:{width:1280,height:960}}),errors=[];
     page.on('pageerror',e=>errors.push(e.message));
+    await page.addInitScript(()=>{window.EyeDropper=undefined;});
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     await page.waitForTimeout(1500);
     assert.deepEqual(errors,[],await page.locator('body').innerText());
@@ -81,7 +82,28 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
     assert.equal(await page.getByRole('button',{name:'保存草稿',exact:true}).count(),0);
     assert.equal(submissionCount,0,'upload alone does not enqueue generation');
     assert.equal(await page.getByRole('link',{name:/下载/u}).count(),0,'uploaded originals have no download button');
+    assert.equal(await page.getByRole('combobox',{name:'程序标识样式',exact:true}).count(),0);
     await page.getByRole('button',{name:'程序叠加（SVG + Sharp）',exact:true}).click();
+    const badgeStyle=page.getByRole('combobox',{name:'程序标识样式',exact:true});
+    assert.equal(await badgeStyle.textContent(),'描边徽章');
+    assert.equal(await page.getByRole('radio',{name:'自动配色',exact:true}).isChecked(),true);
+    for(const radio of await page.getByRole('radiogroup',{name:'程序标识配色',exact:true}).getByRole('radio').all()) {
+      const bounds=await radio.boundingBox();assert.ok(bounds.width<=20&&bounds.height<=20,'standalone color modes retain compact radio controls');
+    }
+    await page.getByRole('radio',{name:'自定义颜色',exact:true}).check();
+    const badgeColorInput=page.getByLabel('程序标识颜色值',{exact:true});
+    assert.equal(await page.getByRole('button',{name:'屏幕取色',exact:true}).count(),0,'unsupported browsers retain native picker and HEX inputs');
+    await badgeColorInput.fill('#bad');
+    await page.getByRole('alert').filter({hasText:'请输入有效的颜色值'}).waitFor();
+    assert.equal(await page.getByRole('button',{name:'保存并提交生图',exact:true}).isDisabled(),true);
+    assert.equal(submissionCount,0,'invalid colors never submit');
+    await page.getByLabel('程序标识取色器',{exact:true}).fill('#f1e2d3');
+    assert.equal(await badgeColorInput.inputValue(),'#F1E2D3');
+    assert.equal(await page.locator('[data-disclosure-preview] rect').getAttribute('stroke'),'#F1E2D3');
+    assert.equal(await page.locator('[data-disclosure-preview] text').getAttribute('fill'),'#F1E2D3');
+    await badgeStyle.click();await page.getByRole('option',{name:'实心徽章',exact:true}).click();
+    assert.equal(await page.locator('[data-disclosure-preview] rect').getAttribute('fill'),'#F1E2D3');
+    assert.equal(await page.locator('[data-disclosure-preview] text').getAttribute('fill'),'#000000');
     await page.getByLabel('人工生成标识文字',{exact:true}).fill('AI生成');
     failSubmission=true;
     await page.getByRole('button',{name:'保存并提交生图',exact:true}).click();
@@ -91,21 +113,30 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
     await page.getByRole('button',{name:'保存并提交生图',exact:true}).click();
     await page.getByRole('dialog').waitFor({state:'hidden'});
     const list=page.getByRole('region',{name:'图片编辑列表'});
-    await list.getByText('待生图',{exact:true}).waitFor();
+    await list.getByText('准备处理',{exact:true}).waitFor();
+    assert.equal(await list.getByText('中心程序处理',{exact:true}).count(),1);
     assert.equal(submitted.operation,'SVG_DISCLOSURE');assert.equal(submitted.draft,false);
+    assert.equal(submitted.overlay.badgeVariant,'solid-pill');
+    assert.equal(submitted.overlay.badgeColor,'#F1E2D3');
     assert.equal(submissionCount,2,'one failed attempt and one successful submission');
     edits[0].status='RUNNING';
     await list.getByRole('button',{name:'刷新',exact:true}).click();
-    await list.getByText('生图中',{exact:true}).waitFor();
+    await list.getByText('程序处理中',{exact:true}).waitFor();
     assert.equal(await list.getByRole('button',{name:'删除',exact:true}).isDisabled(),true);
     assert.equal(await list.getByLabel('全选本页可删除图片').isDisabled(),true);
     await list.getByRole('button',{name:'查看',exact:true}).click();
     await page.getByRole('heading',{name:'查看图片',exact:true}).waitFor();
     await page.getByLabel('人工生成标识文字',{exact:true}).waitFor();
     assert.equal(await page.getByLabel('人工生成标识文字',{exact:true}).isDisabled(),true);
+    assert.equal(await badgeStyle.textContent(),'实心徽章','saved solid style is restored');
+    assert.equal(await badgeStyle.isDisabled(),true);
+    assert.equal(await page.getByRole('radio',{name:'自定义颜色',exact:true}).isChecked(),true,'saved custom mode is restored');
+    assert.equal(await badgeColorInput.inputValue(),'#F1E2D3','saved custom color is restored');
+    assert.equal(await badgeColorInput.isDisabled(),true);
     assert.equal(await page.getByRole('button',{name:'保存并提交生图',exact:true}).isDisabled(),true);
     assert.equal(await page.getByRole('link',{name:/下载/u}).count(),0);
     await page.getByRole('tab',{name:/编辑记录/u}).click();
+    await page.getByText('程序生成标识 · 程序处理中',{exact:true}).waitFor();
     assert.equal(await page.getByRole('button',{name:'直接删除此修复',exact:true}).isDisabled(),true);
 
     edits[0]={...edits[0],status:'PREVIEW_READY',version:2,attempts:1,result:{asset_id:602,image_run_id:randomUUID(),validation:{passed:true}}};
@@ -131,7 +162,7 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
     await page.getByLabel('人工生成标识文字',{exact:true}).fill('再次生成');
     await page.getByRole('button',{name:'保存并提交生图',exact:true}).click();
     await page.getByRole('dialog').waitFor({state:'hidden'});
-    await list.getByText('待生图',{exact:true}).waitFor();
+    await list.getByText('准备处理',{exact:true}).waitFor();
     assert.equal(submitted.overlay.text,'再次生成');assert.equal(submissionCount,3);
     await list.getByRole('button',{name:'查看 / 编辑',exact:true}).click();
     await page.getByRole('region',{name:'图片编辑组件'}).waitFor();
@@ -168,6 +199,11 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
     await page.getByLabel('上传待编辑图片',{exact:true}).setInputFiles([{name:'one.png',mimeType:'image/png',buffer:png},{name:'two.png',mimeType:'image/png',buffer:png},{name:'three.png',mimeType:'image/png',buffer:png}]);
     await page.getByRole('region',{name:'图片编辑组件'}).waitFor();
     await page.getByRole('button',{name:'程序叠加（SVG + Sharp）',exact:true}).click();
+    assert.equal(await badgeStyle.textContent(),'描边徽章','new uploads retain the outline default');
+    assert.equal(await page.getByRole('radio',{name:'自动配色',exact:true}).isChecked(),true,'new uploads retain automatic colors');
+    await page.getByRole('radio',{name:'自定义颜色',exact:true}).check();
+    await badgeColorInput.fill('#234567');
+    await badgeStyle.click();await page.getByRole('option',{name:'实心徽章',exact:true}).click();
     assert.equal(await page.getByLabel('选择第 1 页').isChecked(),true,'current page is selected by default');
     await page.getByRole('button',{name:'预览第 2 页',exact:true}).click();
     assert.equal(await page.getByLabel('选择第 2 页').isChecked(),false,'previewing does not select a page');
@@ -175,9 +211,11 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
     await page.getByLabel('选择第 3 页').check();
     await page.getByRole('button',{name:'生成已选 2 张程序标识预览',exact:true}).click();
     await page.getByRole('dialog').waitFor({state:'hidden'});
-    await list.getByText('待生图',{exact:true}).waitFor();
+    await list.getByText('准备处理',{exact:true}).waitFor();
     assert.equal(batchSubmissions,1,'selected pages are submitted in one atomic request');
     assert.deepEqual(batchPayload.edits.map(edit=>[edit.targetPage,edit.batchSize,edit.sourceAssetId]),[[1,2,601],[3,2,604]]);
+    assert.ok(batchPayload.edits.every(edit=>edit.operation==='SVG_DISCLOSURE'&&edit.overlay.badgeVariant==='solid-pill'));
+    assert.ok(batchPayload.edits.every(edit=>edit.overlay.badgeColor==='#234567'),'selected pages share their custom color');
     assert.deepEqual(edits.map(edit=>edit.target_page),[1,3]);
     edits=edits.map(edit=>({...edit,status:'PREVIEW_READY',result:{asset_id:edit.source_asset_id+100,image_run_id:randomUUID(),validation:{passed:true}}}));
     await list.getByRole('button',{name:'刷新',exact:true}).click();
@@ -212,6 +250,9 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
     await page.getByRole('region',{name:'已选标识批次状态'}).getByRole('button',{name:'已采用 3 张标识',exact:true}).waitFor();
     assert.equal(individualAcceptCalls,4,'a legacy batch without batchSize does not call atomic adoption');
     await page.getByRole('tab',{name:'本次编辑',exact:true}).click();
+    assert.equal(await page.getByRole('radio',{name:'自定义颜色',exact:true}).isChecked(),true);
+    assert.equal(await badgeColorInput.inputValue(),'#234567','batch history restores the custom color');
+    await page.getByRole('radio',{name:'自动配色',exact:true}).check();
     await page.getByRole('button',{name:'清空',exact:true}).click();
     assert.equal(await page.getByRole('button',{name:'生成已选 0 张程序标识预览',exact:true}).isDisabled(),true);
     await page.getByLabel('选择第 2 页').check();
@@ -220,6 +261,19 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
     assert.equal(submitted.targetPage,2,'single selection uses its own page');
     assert.equal(submitted.sourceAssetId,603,'single selection uses the matching source asset');
     assert.equal(batchSubmissions,1,'single selection does not create a batch');
+    assert.equal(submitted.overlay.badgeVariant,'solid-pill');
+    assert.equal(Object.hasOwn(submitted.overlay,'badgeColor'),false,'automatic submissions omit the historic custom color');
+    extraRows=[{id:505,title:'模型标识',owner:'本人',status:'QUEUED',operation:'TEXT',nodeId:'model-worker',error:null}];
+    await list.getByRole('button',{name:'刷新',exact:true}).click();
+    const programmaticRow=list.getByRole('row').filter({hasText:workspace.title});
+    const modelRow=list.getByRole('row').filter({hasText:'模型标识'});
+    await programmaticRow.getByText('准备处理',{exact:true}).waitFor();
+    await modelRow.getByText('待生图',{exact:true}).waitFor();
+    assert.equal(await modelRow.getByText('model-worker',{exact:true}).count(),1);
+    assert.equal(await modelRow.getByText('中心程序处理',{exact:true}).count(),0);
+    extraRows[0].status='RUNNING';
+    await list.getByRole('button',{name:'刷新',exact:true}).click();
+    await modelRow.getByText('生图中',{exact:true}).waitFor();
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true);
     assert.deepEqual(errors,[]);
   } finally {

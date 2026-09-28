@@ -1,3 +1,5 @@
+import { imageApprovalNoteForVersion } from '../components/image-approval-note.mjs';
+
 export const DELIVERY_POOL_LIST_LIMIT = 200;
 export const DELIVERY_POOL_SELECTION_LIMIT = 200;
 export const DELIVERY_PREVIEW_UPLOAD_LIMITS = [1, 10, 25, 50, 100, 200] as const;
@@ -36,6 +38,7 @@ export type DeliveryContentPreview = {
   query: string;
   copyRevisionId: number;
   imageRunId: string;
+  manualModificationNote: string | null;
   copy: {
     title: string;
     body: string;
@@ -702,6 +705,7 @@ export function normalizeDeliveryContentPreview(value: unknown, expected?: {
     query: typeof task?.query === 'string' ? task.query : '',
     copyRevisionId,
     imageRunId,
+    manualModificationNote: imageApprovalNoteForVersion(task?.imageApprovalEvents, imageRunId, copyRevisionId),
     copy: { title, body, tags },
     images: orderedAssets.map((asset, index) => ({ ...asset, page: index + 1 })),
   };

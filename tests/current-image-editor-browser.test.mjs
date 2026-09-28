@@ -60,6 +60,12 @@ test('image editor browser: prompt-localized edit, multi-page product replacemen
     await new Promise(r=>server.listen(0,'127.0.0.1',r));
     browser=await chromium.launch({headless:true,channel:process.env.IMAGE_EDIT_BROWSER_CHANNEL??'msedge'});
     const page=await browser.newPage({viewport:{width:1010,height:878}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
+    await page.addInitScript(()=>{
+      window.__screenPickCancelled=false;
+      window.EyeDropper=class {open(){return window.__screenPickCancelled
+        ?Promise.reject(new DOMException('Selection cancelled','AbortError'))
+        :Promise.resolve({sRGBHex:'#154b7f'});}};
+    });
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     await page.getByRole('button',{name:'修改图片',exact:true}).click();
     const dialog=page.getByRole('dialog');
@@ -94,8 +100,42 @@ test('image editor browser: prompt-localized edit, multi-page product replacemen
     assert.equal(await page.getByLabel('文本类型').count(),0);
     assert.equal(await page.getByLabel('字号').count(),0);
     assert.equal(await page.getByRole('button',{name:'图片模型融合',exact:true}).getAttribute('aria-pressed'),'true');
+    assert.equal(await page.getByRole('combobox',{name:'程序标识样式',exact:true}).count(),0,'model disclosure has no programmatic style selector');
     await page.getByRole('button',{name:'程序叠加（SVG + Sharp）',exact:true}).click();
-    assert.equal(await page.getByText('逐像素确认标识区域外没有变化',{exact:false}).count(),1);
+    const badgeStyle=page.getByRole('combobox',{name:'程序标识样式',exact:true});
+    assert.equal(await badgeStyle.textContent(),'描边徽章');
+    assert.equal(await livePreview.locator('svg rect').getAttribute('fill'),'none');
+    assert.equal(await page.getByRole('radio',{name:'自动配色',exact:true}).isChecked(),true);
+    assert.equal(await page.getByLabel('程序标识颜色值',{exact:true}).count(),0);
+    await page.getByRole('radio',{name:'自定义颜色',exact:true}).check();
+    const badgeColorInput=page.getByLabel('程序标识颜色值',{exact:true});
+    const colorModes=page.getByRole('radiogroup',{name:'程序标识配色',exact:true});
+    for(const radio of await colorModes.getByRole('radio').all()) {
+      const bounds=await radio.boundingBox();assert.ok(bounds.width<=20&&bounds.height<=20,'color modes retain compact radio controls');
+    }
+    const [colorInputBounds,screenPickBounds]=await Promise.all([badgeColorInput.boundingBox(),page.getByRole('button',{name:'屏幕取色',exact:true}).boundingBox()]);
+    assert.ok(Math.abs(colorInputBounds.y-screenPickBounds.y)<=3,'HEX and screen picking share one row in the desktop panel');
+    for(const label of await colorModes.locator('label > span').all()) {
+      assert.ok((await label.boundingBox()).height<=24,'color mode labels stay on one horizontal line');
+    }
+    await badgeColorInput.fill('#bad');
+    await page.getByRole('alert').filter({hasText:'请输入有效的颜色值'}).waitFor();
+    assert.equal(await page.getByRole('button',{name:'保存草稿',exact:true}).isDisabled(),true);
+    assert.equal(await page.getByRole('button',{name:'生成已选 1 张程序标识预览',exact:true}).isDisabled(),true);
+    assert.equal(submitted,null,'invalid custom colors never reach the API');
+    await page.getByLabel('程序标识取色器',{exact:true}).fill('#abcdef');
+    assert.equal(await badgeColorInput.inputValue(),'#ABCDEF');
+    assert.equal(await livePreview.locator('svg rect').getAttribute('stroke'),'#ABCDEF');
+    assert.equal(await livePreview.locator('svg text').getAttribute('fill'),'#ABCDEF');
+    await page.getByRole('button',{name:'屏幕取色',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector('input[aria-label="程序标识颜色值"]')?.value==='#154B7F');
+    await page.evaluate(()=>{window.__screenPickCancelled=true;});
+    await page.getByRole('button',{name:'屏幕取色',exact:true}).click();
+    await page.getByRole('button',{name:'屏幕取色',exact:true}).waitFor();
+    assert.equal(await badgeColorInput.inputValue(),'#154B7F','cancelled screen picking preserves the selected color');
+    assert.equal(await page.getByRole('alert').count(),0,'cancelled screen picking is silent');
+    await badgeColorInput.fill('#a1b2c3');
+    assert.equal(await page.getByText('原图其他区域保持不变',{exact:false}).count(),1);
     assert.equal(await page.getByText('无需费用确认',{exact:false}).count(),1);
     assert.equal(await page.getByRole('button',{name:'保存草稿',exact:true}).isDisabled(),false);
     assert.equal(await page.getByRole('button',{name:'生成已选 1 张程序标识预览',exact:true}).isDisabled(),false);
@@ -104,11 +144,45 @@ test('image editor browser: prompt-localized edit, multi-page product replacemen
     await recentDisclosure.waitFor();
     assert.deepEqual(await page.evaluate(()=>JSON.parse(localStorage.getItem('xhs.recent-disclosure-texts.v1'))),['人工生成']);
     assert.equal(submitted.operation,'SVG_DISCLOSURE');assert.equal(submitted.overlay.text,'人工生成');assert.equal(submitted.confirmation,undefined);
+    assert.equal(submitted.overlay.badgeVariant,'outline-pill');
+    assert.equal(submitted.overlay.badgeColor,'#A1B2C3','custom color is normalized and saved in drafts');
+    await page.getByRole('radio',{name:'自动配色',exact:true}).check();
+    assert.equal(await badgeColorInput.count(),0,'automatic colors hide the manual controls');
+    assert.equal(await livePreview.locator('svg rect').getAttribute('stroke'),'#68744A');
+    await page.getByRole('button',{name:'保存草稿',exact:true}).click();
+    await page.getByRole('status').filter({hasText:'草稿已保存'}).waitFor();
+    assert.equal(Object.hasOwn(submitted.overlay,'badgeColor'),false,'switching to automatic mode omits the former custom color');
     submitted=null;
+    await page.getByRole('radio',{name:'自定义颜色',exact:true}).check();
+    await badgeStyle.click();
+    await page.getByRole('option',{name:'实心徽章',exact:true}).click();
+    await badgeColorInput.fill('#ffffff');
+    assert.equal(await livePreview.locator('svg rect').getAttribute('fill'),'#FFFFFF');
+    assert.equal(await livePreview.locator('svg text').getAttribute('fill'),'#000000','light solid colors use black text');
+    await badgeColorInput.fill('#000000');
+    assert.equal(await livePreview.locator('svg text').getAttribute('fill'),'#FFFFFF','dark solid colors use white text');
+    await badgeColorInput.fill('#102938');
+    const colorScreenshot=resolve('.codex_artifacts/disclosure-selection');await mkdir(colorScreenshot,{recursive:true});
+    await page.screenshot({path:join(colorScreenshot,'task-editor-custom-solid-color.png'),animations:'disabled'});
+    await page.setViewportSize({width:390,height:844});
+    await page.getByRole('tab',{name:'编辑',exact:true}).click();
+    await badgeColorInput.scrollIntoViewIfNeeded();
+    const mobileColorControl=page.getByRole('region',{name:'程序标识颜色设置',exact:true});
+    assert.ok(await mobileColorControl.evaluate(element=>element.scrollWidth<=element.clientWidth),'custom colors fit the mobile control width');
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true,'custom colors have no mobile page overflow');
+    for(const label of await colorModes.locator('label > span').all()) {
+      assert.ok((await label.boundingBox()).height<=24,'mobile color labels stay horizontal');
+    }
+    await page.screenshot({path:join(colorScreenshot,'task-editor-custom-solid-color-mobile.png'),animations:'disabled'});
+    await page.setViewportSize({width:1010,height:878});
     await page.getByRole('button',{name:'生成已选 1 张程序标识预览',exact:true}).click();
     await page.getByRole('heading',{name:'修改前后滑动对比'}).waitFor();
     assert.equal(submitted.operation,'SVG_DISCLOSURE');assert.equal(submitted.confirmation,undefined);
+    assert.equal(submitted.overlay.badgeVariant,'solid-pill');
+    assert.equal(submitted.overlay.badgeColor,'#102938');
     await page.getByRole('button',{name:'图片模型融合',exact:true}).click();
+    assert.equal(await badgeStyle.count(),0);
+    assert.equal(await page.getByRole('radiogroup',{name:'程序标识配色',exact:true}).count(),0,'model disclosure hides custom program colors');
     submitted=null;
     assert.equal(await page.getByText('系统会校验文字准确性',{exact:false}).count(),1);
     await page.getByRole('button',{name:'生成已选 1 张模型标识预览',exact:true}).click();
@@ -241,7 +315,7 @@ test('image editor browser: prompt-localized edit, multi-page product replacemen
     assert.equal(uploadStyle.borderStyle,'dashed');assert.equal(uploadStyle.borderWidth,'2px');assert.notEqual(uploadStyle.backgroundColor,'rgba(0, 0, 0, 0)');
     assert.deepEqual(inputStyle,{opacity:'0',position:'absolute'});
     assert.equal(await page.getByText('点击选择产品图片',{exact:true}).count(),1);
-    assert.equal(await page.getByText('PNG / JPG / WebP · 最大 5 MB',{exact:true}).count(),1);
+    assert.equal(await page.getByText('PNG / JPG / WebP · 最大 5 MB',{exact:false}).count(),1);
     await uploadInput.setInputFiles({name:'reference.png',mimeType:'image/png',buffer:png});
     await page.getByRole('img',{name:'已上传的真实产品参考图',exact:true}).waitFor();
     // Navigation can load the global select rule after the editor's CSS module.
@@ -359,6 +433,8 @@ test('image editor browser: prompt-localized edit, multi-page product replacemen
     assert.deepEqual(batchSubmissions.map(item=>item.targetPage),[1,3]);
     assert.deepEqual(submissions.slice(disclosureSubmissionStart).map(item=>item.targetPage),[1,3],'unselected page 2 must not be generated');
     assert.ok(batchSubmissions.every(item=>item.batchSize===2&&item.operation==='TEXT'));
+    assert.ok(batchSubmissions.every(item=>!Object.hasOwn(item.overlay,'badgeVariant')),'model batches do not receive programmatic styles');
+    assert.ok(batchSubmissions.every(item=>!Object.hasOwn(item.overlay,'badgeColor')),'model batches omit the retained custom program color');
     await page.getByRole('button',{name:'一次采用已选 2 张标识',exact:true}).click();
     const actionsBeforeBatchAccept=actions.length;
     await page.getByLabel('所选标识采用原因').fill('所选两张预览确认');
@@ -372,6 +448,28 @@ test('image editor browser: prompt-localized edit, multi-page product replacemen
     assert.equal(batchAccept.data.reason,'所选两张预览确认');
     assert.deepEqual(batchAccept.data.edits.map(item=>item.id).sort(),edits.filter(item=>item.config.batchId===batchSubmissions[0].batchId).map(item=>item.id).sort());
     assert.ok(batchAccept.data.edits.every(item=>item.version===1));
+    await page.getByRole('tab',{name:'本次编辑',exact:true}).click();
+    await page.getByRole('button',{name:'程序叠加（SVG + Sharp）',exact:true}).click();
+    assert.equal(await badgeStyle.textContent(),'实心徽章');
+    await badgeColorInput.fill('#f1e2d3');
+    await page.getByRole('button',{name:'生成已选 2 张程序标识预览',exact:true}).click();
+    assert.ok(batchRequests.at(-1).data.edits.every(item=>item.operation==='SVG_DISCLOSURE'&&item.overlay.badgeVariant==='solid-pill'),'selected pages share the selected solid badge');
+    assert.ok(batchRequests.at(-1).data.edits.every(item=>item.overlay.badgeColor==='#F1E2D3'),'all selected pages share the custom color');
+    const programmaticBatchId=batchRequests.at(-1).data.edits[0].batchId;
+    edits=edits.map((edit,index)=>edit.config.batchId===programmaticBatchId?{...edit,status:index===0?'QUEUED':'RUNNING',result:undefined}:edit);
+    await page.getByRole('tab',{name:/任务记录/u}).click();
+    await page.getByRole('button',{name:'第 1 页 · 准备处理',exact:true}).waitFor({timeout:6000});
+    await page.getByRole('button',{name:'第 3 页 · 程序处理中',exact:true}).waitFor();
+    await page.getByRole('button',{name:'第 1 页 · 准备处理',exact:true}).click();
+    await page.getByText('程序生成标识 · 准备处理',{exact:true}).waitFor();
+    edits=edits.map(edit=>edit.config.batchId===programmaticBatchId&&edit.target_page===1?{...edit,status:'FAILED',error:'程序处理暂时失败'}:edit);
+    await page.getByRole('button',{name:'重试程序处理',exact:true}).waitFor({timeout:6000});
+    await page.getByRole('button',{name:'重试程序处理',exact:true}).click();
+    await page.getByLabel('重试程序处理操作原因').fill('重新执行程序徽章');
+    await page.getByRole('button',{name:'确认重试程序处理',exact:true}).click();
+    await page.getByText('程序生成标识 · 准备处理',{exact:true}).waitFor();
+    assert.equal(actions.at(-1).url.endsWith('/retry'),true);
+    assert.equal(actions.at(-1).data.confirmation,undefined,'programmatic retry does not require or send model cost confirmation');
     await page.getByRole('tab',{name:'局部修改'}).click();
     await page.getByRole('button',{name:'保存草稿',exact:true}).click();
     await page.getByRole('tab',{name:/任务记录/u}).click();

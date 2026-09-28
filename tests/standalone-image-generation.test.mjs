@@ -360,10 +360,47 @@ describe('standalone image generation service', () => {
       RUN_ID,
       'qc.json',
     ), 'utf8'));
-    assert.equal(storedQc.checks.find((check) => check.id === 'fabricated_experience').passed, false);
+    const experienceCheck = storedQc.checks.find((check) => check.id === 'fabricated_experience');
+    assert.equal(experienceCheck.passed, false);
+    assert.equal(experienceCheck.blocking, false);
     assert.equal(storedQc.checks.find((check) => check.id === 'risk_flags').passed, false);
     assert.equal(storedQc.checks.find((check) => check.id === 'unverified_claims').passed, false);
     assert.equal(storedQc.disposition, 'blocked');
+  });
+
+  it('completes approved first-person copy without managed settings while preserving the experience flag', async (t) => {
+    const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-first-person-copy-'));
+    t.after(() => rm(outputRoot, { recursive: true, force: true }));
+    const source = validSource();
+    source.copy.body = `我亲测好用的4步整理法。${source.copy.body}`;
+    source.metadata = { fabricatedExperience: true };
+    const runtime = resumableLiveClient({ source });
+
+    const result = await generateStandaloneImages({
+      source,
+      mode: 'LIVE',
+      outputRoot,
+      runId: RUN_ID,
+      runtime,
+    });
+
+    assert.equal(result.status, 'COMPLETED');
+    assert.equal(result.qc.passed, true);
+    assert.equal(result.qc.overallScore, 3);
+    assert.deepEqual(runtime.calls, { planning: 1, images: 3, alignmentPages: [1, 2, 3], quality: 1 });
+    const outputDir = join(outputRoot, 'standalone-image-generations', RUN_ID);
+    const [storedSource, storedQc, storedRuntime] = await Promise.all([
+      'source.json', 'qc.json', 'prompt-runtime.json',
+    ].map(async (file) => JSON.parse(await readFile(join(outputDir, file), 'utf8'))));
+    assert.equal(storedRuntime, null);
+    assert.equal(storedSource.post.body, source.copy.body);
+    assert.equal(storedSource.post.fabricatedExperience, true);
+    assert.equal(storedSource.inputPost.fabricatedExperience, true);
+    assert.equal(storedSource.qualityEvidence.metadata.fabricatedExperience, true);
+    const experienceCheck = storedQc.checks.find((check) => check.id === 'fabricated_experience');
+    assert.equal(experienceCheck.passed, false);
+    assert.equal(experienceCheck.blocking, false);
+    assert.equal(storedQc.issues.some((issue) => issue.severity === 'blocking'), false);
   });
 
   it('keeps old recovery files usable but reruns quality review when frozen evidence becomes available', async (t) => {

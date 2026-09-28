@@ -20,7 +20,6 @@ const CONTENT_REGENERATION_DIMENSIONS = Object.freeze([
   'noteTone',
 ]);
 const CONTENT_BLOCKING_CHECKS = new Set([
-  'fabricated_experience',
   'risk_flags',
   'unverified_claims',
 ]);

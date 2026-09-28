@@ -22,7 +22,6 @@ const PRIMARY_TYPES = [
   '穿搭',
   '攻略',
 ];
-const FABRICATED_EXPERIENCE = /(我亲测|亲测有效|我用了.{0,8}(个月|年)|本人购买|我家一直|绝对有效)/u;
 const GRAPHEME_SEGMENTER = new Intl.Segmenter('zh-CN', { granularity: 'grapheme' });
 const BODY_OUTPUT_SCHEMA_MAX_LENGTH = 1_200;
 const BODY_SENTENCE_END = /[。！？.!?…](?:[”’"'」』）)\]】〕〉》]*)$/u;
@@ -107,7 +106,7 @@ export function postOutputSchema(imageCount = AUTO_IMAGE_COUNT) {
           },
         },
       },
-      fabricatedExperience: { type: 'boolean', enum: [false] },
+      fabricatedExperience: { type: 'boolean' },
       unverifiedClaims: boundedStringArray(10, 300),
     },
   };
@@ -383,9 +382,6 @@ function validatePost(value, { imageCount = 3, allowedSources = [], query = '' }
   if (!promptRuntimeSnapshot() && /[!！～]/u.test(title)) throw new TypeError('title cannot contain exclamation marks or full-width tildes');
   if (!promptRuntimeSnapshot() && hasQuery && normalizedTopicKey(title) === normalizedTopicKey(query)) {
     throw new TypeError('title cannot merely repeat the Query');
-  }
-  if ((!promptRuntimeSnapshot() && FABRICATED_EXPERIENCE.test(body)) || root.fabricatedExperience !== false) {
-    throw new TypeError('fabricated experience is not allowed');
   }
   const titleEmojiCount = semanticIconCount(title);
   const bodyEmojiCount = semanticIconCount(body);

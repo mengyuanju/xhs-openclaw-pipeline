@@ -8,9 +8,13 @@ import { createRequestId } from '../components/request-id';
 import { useBackgroundTasks } from '../components/background-tasks';
 import styles from './workbench.module.css';
 
-type Item = { id:number; title:string; owner:string; status:string; nodeId:string|null; error:string|null; createdAt?:string };
+type Item = { id:number; title:string; owner:string; status:string; operation?:string; nodeId:string|null; error:string|null; createdAt?:string };
 const outcomes:Record<string,string> = { FAILED:'生成失败，可打开记录重试', CANCELLED:'已取消', REJECTED:'结果未采用' };
-function statusOf(status:string) {
+function statusOf(status:string,operation?:string) {
+  if(operation==='SVG_DISCLOSURE') {
+    if(status==='RUNNING')return {label:'程序处理中',tone:'running'};
+    if(status==='QUEUED')return {label:'准备处理',tone:'queued'};
+  }
   if(status === 'RUNNING')return {label:'生图中',tone:'running'};
   if(['UPLOADED','DRAFT','QUEUED'].includes(status))return {label:'待生图',tone:'queued'};
   return {label:'已完成',tone:'completed'};
@@ -59,12 +63,12 @@ export function ImageEditorList({refreshKey=0,onSelect}:{refreshKey?:number;onSe
     <div className={styles.heading}><span>共 {data.total} 条图片编辑</span><Button variant="outline" size="sm" disabled={deleting||loading||!selected.length} onClick={()=>void remove(selected)}>{deleting?'正在删除…':`批量删除${selected.length?`（${selected.length}）`:''}`}</Button><Button variant="outline" size="sm" disabled={loading} onClick={() => setRevision(value => value+1)}>刷新</Button></div>
     {(error||actionError) && <p role="alert">{actionError||error}</p>}
     {data.items.length ? <div className={styles.tableScroll}><table><thead><tr><th><Checkbox aria-label="全选本页可删除图片" checked={selectable.length>0&&selectable.every(id=>selected.includes(id))} disabled={deleting||!selectable.length} onChange={event=>setSelected(event.target.checked?selectable:[])}/></th><th>图片名称</th><th>提交人</th><th>状态</th><th>执行机</th><th>创建时间</th><th>操作</th></tr></thead><tbody>{data.items.map(item => {
-      const status = statusOf(item.status);
+      const status = statusOf(item.status,item.operation);
       return <tr key={item.id}>
         <td><Checkbox aria-label={`选择图片 ${item.title}`} checked={selected.includes(item.id)} disabled={deleting||item.status==='RUNNING'} onChange={event=>setSelected(current=>event.target.checked?[...current,item.id]:current.filter(id=>id!==item.id))}/></td>
         <td><strong>{item.title}</strong><small className={styles.meta}>#{item.id}</small></td><td>{item.owner}</td>
         <td><span className={styles.status} data-tone={status.tone}>{status.label}</span>{outcomes[item.status] && <small className={styles.outcome}>{outcomes[item.status]}</small>}{item.error && <details><summary>查看原因</summary>{item.error}</details>}</td>
-        <td>{item.nodeId ?? '—'}</td><td className={styles.date}>{item.createdAt ? new Date(item.createdAt).toLocaleString('zh-CN',{hour12:false}) : '—'}</td>
+        <td>{item.nodeId ?? (item.operation==='SVG_DISCLOSURE'?'中心程序处理':'—')}</td><td className={styles.date}>{item.createdAt ? new Date(item.createdAt).toLocaleString('zh-CN',{hour12:false}) : '—'}</td>
         <td><div className={styles.rowActions}><Button variant="outline" size="sm" disabled={deleting} onClick={() => onSelect(item.id)}>{item.status === 'RUNNING' ? '查看' : '查看 / 编辑'}</Button><Button variant="outline" size="sm" disabled={deleting||item.status==='RUNNING'} onClick={()=>void remove([item.id])}>删除</Button></div></td>
       </tr>;
     })}</tbody></table></div> : <div className={styles.empty}>{loading ? '正在加载图片…' : error ? '图片列表暂时无法加载' : '暂无图片，点击右上角“新增图片”开始编辑。'}</div>}

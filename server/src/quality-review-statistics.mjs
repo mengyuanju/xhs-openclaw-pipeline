@@ -1,5 +1,6 @@
 const LIMIT = 50_000;
 const iso = value => value instanceof Date ? value.toISOString() : value;
+const QA_PENDING_IDENTITY_SQL = "((a.stage='COPY' AND a.source='v2') OR a.submitter_id<>u.id)";
 
 export const QA_ACTIVITY_SQL = `SELECT e.*,EXISTS(SELECT 1 FROM tasks t WHERE t.id=e.task_id) AS task_exists
   FROM quality_review_activity_events e
@@ -40,10 +41,10 @@ export const QA_PENDING_SQL = `WITH assigned AS (
 )
 SELECT a.*,u.id AS account_id,u.username,u.display_name,
   (a.priority_paused OR ($1::bigint IS NOT NULL AND (u.status<>'ACTIVE' OR NOT
-    (u.role='ADMIN' OR (a.submitter_id<>u.id AND CASE WHEN a.stage='COPY' THEN u.copy_qc_enabled
+    (u.role='ADMIN' OR (${QA_PENDING_IDENTITY_SQL} AND CASE WHEN a.stage='COPY' THEN u.copy_qc_enabled
       ELSE u.role='REVIEWER' AND u.image_qc_enabled END))))) AS blocked
 FROM assigned a LEFT JOIN app_users u ON u.id=$1
-WHERE ($1::bigint IS NULL OR (u.status='ACTIVE' AND (u.role='ADMIN' OR (a.submitter_id<>u.id AND CASE WHEN a.stage='COPY' THEN u.copy_qc_enabled ELSE u.role='REVIEWER' AND u.image_qc_enabled END)))) AND ($2::text='' OR a.stage=$2)
+WHERE ($1::bigint IS NULL OR (u.status='ACTIVE' AND (u.role='ADMIN' OR (${QA_PENDING_IDENTITY_SQL} AND CASE WHEN a.stage='COPY' THEN u.copy_qc_enabled ELSE u.role='REVIEWER' AND u.image_qc_enabled END)))) AND ($2::text='' OR a.stage=$2)
   AND ($3::bigint IS NULL OR a.batch_id=$3)
 ORDER BY a.stage,a.source,a.id LIMIT ${LIMIT+1}`;
 

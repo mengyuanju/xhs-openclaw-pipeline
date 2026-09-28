@@ -166,9 +166,18 @@ qa_image_single AS (
     COALESCE(a.submitted_by_account_id,i.submitter_account_id,l.submitter_id) AS subject_account_id,
     10 AS source_priority
   FROM image_task_dispositions d
-  LEFT JOIN image_sampling_items i ON i.id=d.sampling_item_id
-  LEFT JOIN image_approval_events a ON a.task_id=d.task_id AND a.image_run_id=d.image_run_id
+  LEFT JOIN image_sampling_items i ON i.id=d.sampling_item_id AND i.task_id=d.task_id
+    AND i.copy_revision_id=d.copy_revision_id AND i.image_run_id=d.image_run_id
+  LEFT JOIN LATERAL (
+    SELECT approval.* FROM image_approval_events approval
+    WHERE approval.task_id=d.task_id AND approval.image_run_id=d.image_run_id
+      AND approval.copy_revision_id=d.copy_revision_id
+      AND ((d.sampling_item_id IS NOT NULL AND approval.id=i.approval_event_id)
+        OR (d.sampling_item_id IS NULL AND approval.submitted_at<=d.created_at))
+    ORDER BY approval.submitted_at DESC,approval.id DESC LIMIT 1
+  ) a ON true
   LEFT JOIN quality_inspection_links l ON l.stage='IMAGE' AND l.item_id=d.sampling_item_id
+    AND l.task_id=d.task_id
   WHERE d.from_state='IMAGE_QC_PENDING'
 ), qa_image_batch_coverage AS (
   SELECT CASE WHEN COALESCE(c.data->>'sourceEventId',e.id::text) IS NOT NULL

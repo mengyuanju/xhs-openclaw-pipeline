@@ -61,12 +61,12 @@ test('V2 work queue exposes only the previous verdict content to blind reviewers
     assert.equal(serialized.includes(secret),false,secret);
   }
   const statement=queries.at(-1);
-  assert.deepEqual(statement.values,[91,'MANDATORY_RECHECK',null,3,0]);
+  assert.deepEqual(statement.values,['MANDATORY_RECHECK',null,3,0]);
   assert.match(statement.sql,/event\.task_id=member\.task_id AND event\.quality_cycle=member\.quality_cycle/u);
   assert.match(statement.sql,/event\.created_at < member\.created_at/u);
   assert.match(statement.sql,/batch\.status='INSPECTING'/u);
   assert.match(statement.sql,/task\.current_copy_revision_id=member\.copy_revision_id AND task\.priority_paused=false/u);
-  assert.ok(statement.sql.indexOf("$2::text='ALL'")<statement.sql.indexOf('LIMIT $4'));
+  assert.ok(statement.sql.indexOf("$1::text='ALL'")<statement.sql.indexOf('LIMIT $3'));
 });
 
 test('first inspection has no previous return; missing snapshots retain safe readable labels',async()=>{

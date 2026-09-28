@@ -621,7 +621,7 @@ export function normalizeStandaloneImageSource(source) {
     sources: [],
     expressionReferences: [],
     riskFlags: [],
-    fabricatedExperience: false,
+    fabricatedExperience: normalizeStandaloneQualityEvidence(source).metadata.fabricatedExperience,
     unverifiedClaims: [],
   }), { imageCount, allowedSources: [] });
   return { ...post, ...(source.imageSettings === undefined ? {} : { imageSettings: normalizeImageSettings(source.imageSettings) }) };

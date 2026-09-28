@@ -250,6 +250,40 @@ test('task detail exposes the latest image retry errors without exposing executi
   assert.equal(detail.imageRetryFailures.some(item => Object.hasOwn(item, 'snapshot')), false);
 });
 
+test('task detail keeps image modification notes bound to their original image and copy versions', async () => {
+  const currentRun = '11111111-1111-4111-8111-111111111111';
+  const previousRun = '22222222-2222-4222-8222-222222222222';
+  let taskSelection = '';
+  let approvals = [
+    { id: '72', imageRunId: currentRun, copyRevisionId: '52',
+      manualModificationNote: null, submittedAt: '2026-09-28T02:00:00+00:00' },
+    { id: '71', imageRunId: previousRun, copyRevisionId: '51',
+      manualModificationNote: '第 1 张右下角文字需调整', submittedAt: '2026-09-28T01:00:00+00:00' },
+  ];
+  const repository = new PostgresControlPlaneRepository({ pool: {
+    async query(sql, values) {
+      const source = String(sql);
+      if (source.includes('WITH task AS')) {
+        taskSelection = source;
+        assert.deepEqual(values, [41]);
+        return { rows: [taskRow({ current_image_run_id: currentRun,
+          current_copy_revision_id: '52', image_approval_events: approvals })] };
+      }
+      return { rows: [] };
+    },
+  } });
+  const detail = await repository.getTask(41);
+  assert.deepEqual(detail.imageApprovalEvents, approvals.map((approval) => ({
+    ...approval, id: Number(approval.id), copyRevisionId: Number(approval.copyRevisionId),
+  })));
+  assert.equal(detail.imageApprovalEvents.find((approval) => approval.imageRunId === currentRun
+    && approval.copyRevisionId === detail.currentCopyRevisionId).manualModificationNote, null);
+  assert.match(taskSelection, /approval\.task_id = task\.id/u);
+  assert.match(taskSelection, /ORDER BY approval\.submitted_at DESC, approval\.id DESC/u);
+  approvals = null;
+  assert.deepEqual((await repository.getTask(41)).imageApprovalEvents, []);
+});
+
 test('invalid creator role never reaches the database', async () => {
   const repository = new PostgresControlPlaneRepository({ pool: {
     async query() { assert.fail('invalid filter reached SQL'); },

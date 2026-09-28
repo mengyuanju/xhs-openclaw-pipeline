@@ -8,6 +8,8 @@ import { DEFAULT_PRODUCTION_SETTINGS, loadDefaultPrompts } from './defaults.mjs'
 import { startExecutionRecovery } from './execution-recovery.mjs';
 import { applyServerEnvironment, loadServerEnvironment } from './server-environment.mjs';
 import { startAutoAssignmentReplenishment } from './task-auto-assignment-runner.mjs';
+import { programmaticConcurrency } from './programmatic-image-edit-runner.mjs';
+import { notifyProgrammaticImageEdits, startProgrammaticImageEditProcess } from './programmatic-image-edit-supervisor.mjs';
 
 export function configuration(environment = process.env) {
   const connectionString = environment.DATABASE_URL?.trim();
@@ -16,11 +18,17 @@ export function configuration(environment = process.env) {
   if (!Number.isInteger(port) || port < 1 || port > 65_535) {
     throw new Error('CONTROL_PLANE_PORT must be an integer from 1 to 65535');
   }
+  const programmaticWorkerMode = environment.PROGRAMMATIC_IMAGE_WORKER_MODE ?? 'process';
+  if (!['process', 'external'].includes(programmaticWorkerMode)) {
+    throw new Error('PROGRAMMATIC_IMAGE_WORKER_MODE must be process or external');
+  }
   return {
     connectionString,
     host: environment.CONTROL_PLANE_HOST?.trim() || '127.0.0.1',
     port,
     storageRoot: resolve(environment.CONTROL_PLANE_STORAGE_ROOT || 'server-storage'),
+    programmaticConcurrency: programmaticConcurrency(environment.PROGRAMMATIC_IMAGE_CONCURRENCY ?? 2),
+    programmaticWorkerMode,
   };
 }
 
@@ -60,15 +68,30 @@ async function main() {
   await repository.reconcileAutomaticCopyQaBatches();
   await repository.recoverStaleExecutions();
   await mkdir(config.storageRoot, { recursive: true });
-  const app = createControlPlaneApp({ repository, storageRoot: config.storageRoot });
-  const server = await new Promise((resolvePromise, rejectPromise) => {
-    const listeningServer = app.listen(config.port, config.host, () => resolvePromise(listeningServer));
-    listeningServer.once('error', rejectPromise);
-  });
+  let programmaticWorker = null;
+  const onProgrammaticReady = async editIds => {
+    programmaticWorker?.wake(editIds);
+    await notifyProgrammaticImageEdits(repository.pool, editIds);
+  };
+  let app, server;
+  try {
+    app = createControlPlaneApp({ repository, storageRoot: config.storageRoot, onProgrammaticReady });
+    server = await new Promise((resolvePromise, rejectPromise) => {
+      const listeningServer = app.listen(config.port, config.host, () => resolvePromise(listeningServer));
+      listeningServer.once('error', rejectPromise);
+    });
+  } catch (error) {
+    await app?.context.disposeControlPlaneResources?.();
+    await repository.close();
+    throw error;
+  }
+  programmaticWorker = config.programmaticWorkerMode === 'process'
+    ? startProgrammaticImageEditProcess(config, { concurrency: config.programmaticConcurrency }) : null;
   console.log(`Control plane listening on http://${config.host}:${config.port} (${selectedEnvironment.profile}).`);
   const stopRecovery = startExecutionRecovery(repository);
   const stopAutoAssignment = startAutoAssignmentReplenishment(repository);
-  console.log('Image edit queue is assigned to registered image executors.');
+  console.log(`Programmatic image edits use their own queue (concurrency ${config.programmaticConcurrency}, ${config.programmaticWorkerMode}).`);
+  console.log('Model image edits are assigned to registered image executors.');
 
   let stoppingPromise = null;
   function stop() {
@@ -78,6 +101,7 @@ async function main() {
       const serverClosed = new Promise((resolvePromise) => server.close(resolvePromise));
       await app.context.disposeControlPlaneResources?.();
       await serverClosed;
+      await programmaticWorker?.stop();
       await repository.close();
     })();
     return stoppingPromise;

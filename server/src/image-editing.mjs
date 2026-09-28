@@ -6,17 +6,24 @@ import { ControlPlaneConflictError, ControlPlaneAuthorizationError, ControlPlane
 import { PENDING_IMAGE_EDIT_STATUSES, withdrawReadyDeliveryEntries } from './final-delivery.mjs';
 import { imagePageDisclosure, imageResultScopedToPage, imageSettingsScopedToPage } from './image-edit-lineage.mjs';
 import { disclosureRemovalConfig, requestsDisclosureRemoval } from './image-edit-disclosure.mjs';
-import { boundedNumber, shortText, normalizeManualOverlay, normalizeMask, decodeReference, imageHash, safeRect, renderMask, EDIT_WIDTH, EDIT_HEIGHT } from '../../src/image-edit-pixels.mjs';
+import { boundedNumber, shortText, normalizeManualOverlay, normalizeMask, decodeReference, imageHash, safeRect, renderMask, EDIT_WIDTH, EDIT_HEIGHT, REFERENCE_PNG_MAX_BYTES } from '../../src/image-edit-pixels.mjs';
 import { orderedImageFileName } from '../../src/image-file-name.mjs';
+import { normalizeAiDisclosureBadgeColor } from '../../src/ai-disclosure-badge.mjs';
 import { normalizeImageEditRepairMaxAttempts } from '../../src/production-settings.mjs';
 import { createPromptRuntime } from '../../src/prompt-runtime.mjs';
 import { selectLocalEditAlternative } from '../../src/local-edit-alternatives.mjs';
 import { scheduleReferenceCleanupForAsset, scheduleReferenceCleanupForEdit, drainReferenceCleanup } from './image-reference-cleanup.mjs';
 
 const REFERENCE_TASK_LIMIT_BYTES = 100 * 1024 * 1024;
+const REFERENCE_EDIT_LIMIT_BYTES = 40 * 1024 * 1024;
 export function assertReferenceQuota({ count, bytes }, incomingBytes) {
   if (Number(count) >= 20 || Number(bytes) + Number(incomingBytes) > REFERENCE_TASK_LIMIT_BYTES) {
     throw new TypeError('任务参考图存储已达上限');
+  }
+}
+export function assertEditReferenceQuota({ bytes, pixels }) {
+  if (bytes > REFERENCE_EDIT_LIMIT_BYTES || pixels > 32_000_000) {
+    throw new TypeError('参考图总大小或像素超限');
   }
 }
 
@@ -120,8 +127,15 @@ export function normalizeEdit(input) {
   }
   const normalizedOverlay=['TEXT','SVG_DISCLOSURE'].includes(operation) ? normalizeManualOverlay({...input.overlay,textType:'AI_DISCLOSURE',disclosureType:'AI_GENERATED',
     size:32,margin:32,opacity:1,color:'#ffffff',background:'#111827',position:'bottom-right'}) : null;
+  if(operation!=='SVG_DISCLOSURE'&&input.overlay?.badgeVariant!=null)throw new TypeError('只有程序生成标识可指定徽章样式');
+  const hasBadgeColor=Object.hasOwn(input.overlay??{},'badgeColor');
+  if(operation!=='SVG_DISCLOSURE'&&hasBadgeColor)throw new TypeError('只有程序生成标识可指定徽章颜色');
+  const badgeColor=hasBadgeColor?normalizeAiDisclosureBadgeColor(input.overlay.badgeColor):undefined;
+  const badgeVariant=operation==='SVG_DISCLOSURE'?String(input.overlay?.badgeVariant??'outline-pill'):null;
+  if(badgeVariant!=null&&!['outline-pill','solid-pill'].includes(badgeVariant))throw new TypeError('程序生成标识样式无效');
   const overlay=operation==='SVG_DISCLOSURE'
-    ?{text:normalizedOverlay.text,textType:normalizedOverlay.textType,disclosureType:normalizedOverlay.disclosureType,position:'bottom-right'}
+    ?{text:normalizedOverlay.text,textType:normalizedOverlay.textType,disclosureType:normalizedOverlay.disclosureType,position:'bottom-right',badgeVariant,
+      ...(hasBadgeColor?{badgeColor}:{})}
     :normalizedOverlay;
   return { requestId: normalizeUuid(input.requestId,'requestId'),
     ...(input.batchId == null ? {} : { batchId: normalizeUuid(input.batchId,'batchId') }),
@@ -173,7 +187,10 @@ function requestEditConfig(config) {
   if (!config || typeof config !== 'object' || Array.isArray(config)) return config;
   const { imageEditRepairMaxAttempts: _frozenRepairLimit, imageEditPrompt: _frozenPrompt, localPlan, localAlternative, localRepair: _localRepair, ...requestConfig } = config;
   const originalInstruction=localAlternative?.originalInstruction??localPlan?.originalInstruction;
-  return originalInstruction?{...requestConfig,instruction:originalInstruction}:requestConfig;
+  const normalized=requestConfig.operation==='SVG_DISCLOSURE'&&requestConfig.overlay
+    ?{...requestConfig,overlay:{...requestConfig.overlay,badgeVariant:requestConfig.overlay.badgeVariant??'outline-pill'}}
+    :requestConfig;
+  return originalInstruction?{...normalized,instruction:originalInstruction}:normalized;
 }
 const rectContains=(outer,inner)=>inner.x>=outer.x&&inner.y>=outer.y
   &&inner.x+inner.width<=outer.x+outer.width&&inner.y+inner.height<=outer.y+outer.height;
@@ -315,13 +332,20 @@ export async function assertEditSource(c, taskId, config, {
   }
   return { task, revision, run, currentRun, currentPage, source };
 }
-export function createImageEditingService({ pool, storageRoot }) {
+export function createImageEditingService({ pool, storageRoot, onProgrammaticReady }) {
   const stagedFiles=new WeakMap();
   const tx = async action => {
     const files=[];
     try { return await editTransaction(pool,async c=>{stagedFiles.set(c,files);try{return await action(c);}finally{stagedFiles.delete(c);}}); }
     catch(error){await Promise.all(files.map(path=>unlink(path).catch(()=>{})));throw error;}
   };
+  async function notifyProgrammaticReady(edits) {
+    const ids=[...new Set(edits.filter(edit=>edit.operation==='SVG_DISCLOSURE'&&edit.status==='QUEUED').map(edit=>edit.id))];
+    if(!ids.length||typeof onProgrammaticReady!=='function')return;
+    // The request is already committed. A missed wakeup is recovered by the
+    // center's queue sweep and must not turn a successful submission into a 500.
+    try {await onProgrammaticReady(ids);} catch {}
+  }
   async function storeAsset(c,taskId,run,bytes,role,metadata,parent=null,originalName=null) {
     const id = randomUUID(), directory=resolve(storageRoot,'image-edits',String(normalizeTaskId(taskId)));
     await mkdir(directory,{recursive:true});
@@ -531,7 +555,7 @@ export function createImageEditingService({ pool, storageRoot }) {
       if(!a) throw new TypeError('参考图片不属于当前任务');
       bytes+=Number(a.byte_size); pixels+=a.edit_metadata.width*a.edit_metadata.height;
     }
-    if(bytes > 20*1024*1024 || pixels > 32_000_000) throw new TypeError('参考图总大小或像素超限');
+    assertEditReferenceQuota({ bytes, pixels });
     const id=randomUUID();
     const row=(await c.query(`INSERT INTO image_edit_requests(id,task_id,request_id,source_image_run_id,source_asset_id,copy_revision_id,source_sha256,target_page,operation,config,status,created_by)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,[id,taskId,config.requestId,config.sourceImageRunId,config.sourceAssetId,config.copyRevisionId,config.sha256,config.targetPage,config.operation,config,config.draft?'DRAFT':'QUEUED',username])).rows[0];
@@ -703,7 +727,9 @@ export function createImageEditingService({ pool, storageRoot }) {
       const replaceAssetId=input?.replaceAssetId==null?null:normalizeTaskId(input.replaceAssetId);
       if(typeof input?.base64 !== 'string' || input.base64.length > 7_000_000 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(input.base64)) throw new TypeError('图片编码无效');
       const purpose=shortText(input.purpose,200), source=shortText(input.source,1000);
-      const decoded=await decodeReference(Buffer.from(input.base64,'base64'),input.mediaType);
+      const decoded=await decodeReference(Buffer.from(input.base64,'base64'),input.mediaType,{
+        resizeOversized:true,maxPngBytes:REFERENCE_PNG_MAX_BYTES,
+      });
       const {saved,cleanupAssetId}=await tx(async c=> {
         await lockEditor(c,actor,taskId);
         const task=(await c.query('SELECT * FROM tasks WHERE id=$1 FOR UPDATE',[taskId])).rows[0];
@@ -755,13 +781,15 @@ export function createImageEditingService({ pool, storageRoot }) {
       actorName(actor);
       const requestedConfig=normalizeEdit(input);
       taskId=normalizeTaskId(taskId);
-      return tx(c=>createInTransaction(c,taskId,requestedConfig,actor));
+      const created=await tx(c=>createInTransaction(c,taskId,requestedConfig,actor));
+      await notifyProgrammaticReady([created]);
+      return created;
     },
     async createBatch(taskId,input,actor) {
       actorName(actor);
       const edits=normalizeEditBatch(input);
       taskId=normalizeTaskId(taskId);
-      return tx(async c=>{
+      const created=await tx(async c=>{
         if(edits.length>1) {
           await lockEditor(c,actor,taskId);
           await c.query('SELECT id FROM tasks WHERE id=$1 FOR UPDATE',[taskId]);
@@ -775,6 +803,8 @@ export function createImageEditingService({ pool, storageRoot }) {
         for(const edit of edits) created.push(await createInTransaction(c,taskId,edit,actor));
         return created;
       });
+      await notifyProgrammaticReady(created);
+      return created;
     },
     async acceptBatch(taskId,rawBatchId,input,actor) {
       const username=actorName(actor), batchId=normalizeUuid(rawBatchId,'batchId');
@@ -838,6 +868,7 @@ export function createImageEditingService({ pool, storageRoot }) {
         return applyAction(c,initial.id,action,input,actor);
       });
       if(action==='reject'||action==='cancel')await drainReferenceCleanup(pool,storageRoot,{taskId:initial.task_id}).catch(()=>{});
+      if(action==='queue'||action==='retry')await notifyProgrammaticReady([updated]);
       return updated;
     },
     async deleteReference(taskId,assetId,actor) {
@@ -871,6 +902,66 @@ export function createImageEditingService({ pool, storageRoot }) {
         if(!e) return null;
         const row=(await c.query("UPDATE image_edit_requests SET status='RUNNING',attempts=attempts+1,version=version+1,claimed_by=$2,execution_id=NULL,lease_token=$3,lease_expires_at=now()+interval '15 minutes',updated_at=now() WHERE id=$1 RETURNING *",[e.id,worker,randomUUID()])).rows[0];
         await audit(c,e.task_id,e.id,'EXECUTE',worker,`attempt ${row.attempts}`); return row;
+      });
+    },
+    async claimProgrammatic(worker,{editId=null,maxConcurrency=2}={}) {
+      const owner=shortText(worker,128);
+      const id=editId==null?null:normalizeUuid(editId,'editId');
+      const concurrency=boundedNumber(maxConcurrency,1,2);
+      return tx(async c=>{
+        // All center instances share this capacity lock. Model executions use
+        // their existing Codex pool and never consume these local slots.
+        await c.query('SELECT pg_advisory_xact_lock(4310, 8302)');
+        const active=(await c.query(`SELECT count(*)::integer AS count FROM image_edit_requests
+          WHERE operation='SVG_DISCLOSURE' AND execution_id IS NULL
+            AND status='RUNNING' AND lease_expires_at>now()`)).rows[0];
+        if(Number(active.count)>=concurrency)return null;
+        // Use the same task -> edit lock order as submission, cancellation and
+        // preview completion. Earlier model edits on this task do not block SVG.
+        const task=(await c.query(`SELECT task.id FROM tasks task
+          WHERE task.priority_paused=false AND EXISTS (
+            SELECT 1 FROM image_edit_requests edit WHERE edit.task_id=task.id
+              AND edit.operation='SVG_DISCLOSURE' AND edit.status='QUEUED'
+              AND edit.attempts<3 AND ($1::uuid IS NULL OR edit.id=$1)
+          )
+          ORDER BY task.priority_sort_at,task.id
+          FOR UPDATE OF task SKIP LOCKED LIMIT 1`,[id])).rows[0];
+        if(!task)return null;
+        const edit=(await c.query(`SELECT * FROM image_edit_requests
+          WHERE task_id=$1 AND operation='SVG_DISCLOSURE' AND status='QUEUED'
+            AND attempts<3 AND ($2::uuid IS NULL OR id=$2)
+          ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1`,[task.id,id])).rows[0];
+        if(!edit)return null;
+        const row=(await c.query(`UPDATE image_edit_requests SET
+          status='RUNNING',attempts=attempts+1,version=version+1,
+          claimed_by=$2,execution_id=NULL,lease_token=$3,
+          lease_expires_at=now()+interval '15 minutes',validation=NULL,error=NULL,updated_at=now()
+          WHERE id=$1 AND operation='SVG_DISCLOSURE' AND status='QUEUED'
+            AND attempts<3 RETURNING *`,[edit.id,owner,randomUUID()])).rows[0];
+        if(!row)return null;
+        await audit(c,row.task_id,row.id,'EXECUTE',owner,`attempt ${row.attempts}`,
+          null,{executionChannel:'PROGRAMMATIC',maxConcurrency:concurrency});
+        return row;
+      });
+    },
+    async recoverProgrammatic(worker='programmatic-disclosure-recovery') {
+      const owner=shortText(worker,128);
+      return tx(async c=>{
+        await c.query('SELECT pg_advisory_xact_lock(4310, 8302)');
+        const tasks=(await c.query(`SELECT task.id FROM tasks task WHERE EXISTS (
+          SELECT 1 FROM image_edit_requests edit WHERE edit.task_id=task.id
+            AND edit.operation='SVG_DISCLOSURE' AND edit.execution_id IS NULL
+            AND edit.status='RUNNING' AND edit.lease_expires_at<now()
+          ) ORDER BY task.id FOR UPDATE OF task SKIP LOCKED`)).rows;
+        if(!tasks.length)return {recovered:0};
+        const expired=await c.query(`UPDATE image_edit_requests SET
+          status='FAILED',error='程序处理租约过期，请确认后重试',version=version+1,
+          lease_token=NULL,lease_expires_at=NULL,updated_at=now()
+          WHERE task_id=ANY($1::bigint[]) AND operation='SVG_DISCLOSURE'
+            AND execution_id IS NULL AND status='RUNNING' AND lease_expires_at<now()
+          RETURNING *`,[tasks.map(task=>task.id)]);
+        for(const edit of expired.rows)await audit(c,edit.task_id,edit.id,'LEASE_EXPIRED',owner,'程序处理租约过期');
+        return {recovered:expired.rowCount};
       });
     },
     async heartbeat(e) { return tx(async c=> {

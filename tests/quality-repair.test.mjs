@@ -169,6 +169,29 @@ describe('whole-delivery quality repair', () => {
     assert.equal(shouldRegenerateWholeImageSetAfterQualityFailure(isolatedAlignmentFailure), false);
   });
 
+  it('does not regenerate content for an experience flag while retaining serious risk and fact blockers', () => {
+    const qc = {
+      disposition: 'blocked',
+      checks: [{ id: 'fabricated_experience', passed: false, blocking: false }],
+      rubric: {
+        dimensions: Object.fromEntries(['queryRelevance', 'informationValue', 'noteTone'].map((key) =>
+          [key, { score: 3, applicable: true }])),
+      },
+    };
+    assert.equal(shouldRegenerateContentAfterQualityFailure(qc), false);
+    assert.equal(shouldRegenerateWholeImageSetAfterQualityFailure(qc), false);
+    assert.equal(shouldRefreshResearchAfterQualityFailure(qc, { status: 'COMPLETED', summary: null }), false);
+    assert.equal(shouldRegenerateContentAfterQualityFailure({
+      ...qc, checks: [{ id: 'fabricated_experience', passed: false }],
+    }), false, 'a historical experience check must not cause fresh regeneration');
+
+    for (const id of ['risk_flags', 'unverified_claims']) {
+      assert.equal(shouldRegenerateContentAfterQualityFailure({
+        ...qc, checks: [...qc.checks, { id, passed: false }],
+      }), true);
+    }
+  });
+
   it('refreshes an empty-summary research snapshot after an information-value blocker', () => {
     const contentBlocked = onePointQc();
     contentBlocked.disposition = 'blocked';

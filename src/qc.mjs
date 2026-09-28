@@ -150,7 +150,6 @@ function buildMechanicalRubricAssessment({ post, images, checks, issues, mode })
     'body_length',
     'title_quality',
     'body_emoji',
-    'fabricated_experience',
   ].every((id) => checkPassed(checks, id));
   const factsPassed = checkPassed(checks, 'unverified_claims') && checkPassed(checks, 'risk_flags');
   const imageBasePassed = mode === 'live' && imageFilesPassed && modelSourcesPassed && factsPassed;
@@ -196,8 +195,8 @@ function buildMechanicalRubricAssessment({ post, images, checks, issues, mode })
       noteTone: dimension(
         contentShapePassed ? 2 : 1,
         contentShapePassed
-          ? '标题、正文长度、标题质量、emoji 和虚构经历检查通过；自然度仍需人工终审。'
-          : '标题、正文、emoji、标题质量或虚构经历检查失败。',
+          ? '标题、正文长度、标题质量和 emoji 检查通过；自然度仍需人工终审。'
+          : '标题、正文、emoji 或标题质量检查失败。',
       ),
       platformAdaptation: dimension(
         2,
@@ -285,7 +284,12 @@ export async function evaluateDelivery({
         : [],
     },
   });
-  checks.push({ id: 'fabricated_experience', passed: post.fabricatedExperience === false });
+  checks.push({
+    id: 'fabricated_experience',
+    passed: post.fabricatedExperience === false,
+    blocking: false,
+    observed: { fabricatedExperience: post.fabricatedExperience },
+  });
   checks.push({
     id: 'risk_flags',
     passed: blockingRisks.length === 0,

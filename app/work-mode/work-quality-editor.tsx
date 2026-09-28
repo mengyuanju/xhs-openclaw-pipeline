@@ -11,6 +11,7 @@ import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 import { apiRequest } from '../components/api-client';
 import { ImageDiscardButton } from '../components/image-discard-button';
 import { ImageCarouselNavigation } from '../components/image-carousel-navigation';
+import { ImageManualModificationNote } from '../components/image-manual-modification-note';
 import { ImagePreview } from '../components/image-preview';
 import { ImagePreviewBackgroundControl, type PreviewBackdrop } from '../components/image-preview-background-control';
 import { createRequestId } from '../components/request-id';
@@ -174,7 +175,7 @@ export function WorkQualityEditor({ item, navigationGuardRef, onSkip, onComplete
           <div className={styles.copyBody}>{copy.body}</div>
           {copy.tags.length > 0 && <p className={styles.tags}>{copy.tags.map(tag => `#${tag.replace(/^#/u, '')}`).join(' ')}</p>}
         </article>}
-        {imageItem && <div className={styles.qualityGallery}>
+        {imageItem && <div className={styles.qualityGallery} data-has-note={Boolean(imageItem.manualModificationNote)}>
           {currentAsset ? <>
             <ImageCarouselNavigation currentIndex={selectedImage} total={assets.length}
               onPrevious={() => showImage(Math.max(0, selectedImage - 1))} onNext={() => showImage(Math.min(assets.length - 1, selectedImage + 1))}>
@@ -191,6 +192,7 @@ export function WorkQualityEditor({ item, navigationGuardRef, onSkip, onComplete
               </Button>)}
             </nav>
           </> : <p className="notice warning">当前没有可预览的图片，暂不能通过质检。</p>}
+          <ImageManualModificationNote note={imageItem.manualModificationNote} />
         </div>}
       </section>
       <aside ref={decisionRef} id={decisionId} className={styles.qualityDecision} aria-label={imageMode ? '图片质检操作' : '文案质检操作'}>
