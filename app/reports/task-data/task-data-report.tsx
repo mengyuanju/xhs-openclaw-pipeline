@@ -70,11 +70,13 @@ const STATE_LABELS = Object.fromEntries(STATE_OPTIONS);
 const HIDDEN_FILTER_STATES = new Set(['COPY_QUEUED', 'COPY_RUNNING', 'COPY_FAILED', 'IMAGE_FAILED']);
 const FILTER_STATE_OPTIONS = STATE_OPTIONS.filter(([value]) => !HIDDEN_FILTER_STATES.has(value));
 const FILTER_STATES = new Set<string>(FILTER_STATE_OPTIONS.map(([value]) => value));
-const METRIC_STORAGE_KEY = 'task-data-report:visible-metrics:v3';
-const PREVIOUS_METRIC_STORAGE_KEY = 'task-data-report:visible-metrics:v2';
+const METRIC_STORAGE_KEY = 'task-data-report:visible-metrics:v4';
+const PREVIOUS_METRIC_STORAGE_KEY = 'task-data-report:visible-metrics:v3';
+const LEGACY_METRIC_STORAGE_KEY = 'task-data-report:visible-metrics:v2';
 const METRIC_OPTIONS = [
   { id: 'effectiveTotal', label: '有效任务数' },
   { id: 'copyInitialReviewPending', label: '文案待审核(改派)' },
+  { id: 'secondAssignmentPending', label: '待二次分配' },
   { id: 'copyReviewPending', label: '文案待返修' },
   { id: 'copyQaPending', label: '文案待质检' },
   { id: 'imageGenerating', label: '待生图及生图中' },
@@ -86,7 +88,8 @@ const METRIC_OPTIONS = [
 
 type MetricId = (typeof METRIC_OPTIONS)[number]['id'];
 const DEFAULT_METRIC_IDS: MetricId[] = METRIC_OPTIONS.map(option => option.id);
-const ADDED_METRIC_IDS: MetricId[] = ['copyInitialReviewPending', 'imageRetryPending'];
+const ADDED_METRIC_IDS: MetricId[] = ['secondAssignmentPending'];
+const LEGACY_ADDED_METRIC_IDS: MetricId[] = ['copyInitialReviewPending', 'imageRetryPending', ...ADDED_METRIC_IDS];
 
 const EMPTY_CONFIG: QueryConfig = {
   time: { field: 'FIRST_COPY_REVIEW_ACTION', mode: 'ABSOLUTE', ...relativeRange(1) },
@@ -248,6 +251,7 @@ function MetricCards({ summary, visibleIds }: { summary: ReportResponse['summary
   const counts: Record<MetricId, number> = {
     effectiveTotal: summary.total - summary.discarded,
     copyInitialReviewPending: summary.copyInitialReviewPending,
+    secondAssignmentPending: summary.byState.PENDING_SECOND_ASSIGNMENT ?? 0,
     copyReviewPending: summary.copyReworkPending,
     copyQaPending: summary.copyQaPending,
     imageGenerating: (summary.byState.IMAGE_QUEUED ?? 0) + (summary.byState.IMAGE_RUNNING ?? 0),
@@ -331,15 +335,17 @@ export function TaskDataReport() {
   useEffect(() => {
     try {
       const current = window.localStorage.getItem(METRIC_STORAGE_KEY);
-      const stored = current ?? window.localStorage.getItem(PREVIOUS_METRIC_STORAGE_KEY);
+      const previous = current === null ? window.localStorage.getItem(PREVIOUS_METRIC_STORAGE_KEY) : null;
+      const stored = current ?? previous ?? window.localStorage.getItem(LEGACY_METRIC_STORAGE_KEY);
       if (stored === null) return;
       const parsed: unknown = JSON.parse(stored);
       if (!Array.isArray(parsed)) return;
       const selected = METRIC_OPTIONS.filter(option => parsed.includes(option.id)).map(option => option.id);
       if (!selected.length && parsed.length) return;
       const migrating = current === null;
+      const addedIds = previous === null ? LEGACY_ADDED_METRIC_IDS : ADDED_METRIC_IDS;
       const next = migrating && parsed.length
-        ? METRIC_OPTIONS.filter(option => selected.includes(option.id) || ADDED_METRIC_IDS.includes(option.id))
+        ? METRIC_OPTIONS.filter(option => selected.includes(option.id) || addedIds.includes(option.id))
           .map(option => option.id)
         : selected;
       setVisibleMetricIds(next);
