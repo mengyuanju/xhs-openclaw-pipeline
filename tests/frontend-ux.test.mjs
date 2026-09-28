@@ -232,7 +232,7 @@ test('required text prompts use the shared accessible dialog instead of the brow
 
   assert.match(textInputDialog, /export function TextInputDialogProvider/u);
   assert.match(textInputDialog, /export function useTextInputDialog/u);
-  assert.match(textInputDialog, /<DialogContent className="text-input-dialog-content">/u);
+  assert.match(textInputDialog, /<DialogContent\b[^>]*className="text-input-dialog-content"/u);
   assert.match(textInputDialog, /<Textarea/u);
   assert.match(textInputDialog, /aria-required=/u);
   assert.match(textInputDialog, /returnFocusRef/u);

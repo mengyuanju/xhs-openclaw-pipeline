@@ -53,6 +53,31 @@ function paddedCompleteBody(prefix, length) {
 }
 
 describe('standalone copy generation', () => {
+  it('accepts an experience-marked model draft without contract repair in published-only mode', async () => {
+    const input = createMockPost(3);
+    input.body = paddedCompleteBody('我亲测三个月后整理了以下步骤。', 500);
+    input.fabricatedExperience = true;
+    const runtime = createPromptRuntime({ settings: null, prompts: {
+      TEXT_SYSTEM: { content: '按输入生成文案，并如实填写元数据。' },
+    } });
+    let calls = 0;
+    const stages = [];
+    const generated = await withPromptRuntime(runtime, () => createLivePost({
+      async runText({ outputSchema }) {
+        calls += 1;
+        assert.deepEqual(outputSchema.properties.fabricatedExperience, { type: 'boolean' });
+        return { rawText: JSON.stringify(input), model: 'fake-model' };
+      },
+    }, { query: '桌面整理方法', input: {} }, {
+      imageCount: 3,
+      onStageChange: (stage) => { stages.push(stage); },
+    }));
+    assert.equal(calls, 1);
+    assert.deepEqual(stages, []);
+    assert.equal(generated.post.body, input.body);
+    assert.equal(generated.post.fabricatedExperience, true);
+  });
+
   it('normalizes historical literal newline escapes in the API response', () => {
     const historicalPost = createMockPost(3);
     const expectedBody = historicalPost.body;

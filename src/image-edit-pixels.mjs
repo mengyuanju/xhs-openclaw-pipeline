@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 
 export const EDIT_WIDTH = 1086;
 export const EDIT_HEIGHT = 1448;
+export const REFERENCE_PNG_MAX_BYTES = 20 * 1024 * 1024;
 export const imageHash = bytes => createHash('sha256').update(bytes).digest('hex');
 export function boundedNumber(value, min, max, integer = true) {
   if (typeof value !== 'number' || !Number.isFinite(value) || (integer && !Number.isInteger(value)) || value < min || value > max) throw new TypeError('图片参数超出安全范围');
@@ -53,7 +54,24 @@ export function manualOverlaySvg(input) {
   const o = normalizeManualOverlay(input);
   return overlaySvg(o);
 }
-export async function decodeReference(bytes, mediaType) {
+const DEFAULT_NORMALIZED_PNG_MAX_BYTES = 10 * 1024 * 1024;
+async function fitReferencePng(source, maxPngBytes) {
+  let { width, height } = await sharp(source).metadata();
+  let clean = source;
+  for (let attempt = 0; attempt < 4 && clean.length > maxPngBytes; attempt++) {
+    const scale = Math.min(0.85, Math.sqrt(maxPngBytes / clean.length) * 0.95);
+    width = Math.max(1, Math.floor(width * scale));
+    height = Math.max(1, Math.floor(height * scale));
+    // Resample the oriented original each time so retries do not accumulate blur.
+    clean = await sharp(source).resize({ width, height, fit: 'inside', withoutEnlargement: true }).png().toBuffer();
+  }
+  if (clean.length > maxPngBytes) throw new TypeError(`参考图处理后仍超过 ${maxPngBytes / 1024 / 1024} MiB，请缩小图片分辨率后重试`);
+  return clean;
+}
+export async function decodeReference(bytes, mediaType, {
+  resizeOversized = false, maxPngBytes = DEFAULT_NORMALIZED_PNG_MAX_BYTES,
+} = {}) {
+  boundedNumber(maxPngBytes, 1, REFERENCE_PNG_MAX_BYTES);
   if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > 5 * 1024 * 1024) throw new TypeError('参考图片上限为 5 MB');
   const formats = { 'image/png': 'png', 'image/jpeg': 'jpeg', 'image/webp': 'webp' };
   if (!formats[mediaType]) throw new TypeError('仅支持 PNG/JPEG/WebP');
@@ -64,8 +82,11 @@ export async function decodeReference(bytes, mediaType) {
   const decoder = sharp(bytes, { failOn: 'warning', limitInputPixels: 16_000_000, animated: true });
   const metadata = await decoder.metadata();
   if (metadata.format !== formats[mediaType] || (metadata.pages ?? 1) !== 1 || !metadata.width || !metadata.height) throw new TypeError('图片类型不符或为动画');
-  const clean = await decoder.rotate().png().toBuffer();
-  if (clean.length > 10 * 1024 * 1024) throw new TypeError('解码后图片过大');
+  let clean = await decoder.rotate().png().toBuffer();
+  if (clean.length > maxPngBytes) {
+    if (!resizeOversized) throw new TypeError('解码后图片过大');
+    clean = await fitReferencePng(clean, maxPngBytes);
+  }
   const normalized = await sharp(clean).metadata();
   return { bytes: clean, sha256: imageHash(clean), originalSha256: imageHash(bytes), originalMediaType: mediaType, width: normalized.width, height: normalized.height };
 }

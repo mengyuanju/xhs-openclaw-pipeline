@@ -71,9 +71,13 @@ test('image QA browser: blind queue, repeated mandatory recheck returns and pass
   let failDiscard = false;
   let browser;
   let server;
+  const manualModificationNote = `第 2 页右下角替换新版包装。\n第 3 页标题第二行修正错字。\n修改素材：${'manual-edit-'.repeat(25)}<script>window.fixtureInjected=true</script>`;
+  const noteGuidance = '如需手动修改图片请备注具体点位，图片质检可先通过，后续自行修改后小豆芽替换';
   const item = (id, sampleKind) => ({
     id, freezePublicId: freezeId, anonymousCode: sampleKind === 'RANDOM' ? 'IQ-BLIND-ONE' : id === thirdId ? 'IQ-RECHECK-AGAIN' : 'IQ-RECHECK',
     status: 'PENDING', sampleKind, blindReview: true,
+    manualModificationNote: id === firstId ? manualModificationNote : null,
+    taskId: 991, query: '不应泄露的真实任务', submitter: { accountId: 64, username: 'hidden-worker' },
     assets: [1, 2].map((assetId) => ({ id: assetId, mediaType: 'image/png', sha256: 'a'.repeat(64), originalName: null, pageIndex: assetId, url: `/v1/assets/${assetId}` })),
     capabilities: { canPass: true, canReturnSingle: true, canReturnBatch: false, canDiscard: true },
   });
@@ -164,9 +168,36 @@ test('image QA browser: blind queue, repeated mandatory recheck returns and pass
     assert.equal(await page.getByRole('tab', { name: /待质检|已通过|已打回|全部记录/u }).count(), 4);
     assert.equal(await page.getByText('匿名', { exact: true }).count(), 1);
     assert.equal(await page.getByText('不应泄露的真实任务', { exact: false }).count(), 0);
+    assert.equal(await page.getByText('hidden-worker', { exact: false }).count(), 0);
+    const noteToggle = page.getByRole('button', { name: /^有修图备注/u });
+    assert.equal(await noteToggle.getAttribute('aria-expanded'), 'false');
+    await noteToggle.click();
+    const queueNote = page.getByRole('region', { name: '图片审核备注', exact: true });
+    await queueNote.waitFor();
+    assert.equal(await queueNote.locator('p').first().textContent(), manualModificationNote);
+    assert.equal(await queueNote.getByText(noteGuidance, { exact: true }).count(), 1);
+    assert.equal(await page.evaluate(() => window.fixtureInjected), undefined, 'remark content is rendered as plain text');
+    assert.equal(passed, null, 'a modification note never passes the inspection automatically');
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await queueNote.locator('p').first().evaluate(element => element.scrollWidth > element.clientWidth + 1), false,
+      'long remark words wrap within a mobile queue card');
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth) <= 1);
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await noteToggle.click();
     await page.getByRole('button', { name: '打回', exact: true }).click();
     const qaDialog = page.getByRole('dialog', { name: 'IQ-BLIND-ONE' });
     await qaDialog.waitFor();
+    const detailNote = qaDialog.getByRole('region', { name: '图片审核备注', exact: true });
+    assert.equal(await detailNote.isVisible(), true, 'detail remark is expanded before an inspection decision');
+    assert.equal(await detailNote.locator('p').first().textContent(), manualModificationNote);
+    const notePresentation = await detailNote.locator('p').first().evaluate(element => ({
+      whiteSpace: getComputedStyle(element).whiteSpace,
+      overflowWrap: getComputedStyle(element).overflowWrap,
+      overflows: element.scrollWidth > element.clientWidth + 1,
+    }));
+    assert.deepEqual(notePresentation, { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', overflows: false });
+    assert.equal(await qaDialog.getByLabel('具体修改要求（必填）', { exact: true }).inputValue(), '',
+      'manual modification notes stay separate from return instructions');
     await page.getByText('2 个最终成品页', { exact: true }).waitFor();
     assert.equal(await page.getByText('第 01 / 02 页', { exact: true }).count(), 1);
     assert.equal(await page.getByText('01-image.png', { exact: true }).count(), 2);
@@ -197,6 +228,8 @@ test('image QA browser: blind queue, repeated mandatory recheck returns and pass
     await page.getByLabel('具体修改要求（必填）', { exact: true }).fill('修正第一张中的错别字，其他内容保持不变');
     await page.getByRole('button', { name: '确认单条打回', exact: true }).click();
     await page.getByText('IQ-RECHECK', { exact: true }).waitFor();
+    assert.equal(await page.getByRole('button', { name: /^有修图备注/u }).count(), 0,
+      'a new image revision does not inherit a prior version remark');
     assert.deepEqual(returned.reasonCodes, ['TEXT_ERROR']);
     assert.deepEqual(returned.problemAssetIds, [1]);
     assert.equal(returned.reworkTarget, 'IMAGE');
@@ -241,6 +274,8 @@ test('image QA browser: blind queue, repeated mandatory recheck returns and pass
     const mobileOverflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
     assert.ok(mobileOverflow <= 1, `mobile page must not overflow horizontally: ${mobileOverflow}px`);
     assert.equal(passed.score, 3);
+    assert.equal(passed.note, '');
+    assert.equal(Object.hasOwn(passed, 'manualModificationNote'), false);
     assert.equal(passedItemId, thirdId);
     assert.match(passed.requestId, /^[a-f0-9-]{36}$/u);
     phase = 0;

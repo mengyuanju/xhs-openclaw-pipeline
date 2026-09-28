@@ -133,6 +133,12 @@ test('delivery content preview follows the frozen image order and reviewed copy'
     query: '家庭咖啡角整理',
     currentCopyRevisionId: 458,
     currentImageRunId: 'run-current',
+    imageApprovalEvents: [
+      { imageRunId: 'old-run', copyRevisionId: 458, manualModificationNote: '旧图片备注' },
+      { imageRunId: 'run-current', copyRevisionId: 457, manualModificationNote: '旧文案备注' },
+      { imageRunId: 'run-current', copyRevisionId: 458,
+        manualModificationNote: '  第 2 页右下角替换产品图\n第 3 页修改标题错字。  ' },
+    ],
     copyRevisions: [{
       id: 458,
       content: { reviewed: { copy: { title: '咖啡角整理', body: '先清空，再分区。', tags: ['收纳', '#咖啡'] } } },
@@ -148,6 +154,7 @@ test('delivery content preview follows the frozen image order and reviewed copy'
     ],
   });
   assert.equal(preview.copy.title, '咖啡角整理');
+  assert.equal(preview.manualModificationNote, '第 2 页右下角替换产品图\n第 3 页修改标题错字。');
   assert.deepEqual(preview.copy.tags, ['收纳', '#咖啡']);
   assert.deepEqual(preview.images.map(({ id, page }) => ({ id, page })), [
     { id: 12, page: 1 },

@@ -21,6 +21,11 @@ import { recordQualityReviewCoverage } from './quality-review-coverage.mjs';
 
 export const IMAGE_SAMPLING_ALGORITHM_VERSION = 'account-bps-remainder-v1';
 const IMAGE_BATCH_TAIL_MS = 30 * 60 * 1000;
+const CURRENT_IMAGE_APPROVAL_SQL = `item.approval_event_id = (
+  SELECT current_approval.id FROM image_approval_events current_approval
+  WHERE current_approval.task_id = item.task_id AND current_approval.image_run_id = item.image_run_id
+  ORDER BY current_approval.submitted_at DESC, current_approval.id DESC LIMIT 1
+)`;
 
 function hash(value) {
   return createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
@@ -75,6 +80,12 @@ function normalizeNote(value, { required = false } = {}) {
   if ([...note].length > 1_000) throw new RangeError('note cannot exceed 1000 characters');
   if (required && !note) throw new TypeError('返工时必须填写具体修改说明');
   return note || null;
+}
+
+function normalizeManualModificationNote(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') throw new TypeError('manualModificationNote must be a string');
+  return normalizeNote(value);
 }
 
 function normalizeReasons(value) {
@@ -199,6 +210,11 @@ async function releaseApproval(client, approval, actor, message) {
   if (!locked || !['MANUAL_ARCHIVE', 'IMAGE_QC_PENDING'].includes(locked.state)
       || Number(locked.current_copy_revision_id) !== Number(approval.copy_revision_id)
       || locked.current_image_run_id !== approval.image_run_id) return false;
+  const latest = (await client.query(`
+    SELECT id FROM image_approval_events WHERE task_id = $1 AND image_run_id = $2
+    ORDER BY submitted_at DESC, id DESC LIMIT 1
+  `, [locked.id, locked.current_image_run_id])).rows[0];
+  if (Number(latest?.id) !== Number(approval.id)) return false;
   const snapshot = await imageSnapshot(client, Number(locked.id), locked.current_image_run_id);
   if (snapshot.sha256 !== approval.image_set_sha256) {
     // Approvals created before the final-delivery-only snapshot rollout hashed every
@@ -292,6 +308,11 @@ async function pendingApprovalRows(client, productionBatchId, submitterAccountId
       AND task.state = 'IMAGE_QC_PENDING'
     WHERE task.production_batch_id = $1 AND approval.submitted_by_account_id = $2
       AND NOT EXISTS (SELECT 1 FROM image_sampling_items item WHERE item.approval_event_id = approval.id)
+      AND NOT EXISTS (
+        SELECT 1 FROM image_approval_events newer
+        WHERE newer.task_id = approval.task_id AND newer.image_run_id = approval.image_run_id
+          AND (newer.submitted_at, newer.id) > (approval.submitted_at, approval.id)
+      )
     ORDER BY approval.submitted_at, approval.id
     ${limitSql}
     FOR UPDATE OF approval
@@ -473,6 +494,7 @@ export async function submitImageSelfReview(pool, rawTaskId, input, rawActor) {
   const actor = normalizeActor(rawActor, ['ADMIN', 'USER']);
   const imageRunId = normalizeUuid(input?.imageRunId, 'imageRunId');
   const reviewSessionId = normalizeUuid(input?.reviewSessionId, 'reviewSessionId');
+  const manualModificationNote = normalizeManualModificationNote(input?.manualModificationNote);
   return transaction(pool, async (client) => {
     await lockActiveActor(client, actor);
     const task = (await client.query('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [taskId])).rows[0];
@@ -481,7 +503,7 @@ export async function submitImageSelfReview(pool, rawTaskId, input, rawActor) {
       throw new ControlPlaneAuthorizationError('只能初审自己负责的图片任务');
     }
     if (task.priority_paused) throw new ControlPlaneConflictError('TASK_PRIORITY_PAUSED', '任务已暂停，请先恢复优先级');
-    if (task.state !== 'MANUAL_ARCHIVE') {
+    if (!['MANUAL_ARCHIVE', 'IMAGE_REWORK_PENDING', 'IMAGE_QC_PENDING', 'REVIEWED'].includes(task.state)) {
       throw new ControlPlaneConflictError('INVALID_TASK_STATE', '任务已不在图片初审阶段，请刷新后重试');
     }
     if (task.current_image_run_id !== imageRunId) {
@@ -494,24 +516,47 @@ export async function submitImageSelfReview(pool, rawTaskId, input, rawActor) {
     if (!run) throw new ControlPlaneConflictError('STALE_IMAGE_RUN', '当前文案对应的图片尚未生成完成');
     await assertNoPendingImageEdits(client, { taskId, imageRunId });
     const snapshot = await imageSnapshot(client, taskId, imageRunId);
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))', [
+      `image-self-review:${actor.username}`, reviewSessionId,
+    ]);
     const existing = (await client.query(`
-      SELECT * FROM image_approval_events WHERE task_id = $1 AND image_run_id = $2
-    `, [taskId, imageRunId])).rows[0];
+      SELECT * FROM image_approval_events
+      WHERE submitted_by_username = $1 AND review_session_id = $2
+    `, [actor.username, reviewSessionId])).rows[0];
     if (existing) {
-      if (existing.review_session_id !== reviewSessionId || Number(existing.submitted_by_account_id) !== actor.userId) {
-        throw new ControlPlaneConflictError('IMAGE_ALREADY_SUBMITTED', '当前图片版本已经提交初审');
+      const sameSnapshot = existing.image_set_sha256 === snapshot.sha256
+        || existing.image_set_sha256 === await legacyImageSnapshotSha256(client, taskId, imageRunId);
+      if (Number(existing.task_id) !== taskId
+          || Number(existing.copy_revision_id) !== Number(task.current_copy_revision_id)
+          || existing.image_run_id !== imageRunId
+          || Number(existing.submitted_by_account_id) !== actor.userId
+          || !sameSnapshot
+          || (existing.manual_modification_note ?? null) !== manualModificationNote) {
+        throw new ControlPlaneConflictError('REQUEST_ID_CONFLICT', '同一初审请求的任务、图片版本或备注已变化，请刷新后重试');
       }
       return { taskId, state: task.state, approvalEventId: Number(existing.id), idempotent: true };
+    }
+    if (!['MANUAL_ARCHIVE', 'IMAGE_REWORK_PENDING'].includes(task.state)) {
+      throw new ControlPlaneConflictError('IMAGE_ALREADY_SUBMITTED', '当前图片已经提交初审，请等待质检结果');
+    }
+    const mandatoryRecheck = task.state === 'IMAGE_REWORK_PENDING' || task.mandatory_image_qc === true;
+    if (!mandatoryRecheck) {
+      const previous = (await client.query(`
+        SELECT id FROM image_approval_events WHERE task_id = $1 AND image_run_id = $2 LIMIT 1
+      `, [taskId, imageRunId])).rows[0];
+      if (previous) throw new ControlPlaneConflictError('IMAGE_ALREADY_SUBMITTED', '当前图片版本已经提交初审');
     }
     const approval = (await client.query(`
       INSERT INTO image_approval_events(
         task_id, copy_revision_id, image_run_id, submitted_by_account_id,
-        submitted_by_username, review_session_id, image_set_sha256, submission_mode
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *
+        submitted_by_username, review_session_id, image_set_sha256, submission_mode,
+        manual_modification_note
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *
     `, [taskId, task.current_copy_revision_id, imageRunId, actor.userId, actor.username,
-      reviewSessionId, snapshot.sha256, task.mandatory_image_qc ? 'MANDATORY_RECHECK' : 'SELF_REVIEW'])).rows[0];
+      reviewSessionId, snapshot.sha256, mandatoryRecheck ? 'MANDATORY_RECHECK' : 'SELF_REVIEW',
+      manualModificationNote])).rows[0];
     const settings = await lockWorkflowQualitySettings(client);
-    if (!task.mandatory_image_qc
+    if (!mandatoryRecheck
         && (!settings.imageSampling.enabled || settings.imageSampling.rateBps === 0)) {
       await client.query(`
         UPDATE tasks SET image_qc_released_approval_event_id = $2,
@@ -524,10 +569,11 @@ export async function submitImageSelfReview(pool, rawTaskId, input, rawActor) {
     await client.query(`
       UPDATE tasks SET state = 'IMAGE_QC_PENDING', current_stage = 'IMAGE_QC_PENDING',
         progress_percent = 95, progress_message = $2, image_qc_released_approval_event_id = NULL,
-        image_qc_legacy_accepted = false, last_activity_at = now(), updated_at = now()
+        image_qc_legacy_accepted = false, mandatory_image_qc = $3,
+        last_activity_at = now(), updated_at = now()
       WHERE id = $1
-    `, [taskId, task.mandatory_image_qc ? '图片返修初审已完成，等待强制图片复检' : '图片初审已完成，等待图片抽检批次冻结']);
-    if (task.mandatory_image_qc) {
+    `, [taskId, mandatoryRecheck ? '图片返修初审已完成，等待强制图片复检' : '图片初审已完成，等待图片抽检批次冻结', mandatoryRecheck]);
+    if (mandatoryRecheck) {
       await createMandatoryFreeze(client, { task: { ...task, production_batch_id: productionBatchId }, approval, actor, settings });
     } else {
       await attemptAutomaticImageSamplingFreeze(client, {
@@ -542,9 +588,11 @@ export function imageQaItemFrom(row, actor) {
   const blind = row.blind_review_enabled === true && actor.role !== 'ADMIN';
   const pendingImageEdits = Number(row.pending_image_edit_count ?? 0);
   const canAct = row.status === 'PENDING' && row.priority_paused !== true && row.task_state === 'IMAGE_QC_PENDING'
+    && row.approval_is_latest !== false
     && (actor.role === 'ADMIN' || Number(row.submitter_account_id) !== actor.userId);
   const canBatch = row.sample_kind === 'RANDOM' && ['PENDING', 'RETURNED'].includes(row.status)
     && row.priority_paused !== true && row.task_state !== 'CANCELLED'
+    && row.approval_is_latest !== false
     && (actor.role === 'ADMIN' || (Number(row.submitter_account_id) !== actor.userId
       && row.image_reviewer_batch_return_enabled === true));
   const previousReturn = imagePreviousReturnFrom(row);
@@ -555,6 +603,7 @@ export function imageQaItemFrom(row, actor) {
     status: row.status,
     sampleKind: row.sample_kind,
     blindReview: blind,
+    manualModificationNote: row.manual_modification_note ?? null,
     previousReturn,
     assets: Array.isArray(row.assets) ? row.assets.map((asset) => ({
       id: Number(asset.id), mediaType: asset.media_type, sha256: asset.sha256,
@@ -662,6 +711,8 @@ export async function listImageQaItems(pool, options = {}, rawActor) {
     SELECT item.*, sampling_freeze.public_id AS freeze_public_id, sampling_freeze.blind_review_enabled,
       task.query, task.priority_paused, task.state AS task_state, task.source_query_package_name AS query_package_name,
       sampling_freeze.production_batch_id, settings.image_reviewer_batch_return_enabled,
+      approval.manual_modification_note,
+      ${CURRENT_IMAGE_APPROVAL_SQL} AS approval_is_latest,
       previous_return.payload AS previous_return,
       (SELECT count(*)::integer FROM image_edit_requests AS edit
         WHERE edit.task_id = item.task_id AND edit.source_image_run_id = item.image_run_id
@@ -672,6 +723,7 @@ export async function listImageQaItems(pool, options = {}, rawActor) {
       ) ORDER BY page.page_index) FILTER (WHERE asset.id IS NOT NULL), '[]'::jsonb) AS assets
     FROM image_sampling_items AS item
     JOIN image_sampling_freezes AS sampling_freeze ON sampling_freeze.id = item.freeze_id
+    JOIN image_approval_events AS approval ON approval.id = item.approval_event_id
     JOIN tasks AS task ON task.id = item.task_id
     JOIN image_runs AS image_run
       ON image_run.id = item.image_run_id AND image_run.task_id = item.task_id
@@ -725,7 +777,7 @@ export async function listImageQaItems(pool, options = {}, rawActor) {
       AND asset.id::text = COALESCE(page.image->>'deliveryAssetId', page.image->>'assetId')
     WHERE item.selected
       ${itemPublicId === null ? '' : `AND item.public_id = $${itemParameter}::uuid`}
-      ${options.actionableOnly ? "AND item.status = 'PENDING' AND task.priority_paused = false" : ''}
+      ${options.actionableOnly ? `AND item.status = 'PENDING' AND task.priority_paused = false AND ${CURRENT_IMAGE_APPROVAL_SQL}` : ''}
       AND ($2 = 'ALL' OR item.status = $2)
       AND ($7 = 'ADMIN' OR item.submitter_account_id <> $1)
       AND ($5::varchar IS NULL OR (
@@ -736,7 +788,7 @@ export async function listImageQaItems(pool, options = {}, rawActor) {
             AND strpos(lower(person_filter.display_name), lower($5)) > 0
         )
       ))
-    GROUP BY item.id, sampling_freeze.id, task.id, settings.singleton, previous_return.payload
+    GROUP BY item.id, sampling_freeze.id, approval.id, task.id, settings.singleton, previous_return.payload
     ORDER BY task.priority_sort_at, item.id
     LIMIT $3 OFFSET $4
   `, [...values, PENDING_IMAGE_EDIT_STATUSES, actor.role, ...(itemPublicId === null ? [] : [itemPublicId])]);
@@ -751,7 +803,8 @@ async function lockQaItem(client, identifier) {
     SELECT item.*, sampling_freeze.public_id AS freeze_public_id, sampling_freeze.status AS freeze_status,
       sampling_freeze.version AS freeze_version, sampling_freeze.blind_review_enabled,
       sampling_freeze.production_batch_id, task.priority_paused, task.current_image_run_id,
-      task.current_copy_revision_id, task.assigned_to_user_id, task.state AS task_state
+      task.current_copy_revision_id, task.assigned_to_user_id, task.state AS task_state,
+      ${CURRENT_IMAGE_APPROVAL_SQL} AS approval_is_latest
     FROM image_sampling_items AS item
     JOIN image_sampling_freezes AS sampling_freeze ON sampling_freeze.id = item.freeze_id
     JOIN tasks AS task ON task.id = item.task_id
@@ -773,8 +826,9 @@ function assertCanReview(item, actor) {
     }
   }
   if (item.current_image_run_id !== item.image_run_id
-      || Number(item.current_copy_revision_id) !== Number(item.copy_revision_id)) {
-    throw new ControlPlaneConflictError('IMAGE_VERSION_CHANGED', '图片或文案版本已经变化');
+      || Number(item.current_copy_revision_id) !== Number(item.copy_revision_id)
+      || item.approval_is_latest === false) {
+    throw new ControlPlaneConflictError('IMAGE_VERSION_CHANGED', '图片、文案版本或提交轮次已经变化');
   }
 }
 
@@ -1083,7 +1137,8 @@ export async function getImageQaBatchReturnPreview(pool, rawFreezePublicId, rawA
   const result = await pool.query(`
     SELECT sampling_freeze.id, sampling_freeze.public_id, sampling_freeze.blind_review_enabled, sampling_freeze.status,
       item.public_id AS item_public_id, item.submitter_account_id,
-      item.status AS item_status, item.selected
+      item.status AS item_status, item.selected,
+      ${CURRENT_IMAGE_APPROVAL_SQL} AS approval_is_latest
     FROM image_sampling_freezes AS sampling_freeze
     JOIN image_sampling_items AS item ON item.freeze_id = sampling_freeze.id
     JOIN tasks AS task ON task.id = item.task_id
@@ -1091,6 +1146,9 @@ export async function getImageQaBatchReturnPreview(pool, rawFreezePublicId, rawA
     ORDER BY item.id
   `, [freezePublicId]);
   if (result.rows.length < 1) throw new ControlPlaneNotFoundError('image QA freeze not found');
+  if (result.rows.some(row => row.approval_is_latest === false)) {
+    throw new ControlPlaneConflictError('IMAGE_VERSION_CHANGED', '批次中的图片已重新提交，请处理最新质检轮次');
+  }
   if (actor.role !== 'ADMIN' && (!result.rows.some((row) => row.selected)
       || result.rows.some((row) => Number(row.submitter_account_id) === actor.userId))) {
     throw new ControlPlaneAuthorizationError('当前账号不能整批处理该图片抽检批次');
@@ -1131,6 +1189,7 @@ export async function batchReturnImageQa(pool, input, rawActor) {
     const rows = (await client.query(`
       SELECT item.*, sampling_freeze.status AS freeze_status, task.priority_paused,
         task.current_image_run_id, task.current_copy_revision_id,
+        ${CURRENT_IMAGE_APPROVAL_SQL} AS approval_is_latest,
         COALESCE(image_run.result->'simulation'->>'enabled'='true',false) AS simulated
       FROM image_sampling_freezes AS sampling_freeze
       JOIN image_sampling_items AS item ON item.freeze_id = sampling_freeze.id
@@ -1153,8 +1212,9 @@ export async function batchReturnImageQa(pool, input, rawActor) {
     }
     for (const row of rows) {
       if (row.current_image_run_id !== row.image_run_id
-          || Number(row.current_copy_revision_id) !== Number(row.copy_revision_id)) {
-        throw new ControlPlaneConflictError('IMAGE_VERSION_CHANGED', '批次中图片或文案版本已经变化');
+          || Number(row.current_copy_revision_id) !== Number(row.copy_revision_id)
+          || row.approval_is_latest === false) {
+        throw new ControlPlaneConflictError('IMAGE_VERSION_CHANGED', '批次中图片、文案版本或提交轮次已经变化');
       }
     }
     const freezeId = rows[0].freeze_id;
@@ -1226,8 +1286,15 @@ export async function flushExpiredImageQualityBatches(pool, { now = new Date() }
     SELECT task.production_batch_id, approval.submitted_by_account_id
     FROM image_approval_events AS approval
     JOIN tasks AS task ON task.id = approval.task_id AND task.state = 'IMAGE_QC_PENDING'
+      AND task.current_copy_revision_id = approval.copy_revision_id
+      AND task.current_image_run_id = approval.image_run_id
     WHERE approval.submitted_at <= $1
       AND NOT EXISTS (SELECT 1 FROM image_sampling_items item WHERE item.approval_event_id = approval.id)
+      AND NOT EXISTS (
+        SELECT 1 FROM image_approval_events newer
+        WHERE newer.task_id = approval.task_id AND newer.image_run_id = approval.image_run_id
+          AND (newer.submitted_at, newer.id) > (approval.submitted_at, approval.id)
+      )
     GROUP BY task.production_batch_id, approval.submitted_by_account_id
   `, [new Date(now.valueOf() - IMAGE_BATCH_TAIL_MS)]);
   const frozen = [];

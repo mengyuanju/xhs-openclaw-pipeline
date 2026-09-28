@@ -1821,7 +1821,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { taskRestoreVersion: 1, taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 13, executorManagementVersion: 1, adminTaskFilters: true, adminTaskDateFilters: true, adminTaskActivityDateFilters: 1, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 7, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 2, copyQaBatchVersion: 1, copyQaReasonTagsVersion: 1, secondaryAssignmentVersion: 1, accountQualityStatisticsVersion: 1, copyReturnedDiscardVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, copyReviewDraftVersion: 1, copyImagePlanRegenerationVersion: 2, finalDeliveryVersion: 5, sharedDeliveryVersion: 1, imageDiscardVersion: 1, pendingImageEditResolutionVersion: 1, deliverySpreadsheetVersion: 3, deliveryPreviewVersion: 6 } };
+      capabilities: { taskRestoreVersion: 1, taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 13, executorManagementVersion: 1, adminTaskFilters: true, adminTaskDateFilters: true, adminTaskActivityDateFilters: 1, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 7, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 2, copyQaBatchVersion: 1, copyQaReasonTagsVersion: 1, secondaryAssignmentVersion: 1, accountQualityStatisticsVersion: 1, copyReturnedDiscardVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, copyReviewDraftVersion: 1, copyImagePlanRegenerationVersion: 2, finalDeliveryVersion: 5, sharedDeliveryVersion: 1, imageDiscardVersion: 1, imageReworkSubmissionVersion: 1, pendingImageEditResolutionVersion: 1, deliverySpreadsheetVersion: 3, deliveryPreviewVersion: 6 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -3691,6 +3691,15 @@ export class PostgresControlPlaneRepository {
         SELECT task.*, creator.id AS creator_account_id,
           (SELECT source.issued_query FROM query_package_items AS source
             WHERE source.id = task.source_query_package_item_id) AS issued_query,
+          (SELECT jsonb_agg(jsonb_build_object(
+              'id', approval.id,
+              'imageRunId', approval.image_run_id,
+              'copyRevisionId', approval.copy_revision_id,
+              'manualModificationNote', approval.manual_modification_note,
+              'submittedAt', approval.submitted_at
+            ) ORDER BY approval.submitted_at DESC, approval.id DESC)
+            FROM image_approval_events AS approval
+            WHERE approval.task_id = task.id) AS image_approval_events,
           (SELECT jsonb_agg(jsonb_build_object('note', disposition.note,
             'actorUsername', disposition.actor_username, 'createdAt', disposition.created_at)
             ORDER BY disposition.id DESC) FROM image_task_dispositions disposition
@@ -3812,6 +3821,13 @@ export class PostgresControlPlaneRepository {
     return {
       ...mappedTask,
       issuedQuery: task.rows[0].issued_query ?? null,
+      imageApprovalEvents: (task.rows[0].image_approval_events ?? []).map((approval) => ({
+        id: Number(approval.id),
+        imageRunId: approval.imageRunId,
+        copyRevisionId: Number(approval.copyRevisionId),
+        manualModificationNote: approval.manualModificationNote ?? null,
+        submittedAt: approval.submittedAt,
+      })),
       ...(imageRetryFailures.length > 0 ? { imageRetryFailures } : {}),
       imageDiscardEvents: task.rows[0].image_discard_events ?? [],
       copyDiscardEvents: task.rows[0].copy_discard_events ?? [],
@@ -4143,11 +4159,11 @@ export class PostgresControlPlaneRepository {
             SELECT DISTINCT ON (edit.task_id) edit.task_id, edit.id AS edit_id
             FROM image_edit_requests edit
             JOIN tasks edit_task ON edit_task.id = edit.task_id
-            WHERE $5::integer >= CASE
+            WHERE edit.operation <> 'SVG_DISCLOSURE'
+              AND $5::integer >= CASE
                 WHEN edit_task.task_kind = 'STANDALONE_IMAGE_EDIT' THEN 13
                 WHEN edit.operation = 'AI_FUSION' THEN 12
                 WHEN edit.operation = 'AI_LOCAL' THEN 9
-                WHEN edit.operation = 'SVG_DISCLOSURE' THEN 8
                 WHEN edit.operation = 'TEXT' OR edit.operation LIKE 'AI_%' THEN 7
                 ELSE 3
               END

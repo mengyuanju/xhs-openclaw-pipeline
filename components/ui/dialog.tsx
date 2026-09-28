@@ -30,6 +30,7 @@ function DialogContent({
   children,
   showCloseButton = true,
   overlayClassName,
+  onInteractOutside,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & { showCloseButton?: boolean; overlayClassName?: string }) {
   return (
@@ -42,6 +43,14 @@ function DialogContent({
           className,
         )}
         {...props}
+        onInteractOutside={(event) => {
+          const target = event.detail.originalEvent.target;
+          // Messages remain interactive above modals without dismissing them.
+          if (target instanceof Element && target.closest('[data-sonner-toaster], [data-sonner-toast]')) {
+            event.preventDefault();
+          }
+          onInteractOutside?.(event);
+        }}
       >
         {children}
         {showCloseButton && (

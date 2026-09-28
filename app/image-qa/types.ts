@@ -17,6 +17,7 @@ export type ImageQaItem = {
   status: string;
   sampleKind: 'RANDOM' | 'MANDATORY_RECHECK';
   blindReview: boolean;
+  manualModificationNote: string | null;
   assets: ImageQaAsset[];
   capabilities: { canPass: boolean; canReturnSingle: boolean; canReturnBatch: boolean; canEscalate?: boolean; canDiscard?: boolean };
   discardReason?: string;
@@ -49,6 +50,8 @@ export function normalizeImageQaItem(value: unknown, role: 'ADMIN' | 'REVIEWER')
     // The center remains the redaction boundary. This second role check keeps a
     // mixed-version blind flag from hiding fields from an authorized admin.
     blindReview,
+    manualModificationNote: typeof row.manualModificationNote === 'string' && row.manualModificationNote.trim()
+      ? row.manualModificationNote.trim() : null,
     assets: row.assets.flatMap((entry, index) => {
       if (!entry || typeof entry !== 'object') return [];
       const asset = entry as Record<string, unknown>;

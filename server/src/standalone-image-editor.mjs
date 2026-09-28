@@ -16,8 +16,8 @@ async function currentActor(c, actor) {
   [actor.userId, actor.username, actor.role, actor.credentialVersion])).rows[0];
   if (!user) throw new ControlPlaneAuthorizationError('账号已失效，请重新登录');
 }
-export function createStandaloneImageEditor({ pool, storageRoot }) {
-  const edits = createImageEditingService({ pool, storageRoot });
+export function createStandaloneImageEditor({ pool, storageRoot, onProgrammaticReady }) {
+  const edits = createImageEditingService({ pool, storageRoot, onProgrammaticReady });
   async function access(id, actor, c = pool, { includeDeleted = false } = {}) {
     const row = (await c.query(`SELECT w.*,t.current_image_run_id,t.current_copy_revision_id,NOT (${visibleWorkspace('w')}) AS deleted
       FROM standalone_image_workspaces w JOIN tasks t ON t.id=w.task_id
@@ -30,11 +30,14 @@ export function createStandaloneImageEditor({ pool, storageRoot }) {
     }
     return row;
   }
-  async function workspaceStatus(id, c=pool) {
-    const row=(await c.query(`SELECT status FROM image_edit_requests WHERE task_id=$1
+  async function workspaceProcessing(id, c=pool) {
+    const row=(await c.query(`SELECT status,operation FROM image_edit_requests WHERE task_id=$1
       ORDER BY CASE status WHEN 'RUNNING' THEN 0 WHEN 'QUEUED' THEN 1 WHEN 'DRAFT' THEN 3 ELSE 2 END,
         created_at DESC,id DESC LIMIT 1`,[id])).rows[0];
-    return row?.status??'UPLOADED';
+    return row??{status:'UPLOADED',operation:null};
+  }
+  async function workspaceStatus(id, c=pool) {
+    return (await workspaceProcessing(id,c)).status;
   }
   // The original editor owns its transaction and staged-file cleanup. This
   // scoped pool adds our workspace guard immediately after BEGIN, holding the
@@ -64,19 +67,20 @@ export function createStandaloneImageEditor({ pool, storageRoot }) {
     };
     return guardedPool;
   }
-  const writableEdits=(id,actor)=>createImageEditingService({pool:writablePool(id,actor),storageRoot});
+  const writableEdits=(id,actor)=>createImageEditingService({pool:writablePool(id,actor),storageRoot,onProgrammaticReady});
   async function createBatch(id,input,actor) {
     await access(id,actor);
     return writableEdits(id,actor).createBatch(id,input,actor);
   }
   async function detail(id, actor) {
     const workspace = await access(id, actor);
+    const processing = await workspaceProcessing(workspace.task_id);
     const runs = (await pool.query(`SELECT id,result FROM image_runs WHERE task_id=$1
       AND status='COMPLETED' ORDER BY created_at DESC,id`, [workspace.task_id])).rows;
     const run = runs.find(value => value.id === workspace.current_image_run_id);
     const ids = (run?.result?.images ?? []).map(image => image.deliveryAssetId ?? image.assetId);
     const assets = (await pool.query('SELECT id,sha256 FROM assets WHERE task_id=$1 AND id=ANY($2::bigint[])', [workspace.task_id,ids])).rows;
-    return { id:Number(workspace.task_id),title:workspace.title,limits:workspace.limits,status:await workspaceStatus(workspace.task_id),
+    return { id:Number(workspace.task_id),title:workspace.title,limits:workspace.limits,status:processing.status,operation:processing.operation??null,
       runId:workspace.current_image_run_id,copyRevisionId:Number(workspace.current_copy_revision_id),runs,
       assets:ids.map(id => { const a=assets.find(item=>Number(item.id)===Number(id));
         if (!a) throw new Error('上传图片记录不完整');
@@ -188,7 +192,7 @@ export function createStandaloneImageEditor({ pool, storageRoot }) {
       const values=[actor.userId];
       const total=Number((await pool.query(`SELECT count(*) FROM standalone_image_workspaces w WHERE ${filter}`,values)).rows[0].count);
       const rows=(await pool.query(`SELECT w.task_id,w.title,w.created_at,u.display_name AS owner,
-        e.status,e.error,x.node_id,
+        e.status,e.operation,e.error,x.node_id,
         (SELECT count(*) FROM image_edit_requests a WHERE a.task_id=w.task_id AND a.status='QUEUED') AS queued,
         (SELECT count(*) FROM image_edit_requests a WHERE a.task_id=w.task_id AND a.status='RUNNING') AS running
         FROM standalone_image_workspaces w JOIN app_users u ON u.id=w.owner_id
@@ -196,7 +200,7 @@ export function createStandaloneImageEditor({ pool, storageRoot }) {
         LEFT JOIN task_executions x ON x.id=e.execution_id
         WHERE ${filter} ORDER BY w.task_id DESC LIMIT $2 OFFSET $3`,[...values,limit,offset])).rows;
       return {total,items:rows.map(row=>({id:Number(row.task_id),title:row.title,owner:row.owner,createdAt:row.created_at,
-        status:Number(row.running)>0?'RUNNING':Number(row.queued)>0?'QUEUED':row.status??'UPLOADED',error:row.error,nodeId:row.node_id}))};
+        status:Number(row.running)>0?'RUNNING':Number(row.queued)>0?'QUEUED':row.status??'UPLOADED',operation:row.operation??null,error:row.error,nodeId:row.node_id}))};
     },
     async listEdits(id,actor) {
       await access(id,actor);

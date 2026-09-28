@@ -126,6 +126,10 @@ describe('post output contract', () => {
     });
   });
 
+  it('allows either boolean experience marker in structured model output', () => {
+    assert.deepEqual(postOutputSchema(3).properties.fabricatedExperience, { type: 'boolean' });
+  });
+
   it('accepts a valid JSON object and returns only allowlisted fields', () => {
     const input = { ...validPost(), ignored: 'do not keep me' };
 
@@ -174,11 +178,13 @@ describe('post output contract', () => {
     assert.throws(() => parsePostOutput(JSON.stringify(input)), /title.*25/i);
   });
 
-  it('rejects fabricated first-person evidence', () => {
-    const input = validPost();
-    input.body += '\n我亲测用了三个月，绝对有效。';
-
-    assert.throws(() => parsePostOutput(JSON.stringify(input)), /fabricated experience/i);
+  it('keeps experience keywords as content without rejecting legacy output', () => {
+    for (const sentence of ['我亲测。', '亲测有效。', '我用了三个月。', '本人购买。', '我家一直使用。', '绝对有效。']) {
+      const input = validPost();
+      input.body += `\n${sentence}`;
+      const post = parsePostOutput(JSON.stringify(input));
+      assert.equal(post.body, input.body);
+    }
   });
 
   it('accepts one explicit model image plan per requested delivery image', () => {
@@ -340,7 +346,7 @@ describe('post output contract', () => {
     );
   });
 
-  it('accepts an objective opening while still rejecting invented first-person experience', () => {
+  it('accepts objective and first-person openings without a keyword gate', () => {
     const input = editorialPost();
     const query = '自行车活鱼桶 装水防晃 技巧';
 
@@ -348,13 +354,10 @@ describe('post output contract', () => {
     assert.doesNotThrow(() => parsePostOutput(JSON.stringify(input), { query }));
 
     input.body = editorialPost().body.replace('我先说结论', '我亲测三个月后总结');
-    assert.throws(
-      () => parsePostOutput(JSON.stringify(input), { query }),
-      /fabricated experience/iu,
-    );
+    assert.equal(parsePostOutput(JSON.stringify(input), { query }).body, input.body);
   });
 
-  it('leaves negated or quoted experience claims to governed text review while preserving legacy keyword checks', () => {
+  it('accepts negated or quoted experience claims in governed and legacy output', () => {
     const runtime = createPromptRuntime({ prompts: {
       TEXT_REVIEW_SYSTEM: { versionId: 27, content: '结合上下文审核事实，不把引用或否定句误判为作者的亲身经历。' },
     } });
@@ -366,27 +369,28 @@ describe('post output contract', () => {
       const parsed = withPromptRuntime(runtime, () => parsePostOutput(raw));
       assert.equal(parsed.body, input.body);
       assert.equal(parsed.fabricatedExperience, false);
-      assert.throws(
-        () => withPromptRuntime(null, () => parsePostOutput(raw)),
-        /fabricated experience is not allowed/u,
-        'the same historical payload must retain its legacy keyword validation',
-      );
+      assert.equal(withPromptRuntime(null, () => parsePostOutput(raw)).body, input.body);
     }
   });
 
-  it('requires an explicit false fabricated-experience flag even under governed rules', () => {
-    const runtime = createPromptRuntime({ prompts: {
-      TEXT_REVIEW_SYSTEM: { versionId: 28, content: '审核正文中的事实和经历，不自动豁免虚构经历。' },
-    } });
-    for (const fabricatedExperience of [true, undefined, null, 'false']) {
-      const input = { ...validPost(), fabricatedExperience };
-      assert.throws(
-        () => withPromptRuntime(runtime, () => parsePostOutput(JSON.stringify(input))),
-        /fabricated experience is not allowed/u,
-      );
+  it('preserves boolean experience markers in legacy, published-only and governed output', () => {
+    const prompts = { TEXT_REVIEW_SYSTEM: { versionId: 28, content: '按本次编辑要求审核正文。' } };
+    for (const runtime of [null, createPromptRuntime({ prompts, settings: null }), createPromptRuntime({ prompts })]) {
+      for (const fabricatedExperience of [true, false]) {
+        const input = { ...validPost(), fabricatedExperience };
+        input.body += '\n我亲测。';
+        const parsed = withPromptRuntime(runtime, () => parsePostOutput(JSON.stringify(input)));
+        assert.equal(parsed.fabricatedExperience, fabricatedExperience);
+        assert.equal(parsed.body, input.body);
+      }
+      for (const fabricatedExperience of [undefined, null, 'false']) {
+        const input = { ...validPost(), fabricatedExperience };
+        assert.throws(
+          () => withPromptRuntime(runtime, () => parsePostOutput(JSON.stringify(input))),
+          /fabricatedExperience must be a boolean/u,
+        );
+      }
     }
-    const input = validPost();
-    assert.equal(withPromptRuntime(runtime, () => parsePostOutput(JSON.stringify(input))).fabricatedExperience, false);
   });
 
   it('leaves itinerary wording to governed review without removing the legacy day-marker check', () => {

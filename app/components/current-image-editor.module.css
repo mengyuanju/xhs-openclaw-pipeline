@@ -688,7 +688,7 @@
 .settings > fieldset legend { padding: 0 7px; font-size: 12px; font-weight: 800; }
 .settings > fieldset img { border-radius: 8px; }
 
-.settings :is(input:not([type="checkbox"]):not([type="range"]):not([type="color"]):not([type="file"]), [data-slot="select-trigger"], textarea),
+.settings :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]), [data-slot="select-trigger"], textarea),
 .reasonField input,
 .reasonEditor input,
 .restorePanel [data-slot="select-trigger"] {
@@ -706,7 +706,7 @@
 }
 
 .settings textarea { min-height: 86px; resize: vertical; line-height: 1.6; }
-.settings :is(input:not([type="checkbox"]):not([type="range"]):not([type="color"]):not([type="file"]), [data-slot="select-trigger"], textarea):focus,
+.settings :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]), [data-slot="select-trigger"], textarea):focus,
 .reasonField input:focus,
 .reasonEditor input:focus,
 .restorePanel [data-slot="select-trigger"]:focus { border-color: var(--red); background: var(--surface); box-shadow: 0 0 0 3px var(--control-ring); }

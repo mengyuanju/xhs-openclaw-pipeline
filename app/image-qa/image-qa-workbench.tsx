@@ -2,6 +2,7 @@
 
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
+import { Disclosure, DisclosureContent, DisclosureTrigger } from '@/components/ui/disclosure';
 import { Checkbox, Textarea } from '@/components/ui/input';
 import { SearchInput } from '@/components/ui/search-input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -12,6 +13,7 @@ import { toast } from 'sonner';
 import { apiRequest } from '../components/api-client';
 import { ImageDiscardButton } from '../components/image-discard-button';
 import { ImageCarouselNavigation } from '../components/image-carousel-navigation';
+import { ImageManualModificationNote } from '../components/image-manual-modification-note';
 import { ImagePreview } from '../components/image-preview';
 import { createRequestId } from '../components/request-id';
 import { DEFAULT_SETTINGS, useHumanQualitySettings } from '../workbench/human-quality-settings';
@@ -328,7 +330,7 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
           <span className={qaStyles.scopeBadge}><ShieldCheck size={14} aria-hidden="true" />{role === 'ADMIN' ? '管理员完整视图' : '质检盲评视图'}</span>
         </div>
       </div>
-      {role === 'REVIEWER' && <p className={`notice ${styles.blindNotice}`}><EyeOff size={16} />质检员不能处理自己提交的图片；管理员不受自检限制。盲评开启时只显示匿名样本和成品图。</p>}
+      {role === 'REVIEWER' && <p className={`notice ${styles.blindNotice}`}><EyeOff size={16} />质检员不能处理自己提交的图片；管理员不受自检限制。盲评开启时显示匿名样本、成品图和图片审核备注。</p>}
       <div id="image-qa-results" role="tabpanel" aria-labelledby={`image-qa-${status.toLowerCase()}-tab`} className={qaStyles.queueContent}>
         {loading ? <div className={qaStyles.loadingState}><LoaderCircle className="animate-spin" size={22} /><strong>正在读取图片质检池</strong><span>正在同步最新冻结版本与质检状态…</span></div>
         : items.length === 0 ? <div className={qaStyles.emptyState}>
@@ -344,7 +346,12 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
           </div>
           : <div className={`table-wrap mobile-cards ${qaStyles.queue}`} role="region" aria-label="图片质检队列，可横向滚动" tabIndex={0}><table><thead><tr><th>质检内容</th><th>类型</th><th>状态</th><th>成品页</th><th>来源</th><th>操作</th></tr></thead>
             <tbody>{items.map((item) => <tr key={item.id}>
-              <td data-label="质检内容"><div className={qaStyles.sample}><span>{item.anonymousCode}</span><strong>{item.blindReview ? '匿名成品图集' : `${item.taskId ? `任务 #${item.taskId}` : '任务号未记录'}${item.query ? ` · ${item.query}` : ''}`}</strong></div></td>
+              <td data-label="质检内容"><div className={qaStyles.sample}><span>{item.anonymousCode}</span><strong>{item.blindReview ? '匿名成品图集' : `${item.taskId ? `任务 #${item.taskId}` : '任务号未记录'}${item.query ? ` · ${item.query}` : ''}`}</strong></div>
+                {item.manualModificationNote && <Disclosure className={qaStyles.noteDisclosure}>
+                  <DisclosureTrigger><span className={qaStyles.noteBadge}>有修图备注</span><span className={qaStyles.noteSummary}>{item.manualModificationNote}</span></DisclosureTrigger>
+                  <DisclosureContent><ImageManualModificationNote note={item.manualModificationNote} /></DisclosureContent>
+                </Disclosure>}
+              </td>
               <td data-label="类型"><span className="pill">{item.sampleKind === 'MANDATORY_RECHECK' ? '强制复检' : '随机抽检'}</span></td>
               <td data-label="状态"><span className={qaStyles.statusBadge} data-status={item.status}>{STATUS_LABELS[item.status] ?? '未知状态'}</span></td>
               <td data-label="成品页"><span className={qaStyles.imageCount}><Images size={15} aria-hidden="true" /><strong>{item.assets.length}</strong> 页</span></td>
@@ -406,8 +413,9 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
           {!detail.blindReview && <div><span>版本绑定</span><strong>{detail.copyRevisionId ? `文案 #${detail.copyRevisionId}` : '文案未记录'} · {detail.imageRunId ? `图片 ${detail.imageRunId}` : '图片未记录'}</strong></div>}
           {!detail.blindReview && detail.query && <div className={qaStyles.query}><span>原始 Query</span><p>{detail.query}</p></div>}
           {detail.blockers.pendingImageEdits > 0 && <p className="notice warning" role="status">该任务在提交初审前遗留了 {detail.blockers.pendingImageEdits} 个待处理的图片修改，当前版本不能质检通过。请打回图片，让任务负责人采用、拒绝或取消修改后重新提交初审。</p>}
-          <p className={qaStyles.reviewHint}>通过代表整套当前版本可以交付；发现问题时请选中具体问题页并填写可执行的修改要求。</p>
+          <p className={qaStyles.reviewHint}>{detail.manualModificationNote ? '请结合图片审核备注核对当前版本，并人工确认是否通过；需要返工时请选中具体问题页并填写修改要求。' : '通过代表整套当前版本可以交付；发现问题时请选中具体问题页并填写可执行的修改要求。'}</p>
           {detail.discardReason && <p className="notice warning">废弃原因：{detail.discardReason}</p>}
+          {detail.manualModificationNote && <div className={qaStyles.manualNote}><ImageManualModificationNote note={detail.manualModificationNote} /></div>}
           {!returning && detail.status === 'PENDING' && <div className={qaStyles.detailActions}>
             {detail.capabilities.canReturnSingle && <Button unstyled className="button" disabled={Boolean(action)} onClick={() => openReturn(detail, selectedAsset?.id)}><RotateCcw size={15} />发起返工</Button>}
             {detail.capabilities.canDiscard && <ImageDiscardButton target={{ samplingItemId: detail.id }} disabled={Boolean(action)}

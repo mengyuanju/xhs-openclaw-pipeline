@@ -1,8 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assertReferenceQuota } from '../src/image-editing.mjs';
+import { assertEditReferenceQuota, assertReferenceQuota } from '../src/image-editing.mjs';
 
 const MiB = 1024 * 1024;
+
+test('one edit permits exactly 40 MiB and 32 million reference pixels', () => {
+  assert.doesNotThrow(() => assertEditReferenceQuota({ bytes: 40 * MiB, pixels: 32_000_000 }));
+  assert.throws(() => assertEditReferenceQuota({ bytes: 40 * MiB + 1, pixels: 32_000_000 }),
+    /参考图总大小或像素超限/u);
+  assert.throws(() => assertEditReferenceQuota({ bytes: 40 * MiB, pixels: 32_000_001 }),
+    /参考图总大小或像素超限/u);
+});
 
 test('reference storage permits exactly 100 MiB across at most 20 distinct normalized images', () => {
   assert.doesNotThrow(() => assertReferenceQuota({ count: 19, bytes: 100 * MiB - 1 }, 1));

@@ -82,6 +82,7 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
   tasks.push(imageTask);
   const imageQaItems = [1, 2].map(i => ({ id: randomUUID(), freezePublicId: randomUUID(), anonymousCode: `IMG-QA-${i}`,
     status: 'PENDING', blindReview: i === 1, query: i === 1 ? null : '请核对这组四页收纳图片，确认标题清晰、说明完整、版式一致，并逐页标记需要修改的位置。'.repeat(3), sampleKind: 'RANDOM',
+    manualModificationNote: i === 1 ? '第 2 页右下角替换新版包装。\n第 3 页标题第二行修正错字。' : null,
     assets: [...imageTask.assets, ...imageTask.assets.map((asset, index) => ({ ...asset, id: 403 + index, url: `/v1/assets/${403 + index}` }))],
     capabilities: { canPass: i === 1, canReturnSingle: true, canReturnBatch: false, canDiscard: true }, blockers: { pendingImageEdits: i === 1 ? 0 : 1 } }));
   Object.assign(imageQaItems[1], { sampleKind: 'MANDATORY_RECHECK', previousReturn: {
@@ -520,6 +521,13 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     assert.equal(await page.getByRole('region', { name: '上次打回原因' }).count(), 0, 'first image inspections do not show prior reasons');
     const imageQaContent = page.getByRole('region', { name: '图片核对', exact: true });
     const imageQaActions = page.getByRole('complementary', { name: '图片质检操作', exact: true });
+    const workImageNote = imageQaContent.getByRole('region', { name: '图片审核备注', exact: true });
+    await workImageNote.waitFor();
+    assert.equal(await workImageNote.isVisible(), true, 'blind work-mode inspectors see the remark without expanding it');
+    assert.equal(await workImageNote.locator('p').first().textContent(), imageQaItems[0].manualModificationNote);
+    assert.equal(await workImageNote.getByText('如需手动修改图片请备注具体点位，图片质检可先通过，后续自行修改后小豆芽替换', { exact: true }).count(), 1);
+    assert.equal(requests.some(request => request.path.endsWith(imageQaItems[0].id + '/pass')), false,
+      'a note does not submit a QA decision');
     for (const width of [1360, 1280, 1152]) {
       await page.setViewportSize({ width, height: 1040 });
       assert.equal(await imageQaActions.isVisible(), false, 'image verification reserves the content area for the main image');
@@ -552,7 +560,13 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     await page.locator('.image-preview-dialog').waitFor({ state: 'detached' });
     assert.equal(await page.getByRole('button', { name: '选择待检图片第 2 页', exact: true }).getAttribute('aria-pressed'), 'true');
     await page.getByRole('button', { name: '通过并下一条', exact: true }).click();
-    await page.getByText('IMG-QA-2', { exact: true }).last().waitFor();
+    await page.getByRole('region', { name: '当前质检内容', exact: true }).getByText('IMG-QA-2', { exact: true }).waitFor();
+    const imagePass = requests.find(request => request.path.endsWith(imageQaItems[0].id + '/pass')).body;
+    assert.equal(imagePass.score, 3);
+    assert.equal(imagePass.note, '');
+    assert.equal(Object.hasOwn(imagePass, 'manualModificationNote'), false);
+    assert.equal(await imageQaContent.getByRole('region', { name: '图片审核备注', exact: true }).count(), 0,
+      'switching versions clears the prior remark');
     const imagePrior = page.getByRole('region', { name: '上次打回原因' });
     await imagePrior.getByText('文字遮挡', { exact: true }).waitFor();
     assert.match(await imagePrior.innerText(), /仅图片/u);

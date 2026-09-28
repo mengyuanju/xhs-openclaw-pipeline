@@ -18,6 +18,8 @@
     "db:upgrade": "node scripts/manage-database.mjs upgrade",
     "start": "node src/cli.mjs serve",
     "start:production": "node src/cli.mjs serve --environment=production",
+    "programmatic-worker": "node src/programmatic-image-edit-process.mjs",
+    "programmatic-worker:production": "node src/programmatic-image-edit-process.mjs --environment=production",
     "test": "node --test"
   },
   "dependencies": {

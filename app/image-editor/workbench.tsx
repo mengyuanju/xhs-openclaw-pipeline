@@ -11,7 +11,7 @@ import { ImageEditorList } from './image-editor-list';
 import { STANDALONE_IMAGE_EDITOR_LIMITS as limits } from '../../src/standalone-image-editor-config.mjs';
 import styles from './workbench.module.css';
 
-type Workspace = { status:string; id:number; title:string; runId:string; copyRevisionId:number; assets:Array<{id:number;url:string;sha256:string}>; runs:Array<{id:string;result:{processing?:{type:string}}|null}> };
+type Workspace = { status:string; operation?:string; id:number; title:string; runId:string; copyRevisionId:number; assets:Array<{id:number;url:string;sha256:string}>; runs:Array<{id:string;result:{processing?:{type:string}}|null}> };
 const url = (value:string) => `/api/control-plane${value}`;
 function encodedFile(file:File):Promise<string> {
   return new Promise((resolve,reject) => {
@@ -92,7 +92,7 @@ export function ImageEditorWorkbench() {
     </div>
     <DialogContent className={styles.dialog} overlayClassName={styles.overlay} showCloseButton={!locked} onPointerDownOutside={event => event.preventDefault()}>
       <header className={styles.dialogHeader}><DialogTitle className={styles.dialogTitle}>{workspace ? running ? '查看图片' : '编辑图片' : '新增图片'}</DialogTitle>
-        <DialogDescription className="subtle">{running ? '生图中仅支持查看，完成后可下载或修改后再次保存。' : '上传图片后设置修改内容，保存即提交生图。'}</DialogDescription></header>
+        <DialogDescription className="subtle">{running ? `${workspace?.operation==='SVG_DISCLOSURE'?'程序处理中':'生图中'}仅支持查看，完成后可下载或修改后再次保存。` : '上传图片后设置修改内容，保存即提交生图。'}</DialogDescription></header>
       <div className={styles.dialogBody}>
         <section className={styles.upload} aria-label="上传图片">
           {workspace ? <div className={styles.uploaded}><div><strong>{workspace.title}</strong><p className="subtle">已上传 {workspace.assets.length} 张图片</p></div>

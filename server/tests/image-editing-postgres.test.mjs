@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile, spawn } from 'node:child_process';
+import { execFile, fork, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp,mkdir,writeFile,readFile,rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -19,6 +19,7 @@ import { createPostgresControlPlaneRepository } from '../src/postgres-repository
 import { createControlPlaneApp } from '../src/http-server.mjs';
 import { createControlPlaneClient } from '../../src/control-plane/client.mjs';
 import { localEditAlternatives } from '../../src/local-edit-alternatives.mjs';
+import { notifyProgrammaticImageEdits } from '../src/programmatic-image-edit-supervisor.mjs';
 
 test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry, restoration and delivery revocation', {skip:process.env.RUN_POSTGRES_E2E!=='1',timeout:120000},async t=>{
   const root=await mkdtemp(join(tmpdir(),'xhs-image-edit-pg-')),data=join(root,'data');
@@ -26,7 +27,7 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
   const exe=name=>join(bin,name+(process.platform==='win32'?'.exe':''));
   const ctl=args=>new Promise((res,rej)=>{const p=spawn(exe('pg_ctl'),args,{shell:false,windowsHide:true,stdio:'ignore'});p.on('error',rej);p.on('exit',code=>code===0?res():rej(new Error(`pg_ctl ${code}`)));});
   const probe=createServer();await new Promise(r=>probe.listen(0,'127.0.0.1',r));const port=probe.address().port;await new Promise(r=>probe.close(r));
-  let pool,started=false,adminPool,isolatedDatabase;
+  let pool,started=false,adminPool,isolatedDatabase,testConnectionString;
   const maintenanceUrl=process.env.IMAGE_EDIT_TEST_DATABASE_URL;
   try{
     if(maintenanceUrl) {
@@ -34,11 +35,13 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       adminPool=new pg.Pool({connectionString:url.href});
       isolatedDatabase='image_edit_test_'+randomUUID().replaceAll('-','');
       await adminPool.query(`CREATE DATABASE ${isolatedDatabase}`);
-      url.pathname='/'+isolatedDatabase;pool=new pg.Pool({connectionString:url.href});
+      url.pathname='/'+isolatedDatabase;testConnectionString=url.href;
+      pool=new pg.Pool({connectionString:testConnectionString});
     } else {
     await promisify(execFile)(exe('initdb'),['-D',data,'-A','trust','-U','postgres','--encoding=UTF8','--locale=C','--no-sync'],{windowsHide:true,timeout:60000});
     await ctl(['-D',data,'-l',join(root,'postgres.log'),'-o',`-h 127.0.0.1 -p ${port}`,'-w','start']);started=true;
-    pool=new pg.Pool({connectionString:`postgresql://postgres@127.0.0.1:${port}/postgres`});
+    testConnectionString=`postgresql://postgres@127.0.0.1:${port}/postgres`;
+    pool=new pg.Pool({connectionString:testConnectionString});
     }
     await migrateDatabase(pool);
     const imageEditPromptContent='管理员图片编辑规则：{{reviewInstruction}}；保留所有未要求修改的内容。';
@@ -287,15 +290,252 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       assert.equal(queued.status,'QUEUED');assert.equal(queued.config.confirmation,'LIVE_IMAGE_COST_ACCEPTED');
       await action(draft.id,'cancel');
     });
-    await t.test('programmatic disclosure skips cost confirmation and waits for a version 8 image executor',async()=>{
+    await t.test('programmatic disclosure bypasses image executors and preserves late cancellation fencing',async()=>{
       const programmatic=await service.create(taskId,request({operation:'SVG_DISCLOSURE',confirmation:undefined}),actor);
       assert.equal(programmatic.status,'QUEUED');assert.equal(programmatic.config.confirmation,null);
       assert.equal(programmatic.config.imageEditPrompt,undefined);
+      assert.equal(programmatic.config.overlay.badgeVariant,'outline-pill');
       assert.equal(await repository.claimImage('edit-test',1,2,7),null);
-      const claim=await repository.claimImage('edit-test',1,2,8);
-      assert.equal(claim.imageEdit.id,programmatic.id);
-      assert.equal(claim.execution.snapshot.imageEditExecutorVersion,8);
+      assert.equal(await repository.claimImage('edit-test',1,2,13),null);
+      const claim=await service.claimProgrammatic('center-test');
+      assert.equal(claim.id,programmatic.id);
+      assert.equal(claim.execution_id,null);
+      assert.equal(claim.attempts,1);
       await action(programmatic.id,'cancel');
+      assert.equal(await service.heartbeat(claim),false);
+      await assert.rejects(()=>service.complete(claim,{bytes:disclosurePng,validation:{passed:true,
+        integrity:{sha256:imageHash(disclosurePng)}}}),{code:'IMAGE_EDIT_CONFLICT'});
+      assert.equal((await pool.query('SELECT count(*)::integer AS count FROM image_edit_results WHERE request_id=$1',
+        [programmatic.id])).rows[0].count,0);
+    });
+    await t.test('programmatic claims share two slots across centers while model capacity is full',async()=>{
+      const modelEdit=await service.create(taskId,request(),actor);
+      const modelClaim=await repository.claimImage('edit-test',1,2,13);
+      assert.equal(modelClaim.imageEdit.id,modelEdit.id);
+      const edits=await Promise.all([1,2,3].map(()=>service.create(taskId,
+        request({operation:'SVG_DISCLOSURE',confirmation:undefined}),actor)));
+      const secondCenter=createImageEditingService({pool,storageRoot:root});
+      try {
+        const claims=await Promise.all([
+          service.claimProgrammatic('center-one'),secondCenter.claimProgrammatic('center-two'),
+          secondCenter.claimProgrammatic('center-three'),
+        ]);
+        assert.equal(claims.filter(Boolean).length,2);
+        assert.equal(new Set(claims.filter(Boolean).map(edit=>edit.id)).size,2);
+        assert.ok(claims.filter(Boolean).every(edit=>edit.execution_id===null&&edit.attempts===1));
+        assert.equal(await repository.claimImage('edit-test',1,2,13),null);
+        assert.equal((await pool.query("SELECT count(*)::integer AS count FROM task_executions WHERE status='RUNNING' AND kind='IMAGE'")).rows[0].count,1);
+        assert.equal(await service.claimProgrammatic('center-one'),null);
+        const firstClaim=claims.find(Boolean);
+        await service.complete(firstClaim,{bytes:disclosurePng,validation:{passed:true,
+          integrity:{sha256:imageHash(disclosurePng)}}});
+        const next=await secondCenter.claimProgrammatic('center-two');
+        assert.ok(next&&edits.some(edit=>edit.id===next.id));
+        assert.equal((await service.get(firstClaim.id)).status,'PREVIEW_READY');
+        assert.equal((await pool.query('SELECT current_image_run_id FROM tasks WHERE id=$1',[taskId])).rows[0].current_image_run_id,currentRun);
+        const audit=(await service.get(firstClaim.id)).events.find(event=>event.action==='EXECUTE');
+        assert.equal(audit.detail.executionChannel,'PROGRAMMATIC');
+        assert.equal(audit.detail.maxConcurrency,2);
+      } finally {
+        for(const edit of edits)await action(edit.id,'cancel');
+        await action(modelEdit.id,'cancel');
+      }
+    });
+    await t.test('programmatic queue bypasses an earlier queued model edit, honors pause and fences duplicate ID claims',async()=>{
+      const olderModel=await service.create(taskId,request(),actor);
+      const svg=await service.create(taskId,request({operation:'SVG_DISCLOSURE',confirmation:undefined}),actor);
+      try {
+        await pool.query("UPDATE tasks SET priority_mode='PAUSE' WHERE id=$1",[taskId]);
+        assert.equal(await service.claimProgrammatic('center-pause',{editId:svg.id}),null);
+        await pool.query("UPDATE tasks SET priority_mode='SYSTEM' WHERE id=$1",[taskId]);
+        const claims=await Promise.all([service.claimProgrammatic('center-id-one',{editId:svg.id}),
+          service.claimProgrammatic('center-id-two',{editId:svg.id})]);
+        assert.equal(claims.filter(Boolean).length,1);
+        assert.equal(claims.find(Boolean).id,svg.id);
+        assert.equal((await service.get(olderModel.id)).status,'QUEUED');
+        assert.equal(await service.claimProgrammatic('center-model',{editId:olderModel.id}),null);
+      } finally {
+        await pool.query("UPDATE tasks SET priority_mode='SYSTEM' WHERE id=$1",[taskId]);
+        await action(svg.id,'cancel');await action(olderModel.id,'cancel');
+      }
+    });
+    await t.test('programmatic recovery affects only expired local SVG leases and retry stops after three attempts',async()=>{
+      const local=await service.create(taskId,request({operation:'SVG_DISCLOSURE',confirmation:undefined}),actor);
+      const model=await service.create(taskId,request(),actor);
+      const modelClaim=await repository.claimImage('edit-test',1,2,13);
+      const legacy=await service.create(taskId,request({operation:'SVG_DISCLOSURE',confirmation:undefined}),actor);
+      try {
+        const legacyExecutionId=randomUUID();
+        await pool.query(`INSERT INTO task_executions(id,task_id,kind,node_id,stage,progress_message,snapshot)
+          VALUES($1,$2,'IMAGE','edit-test','IMAGE_EDIT','historical programmatic claim',$3)`,
+        [legacyExecutionId,taskId,{imageEditRequestId:legacy.id,imageEditExecutorVersion:8}]);
+        await pool.query(`UPDATE image_edit_requests SET status='RUNNING',attempts=1,execution_id=$2,
+          lease_token=$3,lease_expires_at=now()-interval '1 minute' WHERE id=$1`,
+        [legacy.id,legacyExecutionId,randomUUID()]);
+        await pool.query("UPDATE image_edit_requests SET lease_expires_at=now()-interval '1 minute' WHERE id=$1",[model.id]);
+        for(let attempt=1;attempt<=3;attempt++) {
+          const claim=await service.claimProgrammatic('center-recovery',{editId:local.id});
+          assert.equal(claim.attempts,attempt);
+          await pool.query("UPDATE image_edit_requests SET lease_expires_at=now()-interval '1 minute' WHERE id=$1",[local.id]);
+          assert.deepEqual(await service.recoverProgrammatic(),{recovered:1});
+          assert.deepEqual(await service.recoverProgrammatic(),{recovered:0});
+          assert.equal((await service.get(local.id)).status,'FAILED');
+          if(attempt<3)await action(local.id,'retry');
+        }
+        await assert.rejects(()=>action(local.id,'retry'),/三次/u);
+        assert.equal((await service.get(model.id)).status,'RUNNING');
+        assert.equal((await service.get(legacy.id)).status,'RUNNING');
+        assert.equal((await pool.query('SELECT status FROM task_executions WHERE id=$1',[modelClaim.execution.id])).rows[0].status,'RUNNING');
+      } finally {
+        await action(local.id,'cancel');await action(legacy.id,'cancel');await action(model.id,'cancel');
+      }
+    });
+    await t.test('programmatic wakeups happen after commit and cover create, batches, draft queue and retry',async()=>{
+      const notices=[];
+      const notifying=createImageEditingService({pool,storageRoot:root,onProgrammaticReady:async ids=>{
+        const rows=(await pool.query('SELECT id,operation,status FROM image_edit_requests WHERE id=ANY($1::uuid[])',[ids])).rows;
+        assert.equal(rows.length,ids.length,'callback must see committed rows from another connection');
+        assert.ok(rows.every(row=>row.operation==='SVG_DISCLOSURE'&&row.status==='QUEUED'));
+        notices.push(ids);
+      }});
+      const created=[];
+      try {
+        const svgInput=request({operation:'SVG_DISCLOSURE',confirmation:undefined});
+        const svg=await notifying.create(taskId,svgInput,actor);created.push(svg);
+        assert.deepEqual(notices,[[svg.id]]);
+        await pool.query("UPDATE image_edit_requests SET config=config #- '{overlay,badgeVariant}' WHERE id=$1",[svg.id]);
+        assert.equal((await notifying.create(taskId,svgInput,actor)).id,svg.id,'old outline requests replay without mismatch');
+        await assert.rejects(()=>notifying.create(taskId,{...svgInput,overlay:{...svgInput.overlay,badgeVariant:'solid-pill'}},actor),{code:'IMAGE_EDIT_CONFLICT'});
+        assert.equal(notices.length,2);
+        const draft=await notifying.create(taskId,request({operation:'SVG_DISCLOSURE',confirmation:undefined,draft:true}),actor);
+        created.push(draft);assert.equal(notices.length,2);
+        const queueInput={version:draft.version,requestId:randomUUID(),reason:'queue draft'};
+        const queued=await notifying.action(draft.id,'queue',queueInput,actor);
+        assert.deepEqual(notices.at(-1),[draft.id]);
+        const claim=await notifying.claimProgrammatic('center-notify',{editId:queued.id});
+        await notifying.fail(claim,new Error('fake programmatic failure'));
+        const failed=await notifying.get(claim.id);
+        await notifying.action(failed.id,'retry',{version:failed.version,requestId:randomUUID(),reason:'retry'},actor);
+        assert.deepEqual(notices.at(-1),[draft.id]);
+        const batchId=randomUUID(),noticeCount=notices.length;
+        const batchInputs=[1,3].map(page=>request({operation:'SVG_DISCLOSURE',confirmation:undefined,batchId,batchSize:2,
+          targetPage:page,sourceAssetId:images[page-1].assetId}));
+        await assert.rejects(()=>notifying.createBatch(taskId,{edits:[batchInputs[0],{...batchInputs[1],sha256:'b'.repeat(64)}]},actor),{code:'IMAGE_EDIT_CONFLICT'});
+        assert.equal(notices.length,noticeCount,'rolled-back batch must not wake the runner');
+        const batch=await notifying.createBatch(taskId,{edits:batchInputs},actor);created.push(...batch);
+        assert.deepEqual(notices.at(-1),batch.map(edit=>edit.id));
+        const throwing=createImageEditingService({pool,storageRoot:root,onProgrammaticReady:()=>{throw new Error('IPC unavailable');}});
+        const saved=await throwing.create(taskId,request({operation:'SVG_DISCLOSURE',confirmation:undefined}),actor);created.push(saved);
+        assert.equal((await service.get(saved.id)).status,'QUEUED');
+      } finally {for(const edit of created)await action(edit.id,'cancel');}
+    });
+    await t.test('custom programmatic colors persist across idempotent replay, draft queue, retry and atomic batches',async()=>{
+      const created=[];
+      try {
+        const customInput=request({operation:'SVG_DISCLOSURE',confirmation:undefined,draft:true,
+          overlay:{text:'AI生成',badgeVariant:'outline-pill',badgeColor:'#2a6b8c'}});
+        const draft=await service.create(taskId,customInput,actor);created.push(draft);
+        assert.equal(draft.config.overlay.badgeColor,'#2A6B8C');
+        assert.equal((await service.create(taskId,{...customInput,
+          overlay:{...customInput.overlay,badgeColor:'#2A6B8C'}},actor)).id,draft.id);
+        await assert.rejects(()=>service.create(taskId,{...customInput,
+          overlay:{...customInput.overlay,badgeColor:'#2A6B8D'}},actor),{code:'IMAGE_EDIT_CONFLICT'});
+        await action(draft.id,'queue');
+        const claim=await service.claimProgrammatic('center-custom-color',{editId:draft.id});
+        assert.equal(claim.config.overlay.badgeColor,'#2A6B8C');
+        await service.fail(claim,new Error('fake custom badge failure'));
+        await action(draft.id,'retry');
+        assert.equal((await service.get(draft.id)).config.overlay.badgeColor,'#2A6B8C');
+        const batchId=randomUUID();
+        const batchInputs=[1,3].map(page=>request({operation:'SVG_DISCLOSURE',confirmation:undefined,
+          batchId,batchSize:2,targetPage:page,sourceAssetId:images[page-1].assetId,
+          overlay:{text:'AI生成',badgeVariant:'solid-pill',badgeColor:page===1?'#fAe2Bd':'#FAE2BD'}}));
+        await assert.rejects(()=>service.createBatch(taskId,{edits:[batchInputs[0],{...batchInputs[1],
+          overlay:{...batchInputs[1].overlay,badgeColor:'#112233'}}]},actor),/必须一致/u);
+        assert.equal((await pool.query('SELECT count(*)::integer AS count FROM image_edit_requests WHERE request_id=ANY($1::uuid[])',
+          [batchInputs.map(input=>input.requestId)])).rows[0].count,0);
+        const batch=await service.createBatch(taskId,{edits:batchInputs},actor);created.push(...batch);
+        assert.ok(batch.every(edit=>edit.config.overlay.badgeColor==='#FAE2BD'));
+      } finally {for(const edit of created)await action(edit.id,'cancel');}
+    });
+    await t.test('a real isolated programmatic child consumes automatic outline and custom solid edits without model executions',async()=>{
+      const counts=async()=>({
+        modelCalls:(await pool.query('SELECT count(*)::integer AS count FROM model_call_traces')).rows[0].count,
+        executions:(await pool.query('SELECT count(*)::integer AS count FROM task_executions')).rows[0].count,
+      });
+      const before=await counts(),created=[];
+      const existing=await service.create(taskId,request({operation:'SVG_DISCLOSURE',confirmation:undefined,
+        overlay:{text:'AI生成',badgeVariant:'outline-pill'}}),actor);created.push(existing);
+      const child=fork(new URL('../src/programmatic-image-edit-process.mjs',import.meta.url),[],{
+        silent:true,windowsHide:true,shell:false,execArgv:[],
+        // IPC children bypass profile loading. Only this isolated database and
+        // temporary storage are passed; model credentials and production env
+        // files are never inherited by the integration fixture.
+        env:{DATABASE_URL:testConnectionString,CONTROL_PLANE_STORAGE_ROOT:root,
+          PROGRAMMATIC_IMAGE_CONCURRENCY:'2',SystemRoot:process.env.SystemRoot??'',
+          WINDIR:process.env.WINDIR??'',TEMP:root,TMP:root},
+      });
+      let childError=null,stderr='';
+      child.on('error',error=>{childError=error;});
+      child.stdout.on('data',()=>{});
+      child.stderr.on('data',data=>{stderr+=data.toString();});
+      const waitPreview=async edit=>{
+        const deadline=Date.now()+15_000;
+        while(Date.now()<deadline) {
+          if(childError)throw childError;
+          const current=await service.get(edit.id);
+          if(current.status==='PREVIEW_READY')return current;
+          assert.equal(current.status==='FAILED',false,current.error??stderr);
+          assert.equal(child.exitCode,null,stderr);
+          await new Promise(resolve=>setTimeout(resolve,50));
+        }
+        assert.fail(`programmatic preview timed out: ${stderr}`);
+      };
+      try {
+        const ready=await new Promise((resolve,reject)=>{
+          const timeout=setTimeout(()=>reject(new Error('programmatic child startup timed out')),15_000);
+          child.once('error',error=>{clearTimeout(timeout);reject(error);});
+          child.once('exit',code=>{clearTimeout(timeout);reject(new Error(`programmatic child exited ${code}: ${stderr}`));});
+          child.once('message',message=>{clearTimeout(timeout);resolve(message);});
+        });
+        assert.deepEqual(ready,{type:'ready',concurrency:2,sharpThreads:1});
+        const outline=await waitPreview(existing);
+        assert.equal(outline.validation.renderer.style.variant,'outline-pill');
+        assert.equal(Object.hasOwn(outline.config.overlay,'badgeColor'),false);
+        assert.notEqual(outline.validation.renderer.style.colorSource,'USER_SELECTED');
+        const notifying=createImageEditingService({pool,storageRoot:root,
+          onProgrammaticReady:ids=>notifyProgrammaticImageEdits(pool,ids)});
+        const solidEdit=await notifying.create(taskId,request({operation:'SVG_DISCLOSURE',confirmation:undefined,
+          overlay:{text:'AI生成',badgeVariant:'solid-pill',badgeColor:'#fAe2Bd'}}),actor);created.push(solidEdit);
+        const solid=await waitPreview(solidEdit);
+        assert.equal(solid.validation.renderer.style.variant,'solid-pill');
+        assert.equal(solid.config.overlay.badgeColor,'#FAE2BD');
+        assert.equal(solid.validation.renderer.style.colorSource,'USER_SELECTED');
+        assert.equal(solid.validation.renderer.style.colorRole,'custom');
+        assert.equal(solid.validation.renderer.style.backgroundColor,'#FAE2BD');
+        assert.equal(solid.validation.renderer.style.borderColor,'#FAE2BD');
+        assert.equal(solid.validation.renderer.style.textColor,'#000000');
+        assert.ok(solid.validation.renderer.style.contrastRatio>=4.5);
+        for(const edit of [outline,solid]) {
+          assert.equal(edit.execution_id,null);
+          assert.equal(edit.validation.billedImageGeneration,false);
+          assert.equal(edit.validation.generationAttempts,0);
+          assert.equal(edit.validation.model,null);
+          assert.equal(edit.validation.outsideMask.passed,true);
+          const asset=await service.asset(Number(edit.result.asset_id),taskId);
+          assert.equal(imageHash(await readFile(asset.storage_path)),edit.validation.integrity.sha256);
+        }
+        assert.deepEqual(await counts(),before);
+        assert.equal((await pool.query('SELECT current_image_run_id FROM tasks WHERE id=$1',[taskId])).rows[0].current_image_run_id,currentRun);
+      } finally {
+        if(child.exitCode==null&&child.signalCode==null)await new Promise(resolve=>{
+          const timeout=setTimeout(()=>child.kill(),5000);
+          child.once('exit',()=>{clearTimeout(timeout);resolve();});
+          if(child.connected)child.send({type:'stop'},error=>{if(error)child.kill();});
+          else child.kill();
+        });
+        for(const edit of created)await action(edit.id,'cancel');
+      }
     });
     let first;
     await t.test('create is idempotent and preserves an existing delivery while blocking new approval with pending edits',async()=>{

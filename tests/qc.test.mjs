@@ -121,6 +121,51 @@ describe('delivery quality checks', () => {
     }
   });
 
+  it('keeps fabricated-experience metadata advisory without lowering scores or weakening fact checks', async () => {
+    const outputDir = await mkdtemp(join(tmpdir(), 'xhs-qc-experience-'));
+    try {
+      const images = [
+        { file: '01.png', provider: 'openclaw', alignment: { passed: true, failureClass: 'PASS' } },
+        { file: '02.png', provider: 'openclaw-image-edit', alignment: { passed: true, failureClass: 'PASS' } },
+        { file: '03.png', provider: 'openclaw-image-edit', alignment: { passed: true, failureClass: 'PASS' } },
+      ];
+      await Promise.all([
+        writePng(join(outputDir, '01.png'), '#ff0000'),
+        writePng(join(outputDir, '02.png'), '#00ff00'),
+        writePng(join(outputDir, '03.png'), '#0000ff'),
+      ]);
+
+      for (const rubricAssessment of [null, completeRubricAssessment(3)]) {
+        const qc = await evaluateDelivery({
+          post: post({ fabricatedExperience: true }),
+          images, outputDir, mode: 'live', rubricAssessment,
+        });
+        const experienceCheck = qc.checks.find(({ id }) => id === 'fabricated_experience');
+        assert.equal(experienceCheck.passed, false);
+        assert.equal(experienceCheck.blocking, false);
+        assert.deepEqual(experienceCheck.observed, { fabricatedExperience: true });
+        assert.equal(qc.disposition, 'manual_review_required');
+        assert.equal(qc.overallScore, rubricAssessment ? 3 : 2);
+        assert.equal(qc.rubric.dimensions.noteTone.score, rubricAssessment ? 3 : 2);
+      }
+
+      for (const overrides of [
+        { riskAssessments: [{ severity: 'BLOCKING', status: 'UNRESOLVED', message: '存在未处理的隐私信息', mitigation: '' }] },
+        { unverifiedClaims: ['价格尚未核实'] },
+      ]) {
+        const qc = await evaluateDelivery({
+          post: post({ fabricatedExperience: true, ...overrides }),
+          images, outputDir, mode: 'live', rubricAssessment: completeRubricAssessment(3),
+        });
+        assert.equal(qc.disposition, 'blocked');
+        assert.equal(qc.overallScore, 1);
+        assert.equal(qc.checks.find(({ id }) => id === (overrides.riskAssessments ? 'risk_flags' : 'unverified_claims')).passed, false);
+      }
+    } finally {
+      await rm(outputDir, { recursive: true, force: true });
+    }
+  });
+
   it('treats the 400–600 character target as advisory rather than a hard failure', async () => {
     const outputDir = await mkdtemp(join(tmpdir(), 'xhs-qc-'));
     try {

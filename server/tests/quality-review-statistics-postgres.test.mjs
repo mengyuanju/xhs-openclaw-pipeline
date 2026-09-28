@@ -214,7 +214,7 @@ test('copy QA v2 pending items share the reviewer queue without duplicating lega
 
     const range={startMs:Date.parse('2020-01-01T00:00:00Z'),endMs:Date.parse('2100-01-01T00:00:00Z')};
     const facts=await readQaFacts(db,{range,accountId:reviewer.userId,stage:'COPY',batchId:batchA});
-    assert.equal(facts.length,4,'new, mandatory, paused, and legacy-only items appear once each');
+    assert.equal(facts.length,5,'new, mandatory, paused, own v2, and legacy-only items appear once each');
     assert.equal(facts.filter(row=>row.taskId===ordinary.taskId).length,1,'the imported legacy item is not counted twice');
     const v2=facts.find(row=>row.taskId===ordinary.taskId);
     assert.equal(v2.id,`qa-pending:COPY:v2:${ordinaryMember.id}`);
@@ -225,15 +225,19 @@ test('copy QA v2 pending items share the reviewer queue without duplicating lega
     assert.equal(v2.batchId,batchA,'production batch filtering remains independent of the QA batch');
     assert.equal(facts.find(row=>row.taskId===mandatory.taskId).sampleKind,'MANDATORY_RECHECK');
     assert.equal(facts.find(row=>row.taskId===paused.taskId).blocked,true);
+    assert.equal(facts.find(row=>row.taskId===self.taskId).blocked,false,
+      'a reviewer can inspect their own copy QA v2 items');
     assert.equal(facts.find(row=>row.taskId===legacyOnly.taskId).qaBatchId,null);
-    assert.equal((await readQaFacts(db,{range,accountId:reviewer.userId,stage:'COPY'})).length,5);
+    assert.equal((await readQaFacts(db,{range,accountId:reviewer.userId,stage:'COPY'})).length,6);
     assert.equal((await readQaFacts(db,{range,accountId:denied.userId,stage:'COPY'})).length,0);
-    assert.equal((await readQaFacts(db,{range,accountId:maker.userId,stage:'COPY',batchId:batchA})).length,1,
-      'a reviewer cannot inspect their own submitted items');
+    const makerFacts=await readQaFacts(db,{range,accountId:maker.userId,stage:'COPY',batchId:batchA});
+    assert.equal(makerFacts.length,4,'copy-enabled users can inspect their own v2 items');
+    assert.equal(makerFacts.some(row=>row.taskId===legacyOnly.taskId),false,
+      'legacy copy items still exclude their own submitter');
     assert.equal((await readQaFacts(db,{range,accountId:admin.userId,stage:'COPY',batchId:batchA})).length,5);
 
     const receipt=await repository.personalQualityActivity(reviewer,{metric:'qaPending',stage:'COPY'});
-    assert.equal(receipt.total,4,'paused work appears in the blocked metric instead');
+    assert.equal(receipt.total,5,'own v2 work is included while paused work appears in the blocked metric instead');
     assert.equal((await repository.personalQualityActivity(reviewer,{metric:'qaBlocked',stage:'COPY'})).total,1);
     const anonymous=receipt.items.find(row=>row.id===v2.id);
     assert.ok(anonymous);

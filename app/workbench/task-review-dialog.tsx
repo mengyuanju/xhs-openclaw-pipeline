@@ -36,6 +36,12 @@ import { ModelCallTrace } from './model-call-trace';
 import { IMAGE_RETRY_EXHAUSTED_LABEL, imageFailureDisplayReason, isImageRetryExhausted } from '../../src/control-plane/image-retry-status.mjs';
 import { ImagePreview } from '../components/image-preview';
 import { ImagePreviewPreference } from '../components/image-preview-preference';
+import { imageApprovalNoteForVersion, type ImageApprovalEvent } from '../components/image-approval-note.mjs';
+import {
+  ImageManualModificationNote,
+  IMAGE_MANUAL_MODIFICATION_NOTE_GUIDANCE,
+  IMAGE_MANUAL_MODIFICATION_NOTE_MAX_LENGTH,
+} from '../components/image-manual-modification-note';
 import { ImageSettingsEditor, PageLayoutEditor, defaultImageSettings, type ImageSettings, type PageLayout } from '../components/image-controls';
 import { ImageHistoryCompare, type ImageArtifactInfo } from '../components/image-history-compare';
 import { CurrentImageEditor } from '../components/current-image-editor';
@@ -205,6 +211,7 @@ type TaskDetail = PriorityTask & {
   }>;
   xiaohongshuSearchStatus?: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'BLOCKED' | 'FAILED' | 'CANCELLED' | null;
   imageDiscardEvents?: { note: string; actorUsername: string; createdAt: string }[];
+  imageApprovalEvents?: ImageApprovalEvent[];
   copyDiscardEvents?: { source: 'COPY_QA' | 'COPY_QA_RETURN'; reasonCode: string; note: string; actorUsername: string; createdAt: string }[];
   imageQaReturn?: ReworkRequirement | null;
   xiaohongshuSearchBlockedReason?: 'LOGIN_REQUIRED' | 'CAPTCHA_REQUIRED' | null;
@@ -760,6 +767,12 @@ export function TaskReviewDialog({
   const [imageReasons, setImageReasons] = useState<string[]>([]);
   const [imageProblemAssetIds, setImageProblemAssetIds] = useState<number[]>([]);
   const [imageReviewNote, setImageReviewNote] = useState('');
+  const [imageManualModificationNote, setImageManualModificationNote] = useState('');
+  const [previousImageManualModificationNote, setPreviousImageManualModificationNote] = useState<string | null>(null);
+  const previousImageManualNoteRef = useRef<string | null>(null);
+  const imageManualNoteDraftRef = useRef<{
+    taskId: number; imageRunId: string | null; copyRevisionId: number | null; note: string;
+  } | null>(null);
   const [imageReworkTarget, setImageReworkTarget] = useState<'COPY' | 'IMAGE' | 'BOTH'>('IMAGE');
   const [imageReworkCopyFields, setImageReworkCopyFields] = useState<Array<'TITLE' | 'BODY' | 'TAGS'>>([]);
   const [invalidField, setInvalidField] = useState<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null>(null);
@@ -856,6 +869,22 @@ export function TaskReviewDialog({
       setImageReasons(imageAssessment?.reasonCodes ?? []);
       setImageProblemAssetIds(imageAssessment?.problemAssetIds ?? []);
       setImageReviewNote(imageAssessment?.note ?? '');
+      const previousImageNote = imageManualNoteDraftRef.current;
+      const sameImageNoteVersion = previousImageNote?.taskId === next.id
+        && previousImageNote.imageRunId === next.currentImageRunId
+        && previousImageNote.copyRevisionId === next.currentCopyRevisionId;
+      if (previousImageNote?.taskId === next.id && !sameImageNoteVersion && previousImageNote.note.trim()
+          && previousImageNote.note.trim() !== imageApprovalNoteForVersion(next.imageApprovalEvents,
+            previousImageNote.imageRunId, previousImageNote.copyRevisionId)) {
+        previousImageManualNoteRef.current = previousImageNote.note;
+        setPreviousImageManualModificationNote(previousImageNote.note);
+      }
+      const imageNote = sameImageNoteVersion
+        ? previousImageNote.note
+        : imageApprovalNoteForVersion(next.imageApprovalEvents, next.currentImageRunId, next.currentCopyRevisionId) ?? '';
+      imageManualNoteDraftRef.current = { taskId: next.id, imageRunId: next.currentImageRunId,
+        copyRevisionId: next.currentCopyRevisionId, note: imageNote };
+      setImageManualModificationNote(imageNote);
       setImageReworkCopyFields((imageAssessment?.reworkDetails?.copyFields ?? []).filter(
         (field): field is 'TITLE' | 'BODY' | 'TAGS' => ['TITLE', 'BODY', 'TAGS'].includes(field),
       ));
@@ -900,6 +929,10 @@ export function TaskReviewDialog({
     setImageReasons([]);
     setImageProblemAssetIds([]);
     setImageReviewNote('');
+    setImageManualModificationNote('');
+    setPreviousImageManualModificationNote(null);
+    previousImageManualNoteRef.current = null;
+    imageManualNoteDraftRef.current = null;
     setImageReworkTarget('IMAGE');
     setImageReworkCopyFields([]);
     setCopyEditNotice(null);
@@ -988,8 +1021,14 @@ export function TaskReviewDialog({
   const imageWorkMode = embedded && isImageReviewView;
   const canHandleAssignedImages = (isAdmin || role === 'USER') && currentUserIsAssignee;
   const canDiscardImages = isImageReviewView && canHandleAssignedImages && Boolean(detail?.currentImageRunId);
-  const canSubmitImageSelfReview = detail?.state === 'MANUAL_ARCHIVE'
-    && canHandleAssignedImages && Boolean(detail.currentImageRunId);
+  const canSubmitImageSelfReview = isImageReviewView
+    && canHandleAssignedImages && Boolean(detail?.currentImageRunId);
+  const canEditImageManualNote = isImageReviewView && canHandleAssignedImages;
+  const savedImageManualModificationNote = detail
+    ? imageApprovalNoteForVersion(detail.imageApprovalEvents, detail.currentImageRunId, detail.currentCopyRevisionId) : null;
+  const imageManualNoteChanged = canEditImageManualNote
+    && (imageManualModificationNote !== (savedImageManualModificationNote ?? '')
+      || previousImageManualModificationNote !== null);
   // Scored pass/return decisions moved to the dedicated image-QA pool.
   const canReviewImages = false;
   const downloadable = isAdmin && detail?.state === 'REVIEWED' && detail.deliveryStatus === 'READY';
@@ -1032,7 +1071,7 @@ export function TaskReviewDialog({
     || imageReviewNote !== (savedImageAssessment?.note ?? ''));
   const hasUnsavedChanges = editable
     ? draftChanged || aiDisclosureEnabled || copyRatingChanged
-    : imagePlanChanged || imageConfigurationChanged || imageRatingChanged;
+    : imagePlanChanged || imageConfigurationChanged || imageRatingChanged || imageManualNoteChanged;
   const copyReviewDraftContent = useMemo<CopyReviewDraftContent | null>(() => draft ? ({
     version: 1,
     draft,
@@ -1137,14 +1176,14 @@ export function TaskReviewDialog({
   }, [copyEditBlockMessage, planEditBlockMessage, taskId]);
 
   useEffect(() => {
-    if (!hasUnpersistedDraftChanges && draftSaveStatus !== 'saving') return;
+    if (!hasUnpersistedDraftChanges && !imageManualNoteChanged && draftSaveStatus !== 'saving') return;
     const warnBeforeUnload = (event: BeforeUnloadEvent) => {
       event.preventDefault();
       event.returnValue = '';
     };
     window.addEventListener('beforeunload', warnBeforeUnload);
     return () => window.removeEventListener('beforeunload', warnBeforeUnload);
-  }, [draftSaveStatus, hasUnpersistedDraftChanges]);
+  }, [draftSaveStatus, hasUnpersistedDraftChanges, imageManualNoteChanged]);
 
   useEffect(() => {
     if (!editable || !draftHydrated || !copyReviewDraftContent || !currentDraftFingerprint
@@ -1182,6 +1221,9 @@ export function TaskReviewDialog({
     if (!navigationGuardRef) return;
     navigationGuardRef.current = async () => {
       if (loading || submitting || submittingImagePlan || draftSaveStatus === 'saving') return false;
+      if (imageManualNoteChanged) return confirm({ title: '离开当前图片作业？',
+        description: '图片审核备注尚未提交，离开会丢失填写的内容。',
+        confirmLabel: '放弃备注并离开', cancelLabel: '继续填写' });
       if (hasUnpersistedDraftChanges && copyReviewDraftContent && currentDraftFingerprint) {
         const saved = Boolean(await persistCopyReviewDraft(copyReviewDraftContent, currentDraftFingerprint));
         if (!saved) toast.error('草稿保存失败，已保留当前作业，请保存成功后再切换。');
@@ -1193,10 +1235,15 @@ export function TaskReviewDialog({
     };
     return () => { navigationGuardRef.current = null; };
   }, [navigationGuardRef, loading, submitting, submittingImagePlan, draftSaveStatus, hasUnpersistedDraftChanges,
-    copyReviewDraftContent, currentDraftFingerprint, persistCopyReviewDraft, editable, draftChanged, confirm]);
+    copyReviewDraftContent, currentDraftFingerprint, persistCopyReviewDraft, editable, draftChanged, imageManualNoteChanged, confirm]);
 
   async function discardChanges(action: 'close' | 'refresh') {
     if (submitting || submittingImagePlan || draftSaveStatus === 'saving' || (action === 'refresh' && (loading || regeneratingImagePlan))) return;
+    if (imageManualNoteChanged && !await confirm({
+      title: action === 'close' ? '图片审核备注未提交，仍要关闭？' : '图片审核备注未提交，仍要刷新？',
+      description: '备注会随图片初审提交保存，继续操作会丢失当前填写的内容。',
+      confirmLabel: action === 'close' ? '放弃并关闭' : '放弃并刷新', cancelLabel: '继续填写',
+    })) return;
     if (hasUnpersistedDraftChanges && !await confirm({
       title: action === 'close' ? '未保存草稿，仍要关闭？' : '未保存草稿，仍要刷新？',
       description: '最近的修改还没有写入此浏览器的草稿数据库，继续操作会丢失这一小段内容。',
@@ -1207,7 +1254,12 @@ export function TaskReviewDialog({
       if (regeneratingImagePlan) toast.info('文案规划正在后台处理，可以关闭窗口。完成或失败后会在“后台任务”中提醒。');
       onOpenChange(false);
     }
-    else await load();
+    else {
+      imageManualNoteDraftRef.current = null;
+      previousImageManualNoteRef.current = null;
+      setPreviousImageManualModificationNote(null);
+      await load();
+    }
   }
 
   async function restoreDraftVersion(item: CopyReviewDraftRecord) {
@@ -2067,12 +2119,32 @@ export function TaskReviewDialog({
 
   async function submitImageSelfReview(reviewDetail = detail, fromResolution = false) {
     if (!reviewDetail || !canSubmitImageSelfReview || !reviewDetail.currentImageRunId || (submitting && !fromResolution)) return;
+    if (previousImageManualNoteRef.current !== null) {
+      continueImageReviewRef.current = false;
+      setError('图片版本已更新，旧版未提交的备注已保留。请核对新图后选择沿用或放弃旧版备注，再提交初审。');
+      return;
+    }
     if (imagePlanChanged || imageConfigurationChanged) {
       setError('图片规划或交付配置还有未应用修改，请先重新生成或转换图片，再提交图片初审。');
       return;
     }
     if (!imageSetComplete) {
       setError('当前图集不完整，不能提交图片初审。');
+      return;
+    }
+    const imageNoteDraft = imageManualNoteDraftRef.current;
+    const manualModificationNote = (imageNoteDraft?.taskId === reviewDetail.id
+      && imageNoteDraft.imageRunId === reviewDetail.currentImageRunId
+      && imageNoteDraft.copyRevisionId === reviewDetail.currentCopyRevisionId
+      ? imageNoteDraft.note
+      : imageApprovalNoteForVersion(reviewDetail.imageApprovalEvents,
+        reviewDetail.currentImageRunId, reviewDetail.currentCopyRevisionId) ?? '').trim();
+    if ([...manualModificationNote].length > IMAGE_MANUAL_MODIFICATION_NOTE_MAX_LENGTH) {
+      setError(`图片审核备注不能超过 ${IMAGE_MANUAL_MODIFICATION_NOTE_MAX_LENGTH} 字。`);
+      return;
+    }
+    if (manualModificationNote && !Array.isArray(reviewDetail.imageApprovalEvents)) {
+      setError('中心服务尚不支持保存图片审核备注，请更新中心服务后再提交。');
       return;
     }
     setSubmitting(true);
@@ -2085,20 +2157,26 @@ export function TaskReviewDialog({
         setPendingEditsOpen(true);
         return;
       }
+      const requiresRecheck = reviewDetail.state === 'IMAGE_REWORK_PENDING' || reviewDetail.mandatoryImageQc === true;
       if (!await confirm({
-        title: '确认完成图片初审？',
-        description: '提交后将按管理员设置进入图片抽检；若未开启图片抽检则直接进入交付池。初审不需要评分或填写打回原因。',
-        confirmLabel: '提交图片抽检',
+        title: requiresRecheck ? '确认提交图片复检？' : '确认完成图片初审？',
+        description: `${requiresRecheck
+          ? '当前图集将直接进入强制图片复检。无需在系统内修改或采用新图；如需后续手工修改，可在图片审核备注中写明具体点位。'
+          : '提交后将按管理员设置进入图片抽检；若未开启图片抽检则直接进入交付池。'}${manualModificationNote ? '本次图片审核备注将随当前图集保存，供质检和后续手工修改查看。' : '初审不需要评分或填写打回原因。'}`,
+        confirmLabel: requiresRecheck ? '提交图片复检' : '提交图片抽检',
       })) return;
+      const requestPayload = { imageRunId: reviewDetail.currentImageRunId, manualModificationNote };
       await apiRequest(apiPath(`/v1/tasks/${reviewDetail.id}/submit-image-self-review`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          imageRunId: reviewDetail.currentImageRunId,
-          reviewSessionId: createRequestId(),
+          ...requestPayload,
+          reviewSessionId: reviewSessionId(requestPayload),
         }),
       });
-      await onUpdated('图片初审已完成；系统已按图片抽检策略进入质检等待或交付池。', reviewDetail.id);
+      await onUpdated(requiresRecheck ? '图片已提交强制复检。'
+        : '图片初审已完成；系统已按图片抽检策略进入质检等待或交付池。', reviewDetail.id);
+      reviewSessionRef.current = null;
       onOpenChange(false);
     } catch (caught) {
       if (caught instanceof ApiRequestError && caught.code === 'IMAGE_EDITS_PENDING') {
@@ -2162,10 +2240,10 @@ export function TaskReviewDialog({
                 : '图片初审由任务负责人完成；质检请在独立图片质检池处理抽中项。'
             : detail?.state === 'IMAGE_REWORK_PENDING'
               ? canHandleAssignedImages
-                ? '图片已被质检打回；请按要求修改并采用新版本，再重新提交初审和强制复检。'
+                ? '图片已被质检打回；核对当前图集后可直接提交强制复检，无需先在系统内修改图片。后续手工修改请填写图片审核备注。'
                 : isAdmin
                   ? '图片正由任务负责人返修；如需代办，请先将任务改派给自己。'
-                  : '图片正由任务负责人返修；新版本提交后将在图片质检池进行强制复检。'
+                  : '图片正由任务负责人返修；重新提交后将在图片质检池进行强制复检。'
             : detail?.state === 'REVIEWED' ? role === 'USER'
               ? '任务已经完成，可查看最终内容。'
               : downloadable
@@ -2390,12 +2468,12 @@ export function TaskReviewDialog({
             {!imageWorkMode && <VisualPlanSummary value={currentImageRun?.result?.visualPlan?.value} />}
             {!imageWorkMode && currentImageRun?.result?.visualPlan?.warning?.message && !currentImageRun?.result?.simulation?.enabled
               && <p className="notice warning">{currentImageRun.result.visualPlan.warning.message}</p>}
-            {(assets.length > 0 || canReviewImages) && <section className="workbench-review-section workbench-image-review-section" data-image-primary={isImageReviewView} ref={imageSectionRef} tabIndex={-1} aria-label="当前图片审核">
+            {(isImageReviewView || assets.length > 0 || canReviewImages) && <section className="workbench-review-section workbench-image-review-section" data-image-primary={isImageReviewView} ref={imageSectionRef} tabIndex={-1} aria-label="当前图片审核">
               {!imageWorkMode && <div className="workbench-review-section-title workbench-image-review-section-title">
                 <div className="workbench-image-review-title-main">
                   <span>{isImageReviewView ? '01' : '02'}</span>
                   <div><h3>{isImageReviewView ? detail.state === 'IMAGE_REWORK_PENDING' ? '图片返修' : '图片初审' : '图片审核'}</h3><p>{isImageReviewView
-                    ? detail.state === 'IMAGE_REWORK_PENDING' ? '图片质检已打回；任务负责人可使用完整图片编辑能力，采用新版本后再完成初审。' : '由任务负责人逐页核对并修改；确认完成后提交图片抽检。'
+                    ? detail.state === 'IMAGE_REWORK_PENDING' ? '图片质检已打回；核对当前图集后可直接提交复检，需要后续手工修改时请填写图片审核备注。' : '由任务负责人逐页核对并修改；确认完成后提交图片抽检。'
                     : '核对当前图片运行生成的完整图集。'}</p></div>
                   {imageActions}
                 </div>
@@ -2405,7 +2483,7 @@ export function TaskReviewDialog({
                 requirement={activeReworkRequirement}
                 reasonLabels={activeReworkReasonLabels}
                 problemImages={activeReworkProblemImages}
-                guidance="请按上方范围、问题标签、问题图片和具体要求完成返修；采用新图片版本并重新初审后，将进入强制图片复检。"
+                guidance="请核对上方问题和具体要求，可直接提交当前图集进行强制图片复检；后续手工修改请在图片审核备注中写清点位。"
               />}
               {!imageWorkMode && assets.length === 0 && <p className="notice warning">当前没有可预览的图片，请刷新核对，或选择重试生图、废弃。</p>}
               {!imageWorkMode && currentImageRun?.result?.simulation?.enabled && <div className="notice warning">
@@ -2445,13 +2523,61 @@ export function TaskReviewDialog({
                 </nav>}
               </div>
               <aside className="workbench-image-review-decision" aria-label={imageWorkMode ? '图片操作与信息' : '图片终审结论'}>
+                {isImageReviewView ? <div className="workbench-image-manual-note" role="region" aria-label="图片审核备注">
+                  {canEditImageManualNote && previousImageManualModificationNote !== null && <div className="workbench-image-manual-note-previous" role="status">
+                    <strong>图片版本已更新，旧版未提交的备注已保留</strong>
+                    <p>请核对当前图集后选择沿用或放弃旧版备注，再继续初审。</p>
+                    <p className="workbench-image-manual-note-previous-content">{previousImageManualModificationNote}</p>
+                    <div className="inline">
+                      <Button unstyled className="button small" type="button" disabled={loading || submitting}
+                        onClick={() => {
+                          const note = previousImageManualModificationNote;
+                          imageManualNoteDraftRef.current = { taskId: detail.id, imageRunId: detail.currentImageRunId,
+                            copyRevisionId: detail.currentCopyRevisionId, note };
+                          setImageManualModificationNote(note);
+                          previousImageManualNoteRef.current = null;
+                          setPreviousImageManualModificationNote(null);
+                          setError('');
+                        }}>沿用到当前图集</Button>
+                      <Button unstyled className="button small" type="button" disabled={loading || submitting}
+                        onClick={() => {
+                          previousImageManualNoteRef.current = null;
+                          setPreviousImageManualModificationNote(null);
+                          setError('');
+                        }}>放弃旧版备注</Button>
+                    </div>
+                  </div>}
+                  <label htmlFor={`image-manual-note-${detail.id}`}>图片审核备注（选填）
+                    {canEditImageManualNote && <small>{[...imageManualModificationNote].length}/{IMAGE_MANUAL_MODIFICATION_NOTE_MAX_LENGTH}</small>}
+                  </label>
+                  <Textarea id={`image-manual-note-${detail.id}`} rows={4}
+                    value={canEditImageManualNote ? imageManualModificationNote : savedImageManualModificationNote ?? ''}
+                    readOnly={!canEditImageManualNote} maxLength={IMAGE_MANUAL_MODIFICATION_NOTE_MAX_LENGTH}
+                    disabled={loading || submitting || previousImageManualModificationNote !== null}
+                    aria-describedby={`image-manual-note-help-${detail.id}`}
+                    placeholder={canEditImageManualNote
+                      ? '例：第 2 页右下角产品图换成新版包装，第 3 页标题第二行修改错字。'
+                      : '暂未填写图片审核备注'}
+                    onChange={(event) => {
+                      if (!canEditImageManualNote) return;
+                      const note = event.target.value;
+                      imageManualNoteDraftRef.current = { taskId: detail.id, imageRunId: detail.currentImageRunId,
+                        copyRevisionId: detail.currentCopyRevisionId, note };
+                      setImageManualModificationNote(note);
+                      setError('');
+                    }} />
+                  <p id={`image-manual-note-help-${detail.id}`}>{IMAGE_MANUAL_MODIFICATION_NOTE_GUIDANCE}</p>
+                  {!canEditImageManualNote && <p>此任务的图片审核备注由任务负责人填写。</p>}
+                  {canEditImageManualNote && detail.state === 'IMAGE_REWORK_PENDING'
+                    && <p>返修可直接提交当前图集，备注会随本次复检提交保存；如采用新图，请重新核对备注点位。</p>}
+                </div> : <ImageManualModificationNote note={savedImageManualModificationNote} />}
                 {imageWorkMode && <>
                   {activeReworkRequirement?.source === 'IMAGE_QA' && <ReworkRequirementNotice
                     title={detail.mandatoryImageQcOrigin === 'BATCH_RETURN' ? '图片质检整批打回' : '图片质检打回'}
                     requirement={activeReworkRequirement}
                     reasonLabels={activeReworkReasonLabels}
                     problemImages={activeReworkProblemImages}
-                    guidance="请按上方范围、问题标签、问题图片和具体要求完成返修；采用新图片版本并重新初审后，将进入强制图片复检。"
+                    guidance="请核对上方问题和具体要求，可直接提交当前图集进行强制图片复检；后续手工修改请在图片审核备注中写清点位。"
                   />}
                   <TaskFailureNotice detail={detail} />
                   {currentImageRun?.result?.simulation?.enabled && <p className="notice warning">{currentImageRun.result.visualPlan?.warning?.message
@@ -2532,7 +2658,7 @@ export function TaskReviewDialog({
                   <HumanAssessmentHistory assessments={imageAssessments} scoreDefinitions={scoreDefinitions} reasonOptions={imageReasonOptions} showReasonOptions={showImageDeductionReasons} />
                 </div>}
                 {!canReviewImages && imageAssessments.length === 0 && isImageReviewView && <p className="notice">{canHandleAssignedImages
-                  ? detail.state === 'IMAGE_REWORK_PENDING' ? '请完成返修并采用新图片版本；系统随后回到图片初审，提交后固定进入强制图片复检。' : '请逐页核对图片。需要调整时可直接编辑或重新生成；确认无误后在底部提交图片抽检。'
+                  ? detail.state === 'IMAGE_REWORK_PENDING' ? '核对当前图集后可直接提交强制图片复检，无需先在系统内修改图片；后续手工修改请填写图片审核备注。' : '请逐页核对图片。需要调整时可直接编辑或重新生成；确认无误后在底部提交图片抽检。'
                   : isAdmin ? '当前任务由其他负责人处理；如需代办，请先将任务改派给自己。' : '图片初审由任务负责人完成；质检在独立图片质检池处理抽中项。'}</p>}
                 {currentImageRun?.result?.processing?.type === 'LOCAL' && <p className="notice warning">此版本已在本地转换格式或背景，未重新调用模型验收，请检查文字对比和透明边缘后审核。</p>}
                 {imageConfigurationChanged && <p className="notice warning">格式与背景配置尚未应用，当前预览仍是已有成品。请先提交转换或重新生图，或刷新恢复已保存的配置。</p>}
@@ -2709,12 +2835,13 @@ export function TaskReviewDialog({
               <Info size={15} aria-hidden="true" /><span>{approveCopyBlockReason}</span>
             </p>}
             <span><strong className="workbench-review-dirty" role="status">{hasUnsavedChanges
-              ? hasUnpersistedDraftChanges || draftSaveStatus === 'saving' ? '有未保存草稿 · ' : '草稿已保存，尚未提交 · '
+              ? imageManualNoteChanged ? '图片审核备注尚未提交 · '
+                : hasUnpersistedDraftChanges || draftSaveStatus === 'saving' ? '有未保存草稿 · ' : '草稿已保存，尚未提交 · '
               : ''}</strong>{imageWorkMode ? `当前图集 · ${assets.length} 页` : editable
               ? copyContentChanged || isCopyRework && imagePlanChanged ? `保存后将创建人工修订版 v${(revision?.revision ?? 0) + 1}` : `当前文案版本 v${revision?.revision ?? '—'} · ${isCopyRework ? '等待提交强制复检' : '等待评分决定'}`
               : `当前文案版本 v${revision?.revision ?? '—'}`}</span>
             <div>
-              {embedded ? <Button unstyled className="button" type="button" disabled={submitting || submittingImagePlan || draftSaveStatus === 'saving'} onClick={() => onOpenChange(false)}>暂跳过</Button>
+              {embedded ? <Button unstyled className="button" type="button" disabled={submitting || submittingImagePlan || draftSaveStatus === 'saving'} onClick={() => { void discardChanges('close'); }}>暂跳过</Button>
                 : <DialogClose asChild><Button unstyled className="button" type="button" disabled={submitting || submittingImagePlan || draftSaveStatus === 'saving'}>{regeneratingImagePlan && !submittingImagePlan ? '关闭，后台继续处理' : '关闭'}</Button></DialogClose>}
               {embedded && editable && <Button unstyled className="button" type="button" disabled={submitting || loading || draftSaveStatus === 'saving' || !hasUnpersistedDraftChanges}
                 onClick={() => { if (copyReviewDraftContent && currentDraftFingerprint) void persistCopyReviewDraft(copyReviewDraftContent, currentDraftFingerprint); }}><Save size={15} />保存草稿</Button>}
@@ -2730,7 +2857,8 @@ export function TaskReviewDialog({
               {canSubmitImageSelfReview && <Button unstyled className="button primary" type="button"
                 disabled={submitting || loading || !imageSetComplete || imagePlanChanged || imageConfigurationChanged}
                 onClick={() => { void submitImageSelfReview(); }}><CheckCircle2 size={15} />
-                {submitting ? '正在提交…' : embedded ? '提交并下一条' : '初审完成，提交图片抽检'}</Button>}
+                {submitting ? '正在提交…' : embedded ? '提交并下一条'
+                  : detail.state === 'IMAGE_REWORK_PENDING' || detail.mandatoryImageQc ? '提交图片复检' : '初审完成，提交图片抽检'}</Button>}
               {canReviewImages && <>
                 <Button unstyled className="button danger" type="button" disabled={submitting || loading || !imageRatingComplete} onClick={() => { void submitImageReview('DISCARD'); }}><Trash2 size={15} />废弃</Button>
                 <div className="workbench-image-rework-control">

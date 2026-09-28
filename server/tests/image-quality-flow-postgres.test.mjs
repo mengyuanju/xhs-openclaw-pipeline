@@ -16,8 +16,10 @@ import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 import { decideCopyQaItemV2 } from '../src/copy-qa-v2.mjs';
 import {
   batchReturnImageQa,
+  closeImageSamplingTail,
   discardTaskImages,
   discardImageQaItem,
+  flushExpiredImageQualityBatches,
   getImageQaBatchReturnPreview,
   listImageQaItems,
   passImageQaItem,
@@ -189,16 +191,39 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
         entry.images[0].assetId, entry.copyRevisionId, imageSha256, worker.username]);
       await assert.rejects(submitImageSelfReview(pool, entry.taskId, {
         imageRunId: entry.imageRunId, reviewSessionId: randomUUID(),
+        manualModificationNote: '第 1 张标题需手动修改',
       }, worker), { code: 'IMAGE_EDITS_PENDING' });
       assert.equal(Number((await pool.query(`
         SELECT count(*) FROM image_approval_events WHERE task_id = $1
       `, [entry.taskId])).rows[0].count), 0);
       await pool.query("UPDATE image_edit_requests SET status='CANCELLED' WHERE id=$1", [pendingEditId]);
     }
-    const submitted = await submitImageSelfReview(pool, entry.taskId, {
-      imageRunId: entry.imageRunId, reviewSessionId: randomUUID(),
-    }, worker);
+    const note = `第 ${index + 1} 组，第 1 张右下角文字需手动调整\n后续自行修改并替换`;
+    const input = { imageRunId: entry.imageRunId, reviewSessionId: randomUUID(),
+      manualModificationNote: `  ${note.replaceAll('\n', '\r\n')}  ` };
+    entry.reviewSessionId = input.reviewSessionId;
+    entry.manualModificationNote = note;
+    if (index === 0) {
+      for (const invalidNote of [false, {}, [], '文'.repeat(1001), '😀'.repeat(1001)]) {
+        await assert.rejects(submitImageSelfReview(pool, entry.taskId,
+          { ...input, manualModificationNote: invalidNote }, worker),
+        typeof invalidNote === 'string' ? RangeError : TypeError);
+      }
+    }
+    const submitted = await submitImageSelfReview(pool, entry.taskId, input, worker);
     assert.equal(submitted.state, 'IMAGE_QC_PENDING');
+    assert.equal((await submitImageSelfReview(pool, entry.taskId,
+      { ...input, manualModificationNote: note }, worker)).idempotent, true);
+    await assert.rejects(submitImageSelfReview(pool, entry.taskId,
+      { ...input, manualModificationNote: '不同修改点位' }, worker), { code: 'REQUEST_ID_CONFLICT' });
+    const detail = await repository.getTask(entry.taskId);
+    assert.equal(detail.imageApprovalEvents.length, 1);
+    assert.deepEqual(detail.imageApprovalEvents[0], {
+      id: submitted.approvalEventId, imageRunId: entry.imageRunId,
+      copyRevisionId: entry.copyRevisionId, manualModificationNote: note,
+      submittedAt: detail.imageApprovalEvents[0].submittedAt,
+    });
+    assert.ok(Number.isFinite(Date.parse(detail.imageApprovalEvents[0].submittedAt)));
   }
   const freeze = (await pool.query('SELECT * FROM image_sampling_freezes ORDER BY id LIMIT 1')).rows[0];
   assert.equal(freeze.population_count, 5);
@@ -218,6 +243,10 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
     JOIN image_sampling_items AS item ON item.approval_event_id = approval.id
     WHERE item.public_id = $1
   `, [blindQueue.items[0].id])).rows[0];
+  const selectedEntry = firstBatch.find((entry) => entry.taskId === Number(legacyApproval.task_id));
+  assert.equal(blindQueue.items[0].manualModificationNote, selectedEntry.manualModificationNote);
+  await assert.rejects(pool.query(`UPDATE image_approval_events
+    SET manual_modification_note = $2 WHERE id = $1`, [legacyApproval.id, '😀'.repeat(1001)]), { code: '23514' });
   const legacyPendingEditId = randomUUID();
   await pool.query(`
     INSERT INTO image_edit_requests(
@@ -250,9 +279,17 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
   await pool.query('UPDATE image_approval_events SET image_set_sha256 = $2 WHERE id = $1', [
     legacyApproval.id, legacySha256,
   ]);
-  await passImageQaItem(pool, blindQueue.items[0].id, { requestId: randomUUID(), score: 3 }, admin);
+  await passImageQaItem(pool, blindQueue.items[0].id, {
+    requestId: randomUUID(), score: 3, note: '图片质检通过，保留后续手动改图说明',
+  }, admin);
   assert.equal(Number((await pool.query("SELECT count(*) FROM tasks WHERE state='REVIEWED'")).rows[0].count), 5);
   assert.equal(Number((await pool.query("SELECT count(*) FROM delivery_entries WHERE status='READY'")).rows[0].count), 5);
+  const passedItem = (await listImageQaItems(pool, { status: 'PASSED' }, reviewer)).items[0];
+  assert.equal(passedItem.manualModificationNote, selectedEntry.manualModificationNote);
+  assert.equal((await submitImageSelfReview(pool, selectedEntry.taskId, {
+    imageRunId: selectedEntry.imageRunId, reviewSessionId: selectedEntry.reviewSessionId,
+    manualModificationNote: selectedEntry.manualModificationNote,
+  }, worker)).idempotent, true);
 
   await pool.query(`UPDATE workflow_quality_settings SET image_sampling_rate_bps = 10000,
     image_blind_review_enabled = false`);
@@ -262,6 +299,7 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
   }]);
   await submitImageSelfReview(pool, returnedTask.taskId, {
     imageRunId: returnedTask.imageRunId, reviewSessionId: randomUUID(),
+    manualModificationNote: '第 3 张右下角标识需手动调整',
   }, worker);
   const returnItem = (await listImageQaItems(pool, {}, reviewer)).items.find((item) => item.taskId === returnedTask.taskId);
   assert.ok(returnItem);
@@ -296,9 +334,16 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
   await submitImageSelfReview(pool, returnedTask.taskId, {
     imageRunId: editedRun.imageRunId, reviewSessionId: randomUUID(),
   }, worker);
+  const editedDetail = await repository.getTask(returnedTask.taskId);
+  assert.equal(editedDetail.imageApprovalEvents.length, 2);
+  assert.equal(editedDetail.imageApprovalEvents.find((approval) => approval.imageRunId === editedRun.imageRunId
+    && approval.copyRevisionId === returnedTask.copyRevisionId).manualModificationNote, null);
+  assert.equal(editedDetail.imageApprovalEvents.find((approval) => approval.imageRunId === returnedTask.imageRunId
+    && approval.copyRevisionId === returnedTask.copyRevisionId).manualModificationNote, '第 3 张右下角标识需手动调整');
   const mandatory = (await listImageQaItems(pool, {}, reviewer)).items
     .find((item) => item.sampleKind === 'MANDATORY_RECHECK' && item.taskId === returnedTask.taskId);
   assert.ok(mandatory);
+  assert.equal(mandatory.manualModificationNote, null, 'new image versions must not inherit old modification notes');
   assert.equal(mandatory.capabilities.canReturnSingle, true);
   assert.deepEqual(mandatory.previousReturn, {
     reasonLabels: ['画面文字错误'], note: '修正第 1 张图片',
@@ -436,6 +481,176 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
   }, admin);
   assert.equal(adminDirectResult.state, 'REVIEWED');
 
+  await t.test('returned images can be resubmitted unchanged across independent mandatory review rounds', async () => {
+    await pool.query(`UPDATE workflow_quality_settings SET image_sampling_enabled=true,
+      image_sampling_rate_bps=10000, image_blind_review_enabled=false`);
+    const member = await createTask(97);
+    const initialInput = { imageRunId: member.imageRunId, reviewSessionId: randomUUID(),
+      manualModificationNote: '原初审：第 2 页文字交给后续手动修改' };
+    const initial = await submitImageSelfReview(pool, member.taskId, initialInput, worker);
+    const initialItem = (await listImageQaItems(pool, {}, reviewer)).items.find(item => item.taskId === member.taskId);
+    await returnImageQaItem(pool, initialItem.id, { requestId: randomUUID(), score: 2,
+      reworkTarget: 'IMAGE', problemAssetIds: [member.images[1].assetId],
+      reasonCodes: ['TEXT_ERROR'], note: '第 2 页字形错误，请处理' }, reviewer);
+    assert.equal((await submitImageSelfReview(pool, member.taskId, initialInput, worker)).idempotent, true,
+      'retrying the old submission after a return must not start another round');
+    assert.equal(Number((await pool.query('SELECT count(*) FROM image_approval_events WHERE task_id=$1',
+      [member.taskId])).rows[0].count), 1);
+
+    const recheckInput = { imageRunId: member.imageRunId, reviewSessionId: randomUUID(),
+      manualModificationNote: '' };
+    await assert.rejects(submitImageSelfReview(pool, member.taskId, recheckInput, admin), { code: 'FORBIDDEN' });
+    await pool.query("UPDATE tasks SET priority_mode='PAUSE' WHERE id=$1", [member.taskId]);
+    await assert.rejects(submitImageSelfReview(pool, member.taskId, recheckInput, worker), { code: 'TASK_PRIORITY_PAUSED' });
+    await pool.query("UPDATE tasks SET priority_mode='NORMAL' WHERE id=$1", [member.taskId]);
+    const pendingEditId = randomUUID();
+    await pool.query(`INSERT INTO image_edit_requests(id,task_id,request_id,source_image_run_id,source_asset_id,
+      copy_revision_id,source_sha256,target_page,operation,config,status,created_by)
+      VALUES($1,$2,$3,$4,$5,$6,$7,2,'TEXT','{}','DRAFT',$8)`, [pendingEditId, member.taskId, randomUUID(),
+      member.imageRunId, member.images[1].assetId, member.copyRevisionId, imageSha256, worker.username]);
+    await assert.rejects(submitImageSelfReview(pool, member.taskId, recheckInput, worker), { code: 'IMAGE_EDITS_PENDING' });
+    await pool.query("UPDATE image_edit_requests SET status='CANCELLED' WHERE id=$1", [pendingEditId]);
+    await pool.query("UPDATE image_runs SET status='FAILED' WHERE id=$1", [member.imageRunId]);
+    await assert.rejects(submitImageSelfReview(pool, member.taskId, recheckInput, worker), { code: 'STALE_IMAGE_RUN' });
+    await pool.query("UPDATE image_runs SET status='COMPLETED' WHERE id=$1", [member.imageRunId]);
+    const originalResult = (await pool.query('SELECT result FROM image_runs WHERE id=$1', [member.imageRunId])).rows[0].result;
+    const incompleteResult = structuredClone(originalResult);
+    incompleteResult.images[1].assetId = Number.MAX_SAFE_INTEGER;
+    incompleteResult.images[1].deliveryAssetId = Number.MAX_SAFE_INTEGER;
+    await pool.query('UPDATE image_runs SET result=$2 WHERE id=$1', [member.imageRunId, incompleteResult]);
+    await assert.rejects(submitImageSelfReview(pool, member.taskId, recheckInput, worker), { code: 'IMAGE_ASSETS_MISSING' });
+    await pool.query('UPDATE image_runs SET result=$2 WHERE id=$1', [member.imageRunId, originalResult]);
+
+    // Disabled ordinary sampling must never release an unchanged returned image.
+    await pool.query('UPDATE workflow_quality_settings SET image_sampling_enabled=false,image_sampling_rate_bps=0');
+    const concurrent = await Promise.all([
+      submitImageSelfReview(pool, member.taskId, recheckInput, worker),
+      submitImageSelfReview(pool, member.taskId, recheckInput, worker),
+    ]);
+    assert.equal(concurrent.filter(result => result.idempotent === true).length, 1);
+    const secondApprovalId = concurrent[0].approvalEventId;
+    assert.equal(concurrent[1].approvalEventId, secondApprovalId);
+    assert.notEqual(secondApprovalId, initial.approvalEventId);
+    const pendingTask = (await pool.query('SELECT * FROM tasks WHERE id=$1', [member.taskId])).rows[0];
+    assert.equal(pendingTask.state, 'IMAGE_QC_PENDING');
+    assert.equal(pendingTask.current_image_run_id, member.imageRunId);
+    assert.equal(pendingTask.mandatory_image_qc, true);
+    assert.equal(Number((await pool.query("SELECT count(*) FROM delivery_entries WHERE task_id=$1 AND status='READY'",
+      [member.taskId])).rows[0].count), 0);
+    const secondItem = (await listImageQaItems(pool, {}, reviewer)).items.find(item => item.taskId === member.taskId);
+    assert.equal(secondItem.sampleKind, 'MANDATORY_RECHECK');
+    assert.equal(secondItem.manualModificationNote, null);
+    const secondFreeze = (await pool.query(`SELECT sampling_freeze.* FROM image_sampling_freezes sampling_freeze
+      JOIN image_sampling_items item ON item.freeze_id=sampling_freeze.id WHERE item.public_id=$1`, [secondItem.id])).rows[0];
+    assert.equal(secondFreeze.rate_bps, 10000);
+    assert.equal(secondFreeze.population_count, 1);
+    assert.equal(secondFreeze.sample_count, 1);
+    await assert.rejects(submitImageSelfReview(pool, member.taskId,
+      { ...recheckInput, reviewSessionId: randomUUID() }, worker), { code: 'IMAGE_ALREADY_SUBMITTED' });
+    await assert.rejects(submitImageSelfReview(pool, direct.taskId,
+      { ...recheckInput, imageRunId: direct.imageRunId }, worker), { code: 'REQUEST_ID_CONFLICT' });
+
+    await returnImageQaItem(pool, secondItem.id, { requestId: randomUUID(), score: 2,
+      reworkTarget: 'IMAGE', problemAssetIds: [member.images[1].assetId],
+      reasonCodes: ['TEXT_ERROR'], note: '再次打回同一图集，确认手工修改安排' }, reviewer);
+    assert.equal((await submitImageSelfReview(pool, member.taskId, recheckInput, worker)).idempotent, true);
+    const finalInput = { imageRunId: member.imageRunId, reviewSessionId: randomUUID(),
+      manualModificationNote: '第 2 次复检：第 2 页第 1、3 点文字由人工后续修正' };
+    const final = await submitImageSelfReview(pool, member.taskId, finalInput, worker);
+    assert.notEqual(final.approvalEventId, secondApprovalId);
+    const approvals = (await pool.query(`SELECT * FROM image_approval_events WHERE task_id=$1
+      ORDER BY submitted_at,id`, [member.taskId])).rows;
+    assert.equal(approvals.length, 3);
+    assert.deepEqual(approvals.map(row => row.image_run_id), Array(3).fill(member.imageRunId));
+    assert.deepEqual(approvals.map(row => row.manual_modification_note), [initialInput.manualModificationNote,
+      null, finalInput.manualModificationNote]);
+    assert.deepEqual(approvals.map(row => row.submission_mode), ['SELF_REVIEW', 'MANDATORY_RECHECK', 'MANDATORY_RECHECK']);
+    assert.equal(Number((await pool.query('SELECT count(*) FROM image_sampling_items WHERE task_id=$1',
+      [member.taskId])).rows[0].count), 3);
+    const detail = await repository.getTask(member.taskId);
+    assert.equal(detail.imageApprovalEvents[0].id, final.approvalEventId);
+    assert.equal(detail.imageApprovalEvents[0].manualModificationNote, finalInput.manualModificationNote);
+    const finalItem = (await listImageQaItems(pool, {}, reviewer)).items.find(item => item.taskId === member.taskId);
+    assert.equal(finalItem.manualModificationNote, finalInput.manualModificationNote);
+    assert.equal(finalItem.previousReturn.note, '再次打回同一图集，确认手工修改安排');
+    await passImageQaItem(pool, finalItem.id, { requestId: randomUUID(), score: 3 }, reviewer);
+    const released = (await pool.query('SELECT * FROM tasks WHERE id=$1', [member.taskId])).rows[0];
+    assert.equal(released.state, 'REVIEWED');
+    assert.equal(Number(released.image_qc_released_approval_event_id), final.approvalEventId);
+    assert.equal(Number((await pool.query("SELECT count(*) FROM delivery_entries WHERE task_id=$1 AND status='READY'",
+      [member.taskId])).rows[0].count), 1);
+    assert.deepEqual((await pool.query(`SELECT status,score_x10,note FROM image_sampling_items
+      WHERE public_id=ANY($1::uuid[]) ORDER BY id`, [[initialItem.id, secondItem.id]])).rows, [
+      { status: 'SUPERSEDED', score_x10: 20, note: '第 2 页字形错误，请处理' },
+      { status: 'SUPERSEDED', score_x10: 20, note: '再次打回同一图集，确认手工修改安排' },
+    ]);
+  });
+
+  await t.test('old same-image approvals cannot be sampled again or release a newer mandatory round', async () => {
+    await pool.query(`UPDATE workflow_quality_settings SET image_sampling_enabled=true,
+      image_sampling_rate_bps=5000,image_blind_review_enabled=false`);
+    const members = [await createTask(98), await createTask(99)];
+    for (const member of members) await submitImageSelfReview(pool, member.taskId,
+      { imageRunId: member.imageRunId, reviewSessionId: randomUUID() }, worker);
+    const oldItems = (await pool.query(`SELECT * FROM image_sampling_items
+      WHERE task_id=ANY($1::bigint[]) ORDER BY id`, [members.map(member => member.taskId)])).rows;
+    const oldUnselected = oldItems.find(item => item.status === 'NOT_SELECTED');
+    const oldSelected = oldItems.find(item => item.status === 'PENDING');
+    assert.ok(oldUnselected && oldSelected);
+    const member = members.find(entry => entry.taskId === Number(oldUnselected.task_id));
+    // Represent an old freeze that can finish after a same-version resubmission.
+    await pool.query(`UPDATE tasks SET state='IMAGE_REWORK_PENDING',current_stage='IMAGE_REWORK_PENDING',
+      mandatory_image_qc=true,mandatory_image_qc_origin='QA_RETURN',image_rework_source_run_id=current_image_run_id
+      WHERE id=$1`, [member.taskId]);
+    const latest = await submitImageSelfReview(pool, member.taskId, {
+      imageRunId: member.imageRunId, reviewSessionId: randomUUID(), manualModificationNote: '当前强制复检说明',
+    }, worker);
+    const oldFreezePublicId = (await pool.query('SELECT public_id FROM image_sampling_freezes WHERE id=$1',
+      [oldUnselected.freeze_id])).rows[0].public_id;
+    await assert.rejects(getImageQaBatchReturnPreview(pool, oldFreezePublicId, admin), { code: 'IMAGE_VERSION_CHANGED' });
+    await assert.rejects(batchReturnImageQa(pool, {
+      requestId: randomUUID(), freezePublicId: oldFreezePublicId, confirmedCount: oldItems.length,
+      itemIds: oldItems.map(item => item.public_id), reasonCodes: ['TEXT_ERROR'], note: '旧轮次不能整批打回新的同图复检',
+    }, admin), { code: 'IMAGE_VERSION_CHANGED' });
+    // A stale pending item must also be harmless when addressed directly.
+    await pool.query("UPDATE image_sampling_items SET status='PENDING',selected=true WHERE id=$1", [oldUnselected.id]);
+    const staleItem = (await listImageQaItems(pool, {}, reviewer)).items.find(item => item.id === oldUnselected.public_id);
+    assert.ok(staleItem);
+    for (const key of ['canPass', 'canReturnSingle', 'canDiscard', 'canReturnBatch']) {
+      assert.equal(staleItem.capabilities[key], false, `old-round capability ${key} is disabled`);
+    }
+    assert.equal((await listImageQaItems(pool, { actionableOnly: true }, reviewer)).items
+      .some(item => item.id === oldUnselected.public_id), false);
+    await assert.rejects(passImageQaItem(pool, oldUnselected.public_id,
+      { requestId: randomUUID(), score: 3 }, reviewer), { code: 'IMAGE_VERSION_CHANGED' });
+    await assert.rejects(returnImageQaItem(pool, oldUnselected.public_id,
+      { requestId: randomUUID(), score: 2, reworkTarget: 'IMAGE', problemAssetIds: [member.images[0].assetId],
+        reasonCodes: ['TEXT_ERROR'], note: '旧轮次打回请求' }, reviewer), { code: 'IMAGE_VERSION_CHANGED' });
+    await assert.rejects(discardImageQaItem(pool, oldUnselected.public_id,
+      { requestId: randomUUID(), note: '旧轮次废弃请求' }, reviewer), { code: 'IMAGE_VERSION_CHANGED' });
+    await pool.query("UPDATE image_sampling_items SET status='NOT_SELECTED',selected=false WHERE id=$1", [oldUnselected.id]);
+    // A historical unfrozen approval must not become another sampling candidate.
+    await pool.query(`INSERT INTO image_approval_events(task_id,copy_revision_id,image_run_id,
+      submitted_by_account_id,submitted_by_username,review_session_id,image_set_sha256,submission_mode,submitted_at)
+      SELECT task_id,copy_revision_id,image_run_id,submitted_by_account_id,submitted_by_username,$2,
+        image_set_sha256,'SELF_REVIEW',submitted_at-interval '1 hour'
+      FROM image_approval_events WHERE id=$1`, [oldUnselected.approval_event_id, randomUUID()]);
+    const beforeCount = Number((await pool.query('SELECT count(*) FROM image_sampling_items WHERE task_id=$1',
+      [member.taskId])).rows[0].count);
+    assert.equal(await closeImageSamplingTail(pool, { productionBatchId: Number(batch.id), submitterAccountId: worker.userId }, admin), null);
+    assert.deepEqual(await flushExpiredImageQualityBatches(pool, { now: new Date(Date.now() + 2 * 60 * 60 * 1000) }), []);
+    assert.equal(Number((await pool.query('SELECT count(*) FROM image_sampling_items WHERE task_id=$1',
+      [member.taskId])).rows[0].count), beforeCount);
+    await passImageQaItem(pool, oldSelected.public_id, { requestId: randomUUID(), score: 3 }, reviewer);
+    assert.equal((await pool.query('SELECT state FROM tasks WHERE id=$1', [member.taskId])).rows[0].state, 'IMAGE_QC_PENDING');
+    assert.equal(Number((await pool.query("SELECT count(*) FROM delivery_entries WHERE task_id=$1 AND status='READY'",
+      [member.taskId])).rows[0].count), 0, 'the old freeze cannot release the newer same-image approval');
+    const recheck = (await listImageQaItems(pool, {}, reviewer)).items.find(item => item.taskId === member.taskId);
+    await passImageQaItem(pool, recheck.id, { requestId: randomUUID(), score: 3 }, reviewer);
+    assert.equal(Number((await pool.query('SELECT image_qc_released_approval_event_id FROM tasks WHERE id=$1',
+      [member.taskId])).rows[0].image_qc_released_approval_event_id), latest.approvalEventId);
+  });
+
   await pool.query(`UPDATE workflow_quality_settings SET image_sampling_enabled = true,
     image_sampling_rate_bps = 10000, image_blind_review_enabled = true`);
   const httpTask = await createTask(11);
@@ -451,12 +666,28 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
     'x-actor-credential-version': String(identity.credentialVersion),
   });
   try {
+    const httpInput = { imageRunId: httpTask.imageRunId, reviewSessionId: randomUUID(),
+      manualModificationNote: '第 2 张，右上角标题字号需手动修改' };
     const submitResponse = await fetch(`${root}/v1/tasks/${httpTask.taskId}/submit-image-self-review`, {
       method: 'POST', headers: actorHeaders(worker),
-      body: JSON.stringify({ imageRunId: httpTask.imageRunId, reviewSessionId: randomUUID() }),
+      body: JSON.stringify(httpInput),
     });
     assert.equal(submitResponse.status, 200);
     assert.equal((await submitResponse.json()).data.state, 'IMAGE_QC_PENDING');
+    const replayResponse = await fetch(`${root}/v1/tasks/${httpTask.taskId}/submit-image-self-review`, {
+      method: 'POST', headers: actorHeaders(worker), body: JSON.stringify(httpInput),
+    });
+    assert.equal(replayResponse.status, 200);
+    assert.equal((await replayResponse.json()).data.idempotent, true);
+    const conflictResponse = await fetch(`${root}/v1/tasks/${httpTask.taskId}/submit-image-self-review`, {
+      method: 'POST', headers: actorHeaders(worker),
+      body: JSON.stringify({ ...httpInput, manualModificationNote: '另一个点位' }),
+    });
+    assert.equal(conflictResponse.status, 409);
+    const ownerDetail = await fetch(`${root}/v1/tasks/${httpTask.taskId}`, { headers: actorHeaders(worker) });
+    assert.equal(ownerDetail.status, 200);
+    const httpDetail = (await ownerDetail.json()).data;
+    assert.equal(httpDetail.imageApprovalEvents[0].manualModificationNote, httpInput.manualModificationNote);
 
     const userPoolResponse = await fetch(`${root}/v1/image-qa/items`, { headers: actorHeaders(worker) });
     assert.equal(userPoolResponse.status, 403);
@@ -466,6 +697,7 @@ test('real PostgreSQL image self-review, sampling hold, QA return, edit version 
     assert.equal(httpQaItems.length, 1);
     const qaItem = httpQaItems[0];
     assert.ok(qaItem);
+    assert.equal(qaItem.manualModificationNote, httpInput.manualModificationNote);
     assert.equal(Object.hasOwn(qaItem, 'taskId'), false);
     const hiddenTaskResponse = await fetch(`${root}/v1/tasks/${httpTask.taskId}`, { headers: actorHeaders(reviewer) });
     assert.equal(hiddenTaskResponse.status, 404);

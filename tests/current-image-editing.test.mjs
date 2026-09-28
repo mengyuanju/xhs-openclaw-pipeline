@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
 import { normalizeManualOverlay, manualOverlaySvg, decodeReference, renderMask, renderRegionsMask, mergeWithMask, changedPixelMask, assertOutsideMask } from '../src/image-edit-pixels.mjs';
-import { normalizeEdit,replaceImagePage,editStoragePath,createImageEditingService,resolveImageEditRetry } from '../server/src/image-editing.mjs';
+import { normalizeEdit,normalizeEditBatch,replaceImagePage,editStoragePath,createImageEditingService,resolveImageEditRetry } from '../server/src/image-editing.mjs';
 import { disclosurePlacementRegion, parseFusionTargetCheck, processImageEdit } from '../server/src/image-edit-renderer.mjs';
 
 const png=(color='white',width=1086,height=1448)=>sharp({create:{width,height,channels:4,background:color}}).png().toBuffer();
@@ -55,6 +55,55 @@ for(const mask of [{type:'rect',x:20,y:30,width:100,height:110},{type:'brush',ra
   const source=await png('red'), generated=await png('blue'),bytes=await renderMask(mask),merged=await mergeWithMask(source,generated,bytes);
   assert.deepEqual(await assertOutsideMask(source,merged,bytes),{passed:true,changedPixels:0,threshold:0});
   await assert.rejects(()=>assertOutsideMask(source,generated,bytes),/遮罩外/u);
+});
+test('programmatic requests omit automatic color and accept only strict custom hex colors',()=>{
+  const request={...input(),operation:'SVG_DISCLOSURE',confirmation:undefined,overlay:{text:'AI生成'}};
+  const automatic=normalizeEdit(request);
+  assert.equal(Object.hasOwn(automatic.overlay,'badgeColor'),false);
+  assert.deepEqual(automatic.overlay,{text:'AI生成',textType:'AI_DISCLOSURE',disclosureType:'AI_GENERATED',
+    position:'bottom-right',badgeVariant:'outline-pill'});
+  const custom=normalizeEdit({...request,overlay:{...request.overlay,badgeVariant:'solid-pill',badgeColor:'#aBcDeF'}});
+  assert.equal(custom.overlay.badgeColor,'#ABCDEF');
+  assert.equal(custom.overlay.badgeVariant,'solid-pill');
+  for(const badgeColor of [undefined,null,'',12,{},['#ABCDEF'],'#fff','#12345678','#12345G',
+    '#ABCDEF\n',' #ABCDEF','#ABCDEF ','red','rgb(1,2,3)','url(file:///secret)',
+    '#ABCDEF"/><image href="file:///secret"/>','<svg/>']) {
+    assert.throws(()=>normalizeEdit({...request,overlay:{...request.overlay,badgeColor}}),/#RRGGBB/u);
+    assert.throws(()=>normalizeEdit({...input(),overlay:{text:'AI生成',badgeColor}}),/只有程序生成标识可指定徽章颜色/u);
+  }
+  assert.throws(()=>normalizeEdit({...input(),operation:'AI_LOCAL',instruction:'修改背景',
+    overlay:{badgeColor:'#ABCDEF'}}),/只有程序生成标识可指定徽章颜色/u);
+});
+test('a programmatic batch requires the same normalized badge color on every page',()=>{
+  const base={...input(),batchId:randomUUID(),batchSize:2,operation:'SVG_DISCLOSURE',confirmation:undefined};
+  const edits=[{...base,overlay:{text:'AI生成',badgeColor:'#abcdef'}},
+    {...base,requestId:randomUUID(),sourceAssetId:2,targetPage:2,overlay:{text:'AI生成',badgeColor:'#ABCDEF'}}];
+  assert.deepEqual(normalizeEditBatch({edits}).map(edit=>edit.overlay.badgeColor),['#ABCDEF','#ABCDEF']);
+  assert.throws(()=>normalizeEditBatch({edits:[edits[0],{...edits[1],overlay:{text:'AI生成',badgeColor:'#654321'}}]}),/同一标识批次/u);
+  assert.throws(()=>normalizeEditBatch({edits:[edits[0],{...edits[1],overlay:{text:'AI生成'}}]}),/同一标识批次/u);
+});
+test('historical automatic requests remain idempotent without adding a badge color field',async()=>{
+  const request={...input(),operation:'SVG_DISCLOSURE',confirmation:undefined,overlay:{text:'AI生成'}};
+  const historical=normalizeEdit(request);
+  delete historical.overlay.badgeVariant;
+  historical.imageEditRepairMaxAttempts=2;
+  const prior={id:randomUUID(),task_id:1,operation:'SVG_DISCLOSURE',status:'QUEUED',config:historical};
+  const queries=[];
+  const client={release(){},async query(sql){
+    queries.push(sql);
+    if(['BEGIN','COMMIT','ROLLBACK'].includes(sql))return{rows:[]};
+    if(sql.startsWith('SELECT u.id'))return{rows:[{id:1}]};
+    if(sql==='SELECT id FROM tasks WHERE id=$1 FOR UPDATE')return{rows:[{id:1}]};
+    if(sql.includes('FROM image_edit_requests e WHERE e.task_id=$1 AND e.request_id=$2'))return{rows:[prior]};
+    assert.fail(`unexpected query: ${sql}`);
+  }};
+  const service=createImageEditingService({pool:{connect:async()=>client},storageRoot:tmpdir()});
+  const actor={role:'ADMIN',username:'admin',userId:1,credentialVersion:1};
+  const found=await service.create(1,request,actor);
+  assert.equal(found.id,prior.id);
+  assert.equal(Object.hasOwn(found.config.overlay,'badgeColor'),false);
+  await assert.rejects(()=>service.create(1,{...request,overlay:{...request.overlay,badgeColor:'#ABCDEF'}},actor),/requestId 已用于不同请求/u);
+  assert.equal(queries.some(sql=>sql.startsWith('INSERT')||sql.startsWith('UPDATE')),false);
 });
 test('planned multi-region masks cover source and destination while preserving the gap',async()=>{
   const source=await png('red'),generated=await png('blue');
@@ -254,10 +303,79 @@ test('SVG disclosure worker uses the canonical badge and Sharp without calling i
     assert.equal(completed.validation.text.placement.mode,'PROGRAMMATIC_SVG_DISCLOSURE');
     assert.equal(completed.validation.renderer.engine,'sharp-svg');
     assert.equal(completed.validation.renderer.style.color,'#6F7D5F');
+    assert.equal(completed.validation.renderer.style.colorSource,'STORED_IMAGE_STYLE');
+    assert.equal(completed.validation.renderer.style.variant,'outline-pill');
+    assert.equal(completed.validation.renderer.style.textColor,'#6F7D5F');
+    assert.equal(completed.validation.renderer.style.backgroundColor,null);
     assert.deepEqual(completed.validation.disclosure.added,{type:'AI_GENERATED',text:'AI生成'});
     assert.deepEqual(completed.validation.requiredText,['真实参考','AI生成']);
     assert.equal(completed.validation.outsideMask.changedPixels,0);
     assert.equal(completed.bytes.equals(source),false);
+  } finally {await rm(dir,{recursive:true,force:true});}
+});
+test('solid SVG disclosure uses the requested variant, saved page color, and no model or vision service',async()=>{
+  const source=await png('white');
+  const config={...normalizeEdit({...input(),operation:'SVG_DISCLOSURE',confirmation:undefined,overlay:{text:'该人物形象由AI生成'}}),
+    overlay:{text:'该人物形象由AI生成',badgeVariant:'solid-pill'}};
+  let completed;
+  const settings={};
+  Object.defineProperty(settings,'modelApi',{get(){assert.fail('must not initialize a model client');}});
+  const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'SVG_DISCLOSURE',config}),
+    context:async()=>({source:{id:1},refs:[],settings,revision:{content:{imagePlan:[{headline:'真实参考'}]}},
+      run:{result:{visualPlan:{visualStyle:{disclosureColor:'#000000'}},images:[{aiDisclosureStyle:{color:'#F4E6A2'}}]}}}),
+    readAsset:async()=>source,heartbeat:async()=>true,fail:async(_edit,error)=>assert.fail(error.message),
+    complete:async(_edit,result)=>{completed=result;return{};}};
+  const dir=await mkdtemp(join(tmpdir(),'image-edit-solid-disclosure-'));
+  try {
+    const result=await processImageEdit({service,storageRoot:dir,workerId:'fake'});
+    assert.equal(result.status,'PREVIEW_READY');
+    assert.equal(completed.validation.model,null);assert.equal(completed.validation.generationAttempts,0);
+    assert.equal(completed.validation.billedImageGeneration,false);assert.equal(completed.validation.prompt,null);
+    assert.equal(completed.validation.outsideMask.changedPixels,0);
+    const style=completed.validation.renderer.style;
+    assert.equal(style.variant,'solid-pill');assert.equal(style.colorSource,'STORED_IMAGE_STYLE');
+    assert.equal(style.backgroundColor,'#F4E6A2');assert.equal(style.borderColor,'#F4E6A2');
+    assert.equal(style.textColor,'#000000');assert.ok(style.contrastRatio>=4.5);
+    const raw=await sharp(completed.bytes).ensureAlpha().raw().toBuffer();
+    const index=((style.y+18)*1086+style.x+12)*4;
+    assert.deepEqual([...raw.subarray(index,index+4)],[244,230,162,255]);
+  } finally {await rm(dir,{recursive:true,force:true});}
+});
+test('custom SVG badge uses the user color in both variants without initializing model services',async()=>{
+  const source=await png('white');
+  const settings={};
+  Object.defineProperty(settings,'modelApi',{get(){assert.fail('must not initialize a model client');}});
+  const noModel={runImageEdit:()=>assert.fail('must not call image model'),runVision:()=>assert.fail('must not call vision model')};
+  const dir=await mkdtemp(join(tmpdir(),'image-edit-custom-disclosure-'));
+  try {
+    for(const badgeVariant of ['outline-pill','solid-pill']) {
+      const config=normalizeEdit({...input(),operation:'SVG_DISCLOSURE',confirmation:undefined,
+        overlay:{text:'AI生成',badgeVariant,badgeColor:'#123456'}});
+      let completed;
+      const service={claim:async()=>({id:randomUUID(),task_id:1,target_page:1,operation:'SVG_DISCLOSURE',config}),
+        context:async()=>({source:{id:1},refs:[],settings,revision:{content:{imagePlan:[{headline:'真实参考'}]}},
+          run:{result:{visualPlan:{visualStyle:{disclosureColor:'#000000'}},images:[{aiDisclosureStyle:{color:'#F4E6A2'}}]}}}),
+        readAsset:async()=>source,heartbeat:async()=>true,fail:async(_edit,error)=>assert.fail(error.message),
+        complete:async(_edit,result)=>{completed=result;return{};}};
+      const result=await processImageEdit({service,storageRoot:dir,workerId:'fake',agentClient:noModel,
+        validateImage:async()=>assert.fail('must not validate with a model')});
+      assert.equal(result.status,'PREVIEW_READY');
+      assert.equal(completed.validation.model,null);assert.equal(completed.validation.generationAttempts,0);
+      assert.equal(completed.validation.billedImageGeneration,false);assert.equal(completed.validation.prompt,null);
+      assert.equal(completed.validation.outsideMask.changedPixels,0);
+      const style=completed.validation.renderer.style;
+      assert.equal(style.variant,badgeVariant);assert.equal(style.colorSource,'USER_SELECTED');
+      assert.equal(style.colorRole,'custom');assert.equal(style.color,'#123456');assert.equal(style.borderColor,'#123456');
+      assert.equal(style.backgroundColor,badgeVariant==='solid-pill'?'#123456':null);
+      assert.equal(style.textColor,badgeVariant==='solid-pill'?'#FFFFFF':'#123456');
+      if(badgeVariant==='solid-pill')assert.ok(style.contrastRatio>=4.5);
+      const raw=await sharp(completed.bytes).ensureAlpha().raw().toBuffer();
+      const strokeIndex=(style.y*1086+style.x+style.width/2)*4;
+      const fillIndex=((style.y+18)*1086+style.x+12)*4;
+      assert.deepEqual([...raw.subarray(strokeIndex,strokeIndex+4)],[18,52,86,255]);
+      assert.deepEqual([...raw.subarray(fillIndex,fillIndex+4)],
+        badgeVariant==='solid-pill'?[18,52,86,255]:[255,255,255,255]);
+    }
   } finally {await rm(dir,{recursive:true,force:true});}
 });
 test('AI text worker never makes a second edit when the only result fails text validation',async()=>{

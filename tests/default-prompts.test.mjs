@@ -47,6 +47,8 @@ describe('runtime default prompts', () => {
     assert.doesNotMatch(prompt.content, /第一段必须采用第一人称视角/u);
     assert.match(prompt.content, /第一人称不是正文必须采用的主要叙述视角/u);
     assert.match(prompt.content, /第一人称.*不得虚构/u);
+    assert.match(prompt.content, /fabricatedExperience 必须如实填写布尔值，仅用于记录，不作为程序阻断或机械评分依据/u);
+    assert.doesNotMatch(prompt.content, /fabricatedExperience 必须为 false/u);
     assert.match(prompt.content, /最后一段必须再次明确核心结论/u);
     assert.match(prompt.content, /后期配图/u);
     assert.match(prompt.content, /【关键优化开始：正文与配图职责分离-V1】/u);

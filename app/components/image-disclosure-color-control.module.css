@@ -1,0 +1,14 @@
+.control { grid-column: 1 / -1; display: grid; gap: 8px; min-width: 0; }
+.heading { color: #625f5a; font-size: 12px; font-weight: 750; }
+.modes { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; }
+.modes > label { display: flex; flex: 0 0 auto; align-items: center; gap: 7px; min-height: 30px; color: #625f5a; font-size: 12px; white-space: nowrap; cursor: pointer; }
+.control .modes input.modeRadio { flex: 0 0 18px; width: 18px; min-width: 18px; max-width: 18px; height: 18px; min-height: 18px; max-height: 18px; margin: 0; padding: 0; }
+.fields { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 9px; min-width: 0; }
+.fields > label { display: grid; gap: 5px; color: #625f5a; font-size: 11px; font-weight: 700; }
+.pickerLabel { flex: 0 0 50px; }
+.hexLabel { flex: 0 1 145px; min-width: 104px; max-width: 165px; }
+.hexLabel input { width: 100%; font-family: ui-monospace, monospace; }
+.picker.picker { width: 50px; height: 38px; padding: 3px; border: 1px solid var(--control-border); border-radius: 7px; cursor: pointer; background: white; }
+.screenButton.screenButton { min-height: 40px; padding-inline: 11px; font-size: 12px; }
+.control .error { margin: 0; color: #b42335; font-size: 11px; line-height: 1.5; }
+.control small { color: var(--muted); font-size: 11px; line-height: 1.65; }

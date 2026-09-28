@@ -965,9 +965,10 @@ function installRoutes(
   previewClient,
   previewUrlResolver,
   xhsSearchMachineTokenConfigured,
+  onProgrammaticReady,
 ) {
   const deliverAsset = createAssetDelivery({ storageRoot });
-  installStandaloneImageEditorRoutes(router,repository,storageRoot,{requestActor,requireJson,json});
+  installStandaloneImageEditorRoutes(router,repository,storageRoot,{requestActor,requireJson,json,onProgrammaticReady});
   const deliveryExportRegistry = createDeliveryExportRegistry();
   const disposeSharedDelivery = installSharedDeliveryRoutes(router, repository, storageRoot, {
     requestActor, requireJson, json, assertCurrentActorIdentity,
@@ -2389,7 +2390,7 @@ function installRoutes(
     );
     json(ctx, 201, actor.role === 'USER' ? userVisibleTask(task) : task);
   });
-  const imageEditing = createImageEditingService({ pool: repository.pool, storageRoot });
+  const imageEditing = createImageEditingService({ pool: repository.pool, storageRoot, onProgrammaticReady });
   router.get('/v1/executions/:executionId/image-edit/context', async ctx => {
     const identity=imageEditExecutionIdentity(ctx);
     const context=await imageEditing.executorContext(identity.executionId,identity.editId,identity.leaseToken);
@@ -2759,6 +2760,7 @@ export function createControlPlaneApp({
   }),
   previewUrlResolver = createDeliveryPreviewUrlResolver(process.env.PREVIEW_BASE_URL),
   logger = console,
+  onProgrammaticReady,
 }) {
   if (!repository) throw new TypeError('repository is required');
   const resolvedStorageRoot = resolve(storageRoot);
@@ -2862,6 +2864,7 @@ export function createControlPlaneApp({
     previewClient,
     previewUrlResolver,
     validXhsSearchMachineToken(xhsSearchMachineToken) !== null,
+    onProgrammaticReady,
   );
   app.context.disposeControlPlaneResources = disposeRouteResources;
   app.use(async (ctx, next) => {

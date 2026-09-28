@@ -1,7 +1,7 @@
 import { createStandaloneImageEditor } from './standalone-image-editor.mjs';
 
-export function installStandaloneImageEditorRoutes(router,repository,storageRoot,{requestActor,requireJson,json}) {
-  const service=createStandaloneImageEditor({pool:repository.pool,storageRoot});
+export function installStandaloneImageEditorRoutes(router,repository,storageRoot,{requestActor,requireJson,json,onProgrammaticReady}) {
+  const service=createStandaloneImageEditor({pool:repository.pool,storageRoot,onProgrammaticReady});
   const actor=ctx=>requestActor(ctx,['ADMIN','USER']);
   const base='/v1/image-editor';
   router.get(`${base}/limits`,ctx=>{actor(ctx);json(ctx,200,service.limits);});

@@ -164,7 +164,6 @@ const REPAIRABLE_POST_FIELDS = new Set([
 
 function repairFieldsFor(error) {
   const message = String(error?.message ?? error);
-  if (/fabricated experience/iu.test(message)) return ['body', 'fabricatedExperience'];
   if (/^itinerary\b/iu.test(message)) return ['body'];
   const field = message.match(/^([A-Za-z][A-Za-z0-9]*)/u)?.[1];
   return REPAIRABLE_POST_FIELDS.has(field) ? [field] : [];
@@ -296,7 +295,6 @@ function contractFailureReason(error) {
   if (/body must end with a complete sentence/iu.test(message)) return '正文结尾语句不完整，必须补全后以完整句子收尾';
   if (/body contains unbalanced brackets or quotation marks/iu.test(message)) return '正文包含未闭合的括号或引号';
   if (/body repair removed protected numeric facts/iu.test(message)) return '正文压缩时遗漏了原稿中的关键数字事实';
-  if (/fabricated experience/iu.test(message)) return '正文不能虚构第一人称使用或实测经历';
   if (/valid JSON object/iu.test(message)) return '模型输出不是合法 JSON';
   return '标题、正文或配图规划未通过结构校验';
 }
