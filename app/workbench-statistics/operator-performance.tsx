@@ -1,6 +1,7 @@
 'use client';
 import { useEffect,useId,useRef,useState,type FormEvent,type ReactNode } from 'react';
 import { RefreshCw,Download,ArrowUpDown,Info,X } from 'lucide-react';
+import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { DatePicker } from '@/components/ui/date-picker';
 import { Select,SelectContent,SelectItem,SelectTrigger,SelectValue } from '@/components/ui/select';
@@ -167,7 +168,7 @@ export function OperatorPerformance({initialFilters={}}:{initialFilters?:Record<
     <header className={styles.header}><div><h1>数据统计</h1><p className={styles.muted}>先看质量结果，再查看工作量与明细。</p></div><div className={styles.actions}>
       <Button variant="outline" size="sm" disabled={!report||busy||exporting} onClick={()=>void exportReport()}><Download size={14}/>{exporting?'导出中…':'导出报表'}</Button>
       <Button variant="outline" size="sm" disabled={busy} onClick={refresh}><RefreshCw size={14}/>{busy?'更新中…':'刷新'}</Button></div></header>
-    <nav className={styles.mainTabs} aria-label="统计视图">{[['overview','总数据'],['accounts','账号数据']].map(([value,label])=><button type="button" key={value} aria-current={view===value?'page':undefined} onClick={()=>changeView(value)}>{label}</button>)}</nav>
+    <nav className={styles.mainTabs} aria-label="统计视图"><button type="button" aria-current={view==='overview'?'page':undefined} onClick={()=>changeView('overview')}>总数据</button><Link href="/reports/annotation-jobs">标注作业统计报表</Link></nav>
     <form className={`panel ${styles.filters}`} onSubmit={apply} key={`${view}:${filters.period}:${filters.from}:${filters.to}:${filters.accountId}:${filters.query}:${filters.stage}:${accounts.length}`}>
       <div className={styles.presets}>{[['today','今日'],['yesterday','昨日'],['7d','近 7 天'],['month','本月'],['30d','近 30 天']].map(([value,label])=><Button key={value} variant="outline" size="sm" type="button" aria-pressed={activePreset(value)} onClick={()=>preset(value)}>{label}</Button>)}</div>
       <DatePicker name="from" label="开始日期" defaultValue={filters.from}/><DatePicker name="to" label="结束日期" defaultValue={filters.to}/>

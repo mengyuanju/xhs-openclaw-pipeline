@@ -9,5 +9,12 @@ export default async function WorkbenchStatisticsPage({searchParams}:{searchPara
   if (!session.roles?.includes('ADMIN')) redirect('/workbench/personal');
   const query=await searchParams;
   const initialFilters=Object.fromEntries(Object.entries(query).filter((entry):entry is [string,string]=>typeof entry[1]==='string'));
+  const accountView=initialFilters.view==='accounts' || !!initialFilters.accountId || !!initialFilters.query
+    || !!initialFilters.stage || !!initialFilters.batchId || ['PRODUCTION','QA'].includes(initialFilters.activity);
+  if(accountView){
+    const params=new URLSearchParams();
+    for(const key of ['period','from','to','accountId']) if(initialFilters[key]) params.set(key,initialFilters[key]);
+    redirect(`/reports/annotation-jobs${params.size?`?${params}`:''}`);
+  }
   return <OperatorPerformance initialFilters={initialFilters}/>;
 }

@@ -1484,6 +1484,12 @@ function installRoutes(
     ctx.set('Cache-Control','private, no-store');
     json(ctx,200,await repository.operatorPerformance(actor,ctx.query));
   });
+  router.get('/v1/admin/annotation-job-report', async (ctx) => {
+    const actor=requestActor(ctx,['ADMIN']);
+    ctx.set('Cache-Control','private, no-store');
+    json(ctx,200,await repository.operatorPerformance(actor,
+      {...ctx.query,activity:'PRODUCTION',stage:''},{kind:'annotationJobReport'}));
+  });
   router.post('/v1/admin/task-data-report/query', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
     await assertCurrentActorIdentity(repository, actor);

@@ -1,10 +1,13 @@
 import { readAccountQualityFacts } from './account-quality-statistics.mjs';
+import { readAnnotationDiscardFacts } from './annotation-discard-facts.mjs';
+import { readAnnotationAssignmentReport } from './annotation-assignment-report.mjs';
 import { randomUUID } from 'node:crypto';
 import { readQaFacts } from './quality-review-statistics.mjs';
 import { readInspectionRounds } from './quality-rounds.mjs';
 import { needsReassignment } from '../../src/quality-rounds.mjs';
 import { ControlPlaneAuthorizationError, ControlPlaneConflictError, ControlPlaneNotFoundError } from './domain.mjs';
 import { buildPerformanceSnapshot,normalizePerformanceFilters,performanceCsv,performanceMetricRows,performancePeoplePage,summarizeOperator } from '../../src/operator-performance.mjs';
+import { buildAnnotationJobReport } from '../../src/annotation-job-report.mjs';
 
 const LIMIT=50_000,REPORT_EVENT_LIMIT=200_000,TTL=5*60_000;
 const caches=new WeakMap();
@@ -95,7 +98,7 @@ export async function readOperatorPerformance(pool,actor,input={},options={}) {
   if(filters.snapshotToken) {
     snapshot=cache.get(filters.snapshotToken);
     if(!snapshot || snapshot.actor!==actorKey(actor)) throw new ControlPlaneConflictError('PERFORMANCE_SNAPSHOT_EXPIRED','报表快照已过期，请刷新统计后重试');
-    if(!options.kind || options.kind==='report') {
+    if(!options.kind || ['report','annotationJobReport'].includes(options.kind)) {
       const original=snapshot.report.filters;
       for(const key of ['period','accountId','stage','batchId','query','activity']) if(input[key]!==undefined && filters[key]!==original[key]) {
         throw new ControlPlaneConflictError('PERFORMANCE_SNAPSHOT_FILTER_MISMATCH','筛选条件已变化，请刷新统计');
@@ -105,7 +108,7 @@ export async function readOperatorPerformance(pool,actor,input={},options={}) {
       }
     }
   } else {
-    if(options.kind && options.kind!=='report') throw new TypeError('查看明细或导出需要报表快照');
+    if(options.kind && !['report','annotationJobReport'].includes(options.kind)) throw new TypeError('查看明细或导出需要报表快照');
     const client=await pool.connect();
     try {
       await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
@@ -122,6 +125,7 @@ export async function readOperatorPerformance(pool,actor,input={},options={}) {
       const start=new Date(filters.range.startMs).toISOString(),end=new Date(filters.range.endMs).toISOString();
       let events=filters.activity==='QA'?[]:assertComplete((await client.query(PERFORMANCE_EVENTS_SQL,[start,end,asOf,filters.accountId,filters.stage,filters.batchId])).rows).map(eventFrom);
       if(filters.activity!=='QA') events.push(...await readAccountQualityFacts(client,{start,end,...filters}));
+      if(options.kind==='annotationJobReport') events.push(...await readAnnotationDiscardFacts(client,{start,end,asOf,...filters}));
       if(filters.activity!=='PRODUCTION') events.push(...await readQaFacts(client,{...filters,asOf}));
       const pending=filters.activity==='QA'?[]:assertComplete((await client.query(PENDING_SQL,[start,end,filters.accountId,filters.stage,filters.batchId])).rows);
       for(const row of pending) events.push({id:`pending:${row.stage}:${row.id}`,taskId:Number(row.task_id),accountId:number(row.account_id),stage:row.stage,
@@ -159,9 +163,11 @@ export async function readOperatorPerformance(pool,actor,input={},options={}) {
         id:Number(row.id),taskId:Number(row.task_id),accountId:number(row.account_id),stage:row.stage,phase:row.phase,state:row.state,
         at:iso(row.occurred_at),baseline:row.baseline})):[];
       const report=buildPerformanceSnapshot(events,current,timeline,filters,asOf,[...events,...otherRechecks],roster);
+      const annotation=options.kind==='annotationJobReport' ? await readAnnotationAssignmentReport(client,report) : null;
       await client.query('COMMIT');
       const token=randomUUID();
-      snapshot={report,current,timeline,actor:actorKey(actor),expires:now+TTL,token};
+      snapshot={report,current,timeline,annotationReport:annotation?.report??null,
+        firstCopyVerdicts:annotation?.firstCopyVerdicts??null,actor:actorKey(actor),expires:now+TTL,token};
       // Keep memory bounded; an evicted snapshot returns an explicit refresh error.
       while(cache.size>=8 || [...cache.values()].reduce((n,s)=>n+s.report.rows.length+s.report.people.length+s.timeline.length,0)
         +events.length+report.people.length+timeline.length>150_000) {
@@ -173,6 +179,21 @@ export async function readOperatorPerformance(pool,actor,input={},options={}) {
     finally {client.release();}
   }
   const {report}=snapshot;
+  if(options.kind==='annotationJobReport') {
+    if(snapshot.annotationReport==null) {
+      const client=await pool.connect();
+      try {
+        await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+        await client.query("SET LOCAL statement_timeout='15s'");
+        const annotation=await readAnnotationAssignmentReport(client,report);
+        snapshot.annotationReport=annotation.report;
+        snapshot.firstCopyVerdicts=annotation.firstCopyVerdicts;
+        await client.query('COMMIT');
+      } catch(error) { await client.query('ROLLBACK');throw error; }
+      finally {client.release();}
+    }
+    return buildAnnotationJobReport(snapshot.annotationReport,snapshot.firstCopyVerdicts);
+  }
   if(options.kind==='export') return {csv:performanceCsv(report),asOf:report.asOf};
   if(options.kind==='detail' || options.accountId!==undefined) {
     const accountId=options.accountId===undefined?null:Number(options.accountId);

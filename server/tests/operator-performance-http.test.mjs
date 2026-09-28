@@ -41,14 +41,22 @@ test('operator performance HTTP endpoints require live administrator identity, i
       assert.equal(response.status,200);assert.match(response.headers.get('cache-control'),/no-store/u);
       if(path==='/export'){assert.match(response.headers.get('content-type'),/text\/csv/u);assert.match(await response.text(),/姓名/u);}
     }
-    assert.equal(calls,5);
+    const jobResponse=await fetch(`${root}/v1/admin/annotation-job-report?period=7d&accountId=12`,{headers:headers()});
+    assert.equal(jobResponse.status,200);assert.match(jobResponse.headers.get('cache-control'),/no-store/u);
+    const jobPayload=(await jobResponse.json()).data;
+    assert.equal(jobPayload.input.activity,'PRODUCTION');
+    assert.equal(jobPayload.input.stage,'');
+    assert.equal(jobPayload.input.accountId,'12');
+    assert.equal(jobPayload.options.kind,'annotationJobReport');
+    assert.equal(calls,6);
     for(const deniedRole of ['USER','REVIEWER']){
       role=deniedRole;
       for(const path of ['', '/tasks','/12/tasks','/export']) assert.equal((await fetch(`${root}/v1/admin/operator-performance${path}`,{headers:headers()})).status,403);
+      assert.equal((await fetch(`${root}/v1/admin/annotation-job-report`,{headers:headers()})).status,403);
     }
     role='ADMIN';version=2;
     assert.equal((await fetch(`${root}/v1/admin/operator-performance`,{headers:headers()})).status,401);
-    assert.equal(calls,5);
+    assert.equal(calls,6);
   }finally{await app.context.disposeControlPlaneResources?.();await new Promise(resolve=>server.close(resolve));
     assert.ok(storageRoot.startsWith(join(tmpdir(),'operator-report-http-')));await rm(storageRoot,{recursive:true,force:true});}
 });

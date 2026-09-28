@@ -8,7 +8,7 @@ import {
 const REPORT_KEY = 'TASK_DATA_STATISTICS';
 const SCHEMA_VERSION = 1;
 const TIME_FIELDS = new Set([
-  'FIRST_MANUAL_COPY_ASSIGNMENT', 'FIRST_COPY_ASSIGNMENT', 'CREATED_AT',
+  'FIRST_MANUAL_COPY_ASSIGNMENT', 'FIRST_COPY_ASSIGNMENT', 'FIRST_COPY_REVIEW_ACTION', 'CREATED_AT',
   'COPY_REVIEW_PASSED_AT', 'COPY_QA_RELEASED_AT',
   'IMAGE_REVIEW_PASSED_AT', 'IMAGE_QA_RELEASED_AT',
 ]);
@@ -17,10 +17,10 @@ const PERSON_FIELDS = new Set([
   'LAST_COPY_REVIEWER', 'LAST_IMAGE_REVIEWER',
 ]);
 const CONDITION_FIELDS = new Set([
-  ...PERSON_FIELDS, 'TASK_ID', 'TASK_NAME', 'STATE', 'COPY_STATUS',
+  ...PERSON_FIELDS, 'TASK_ID', 'TASK_NAME', 'TASK_ID_OR_NAME', 'STATE', 'COPY_STATUS',
   'IMAGE_STATUS', 'REJECTION_COUNT', 'REASSIGNMENT_COUNT',
 ]);
-const SORT_FIELDS = new Set(['FIRST_MANUAL_COPY_ASSIGNMENT', 'CREATED_AT', 'TASK_ID']);
+const SORT_FIELDS = new Set(['FIRST_MANUAL_COPY_ASSIGNMENT', 'FIRST_COPY_ASSIGNMENT', 'FIRST_COPY_REVIEW_ACTION', 'CREATED_AT', 'TASK_ID']);
 const NUMERIC_FIELDS = new Set(['TASK_ID', 'REJECTION_COUNT', 'REASSIGNMENT_COUNT']);
 const STATUS_FIELDS = new Set(['STATE', 'COPY_STATUS', 'IMAGE_STATUS']);
 const STAGE_STATUSES = new Set(['PENDING', 'REVIEW_PASSED', 'QA_PENDING', 'QA_RELEASED', 'RETURNED']);
@@ -82,7 +82,7 @@ function normalizeDate(value, label) {
 function normalizeTime(raw) {
   const time = plainObject(raw, 'saved report time');
   onlyKeys(time, ['field', 'mode', 'days', 'from', 'to'], 'saved report time');
-  const field = String(time.field ?? 'FIRST_MANUAL_COPY_ASSIGNMENT');
+  const field = String(time.field ?? 'FIRST_COPY_REVIEW_ACTION');
   if (!TIME_FIELDS.has(field)) throw new TypeError('saved report time field is invalid');
   const mode = String(time.mode ?? (time.from || time.to ? 'ABSOLUTE' : 'RELATIVE'));
   if (mode === 'RELATIVE') {
@@ -132,7 +132,9 @@ function normalizeCondition(raw) {
     }
     return { field, op, value: condition.value };
   }
-  if (!['EQ', 'CONTAINS'].includes(op) || typeof condition.value !== 'string') {
+  if ((field === 'TASK_ID_OR_NAME' && op !== 'CONTAINS')
+      || (field !== 'TASK_ID_OR_NAME' && !['EQ', 'CONTAINS'].includes(op))
+      || typeof condition.value !== 'string') {
     throw new TypeError('saved report task name condition is invalid');
   }
   const value = condition.value.trim();
@@ -152,11 +154,11 @@ export function normalizeSavedTaskReportQueryConfig(raw) {
     throw new TypeError('saved report conditions must contain at most 20 entries');
   }
   const conditions = rawConditions.map(normalizeCondition);
-  const pageSize = Number(query.pageSize ?? 50);
+  const pageSize = Number(query.pageSize ?? 20);
   if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 200) {
     throw new TypeError('saved report pageSize is invalid');
   }
-  const sort = String(query.sort ?? 'FIRST_MANUAL_COPY_ASSIGNMENT');
+  const sort = String(query.sort ?? 'FIRST_COPY_REVIEW_ACTION');
   if (!SORT_FIELDS.has(sort)) throw new TypeError('saved report sort is invalid');
   const order = String(query.order ?? 'DESC');
   if (!['ASC', 'DESC'].includes(order)) throw new TypeError('saved report order is invalid');

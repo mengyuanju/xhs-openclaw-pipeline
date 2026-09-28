@@ -1,8 +1,10 @@
 'use client';
 
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
-import { ChevronDown, ChevronRight, Download, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { Boxes, ChevronDown, ChevronRight, PackageCheck, PackageOpen, RefreshCw, Search, Settings2, Trash2, Truck, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { apiRequest } from '../../components/api-client';
 import styles from './task-data-report.module.css';
 
@@ -11,53 +13,31 @@ const EXPORT_API = '/api/control-plane/v1/admin/task-data-report/export';
 const SAVED_API = '/api/control-plane/v1/admin/task-data-report/saved-queries';
 const USERS_API = '/api/control-plane/v1/users';
 
-const TIME_FIELDS = [
-  ['FIRST_MANUAL_COPY_ASSIGNMENT', '首次管理员文案分配（领取）'],
-  ['FIRST_COPY_ASSIGNMENT', '首次文案分配（含自动派单）'],
-  ['CREATED_AT', '任务创建时间'],
-  ['COPY_REVIEW_PASSED_AT', '文案审核通过时间'],
-  ['COPY_QA_RELEASED_AT', '文案质检放行时间'],
-  ['IMAGE_REVIEW_PASSED_AT', '图片审核通过时间'],
-  ['IMAGE_QA_RELEASED_AT', '图片质检放行时间'],
-] as const;
-type TimeField = (typeof TIME_FIELDS)[number][0];
-type TimeSelection = { field: TimeField; mode: 'RELATIVE'; days: number } | { field: TimeField; mode: 'ABSOLUTE'; from: string; to: string };
+type TimeField = 'FIRST_COPY_REVIEW_ACTION';
+type TimeSelection = { field: TimeField; mode: 'ABSOLUTE'; from: string; to: string };
 
 const PEOPLE_FIELDS = [
   ['ANNOTATOR', '标注人', '匹配任务历任标注人，包含驳回后的改派'],
   ['COPY_QA_REVIEWER', '文案质检人', '匹配实际作出文案质检结论的人'],
   ['IMAGE_QA_REVIEWER', '图片质检人', '匹配实际作出图片质检结论的人'],
-  ['LAST_COPY_REVIEWER', '最后文案审核人', '当前有效文案版本最后审核通过人'],
-  ['LAST_IMAGE_REVIEWER', '最后图片审核人', '当前有效图片版本最后审核通过人'],
 ] as const;
 type PeopleField = (typeof PEOPLE_FIELDS)[number][0];
-
-const EXTRA_FIELDS = [
-  ['TASK_ID', '任务编号', 'number'],
-  ['TASK_NAME', '任务名称 / Query', 'text'],
-  ['STATE', '当前总体状态', 'state'],
-  ['COPY_STATUS', '文案状态', 'stage'],
-  ['IMAGE_STATUS', '图片状态', 'stage'],
-  ['REJECTION_COUNT', '驳回次数', 'number'],
-  ['REASSIGNMENT_COUNT', '改派次数', 'number'],
-] as const;
-type ExtraField = (typeof EXTRA_FIELDS)[number][0];
-type ConditionField = PeopleField | ExtraField;
+type ConditionField = PeopleField | 'TASK_ID_OR_NAME' | 'STATE' | 'REJECTION_COUNT' | 'REASSIGNMENT_COUNT';
 type Condition = { field: ConditionField; op: 'EQ' | 'CONTAINS' | 'GTE' | 'LTE'; value: string };
 type QueryConfig = {
   time: TimeSelection;
   match: 'ALL' | 'ANY';
   conditions: Condition[];
-  sort: 'FIRST_MANUAL_COPY_ASSIGNMENT' | 'CREATED_AT' | 'TASK_ID';
+  sort: 'FIRST_COPY_REVIEW_ACTION' | 'CREATED_AT' | 'TASK_ID';
   order: 'ASC' | 'DESC';
   pageSize: number;
 };
-type Account = { id: number; username: string; displayName?: string; status?: string };
+type Account = { id: number; username: string; displayName?: string; status?: string; role: 'ADMIN' | 'REVIEWER' | 'USER'; copyReviewEnabled?: boolean; copyQcEnabled?: boolean; imageQcEnabled?: boolean };
 type Person = { accountId?: number | null; username?: string | null; displayName?: string | null; assignedAt?: string | null; source?: string | null };
 type TaskRow = {
   taskId: number; taskName: string; state: string; createdAt: string | null;
   productionBatchId?: number | null; queryPackageName?: string | null;
-  firstManualCopyAssignmentAt: string | null; firstCopyAssignmentAt: string | null;
+  firstManualCopyAssignmentAt: string | null; firstCopyAssignmentAt: string | null; firstCopyReviewAt: string | null; reportAt: string | null;
   annotationPeople: Person[]; currentAnnotator: Person | null;
   copyQaPeople: Person[]; imageQaPeople: Person[];
   lastCopyReviewer: Person | null; lastImageReviewer: Person | null;
@@ -68,7 +48,8 @@ type TaskRow = {
   deliveredAt: string | null; dataQuality?: Record<string, unknown>;
 };
 type ReportResponse = {
-  summary: { total: number; byState: Record<string, number>; copyQaReleased: number; imageQaReleased: number; delivered: number; withReassignment: number; withRejection: number };
+  overview?: { unpacked: number; packed: number; delivered: number };
+  summary: { total: number; reviewPending: number; copyReviewPending: number; imageReviewPending: number; qaPending: number; copyQaPending: number; imageQaPending: number; byState: Record<string, number>; copyQaPassed: number; copyQaFirstPassed: number; imageQaPassed: number; discarded: number; packingDelivery: number };
   items: TaskRow[]; total: number; page: number; pageSize: number; asOf: string;
   dataQuality?: { legacyAssignmentCount?: number; missingFirstManualAssignmentCount?: number };
 };
@@ -83,15 +64,29 @@ const STATE_OPTIONS = [
   ['IMAGE_QC_PENDING', '待图片质检'], ['IMAGE_REWORK_PENDING', '图片质检打回'], ['IMAGE_FAILED', '图片生成失败'],
   ['REVIEWED', '交付池'], ['CANCELLED', '已废弃'],
 ] as const;
-const STAGE_OPTIONS = [
-  ['PENDING', '未通过审核'], ['REVIEW_PASSED', '审核已通过'], ['QA_PENDING', '待质检'],
-  ['QA_RELEASED', '质检已放行'], ['RETURNED', '已打回'],
-] as const;
 const STATE_LABELS = Object.fromEntries(STATE_OPTIONS);
-const STAGE_LABELS = Object.fromEntries(STAGE_OPTIONS);
+const HIDDEN_FILTER_STATES = new Set(['COPY_QUEUED', 'COPY_RUNNING', 'COPY_FAILED', 'IMAGE_FAILED']);
+const FILTER_STATE_OPTIONS = STATE_OPTIONS.filter(([value]) => !HIDDEN_FILTER_STATES.has(value));
+const FILTER_STATES = new Set<string>(FILTER_STATE_OPTIONS.map(([value]) => value));
+const METRIC_STORAGE_KEY = 'task-data-report:visible-metrics:v1';
+const METRIC_OPTIONS = [
+  { id: 'total', label: '任务总数' },
+  { id: 'copyReviewPending', label: '文案待审核数量' },
+  { id: 'imageReviewPending', label: '图片待审核数量' },
+  { id: 'copyQaPending', label: '文案待质检数量' },
+  { id: 'imageQaPending', label: '图片待质检数量' },
+  { id: 'imageQueued', label: '待生图数量' },
+  { id: 'copyQaPassed', label: '文案质检通过数量' },
+  { id: 'imageQaPassed', label: '图片质检通过数量' },
+  { id: 'discarded', label: '废弃数量' },
+  { id: 'packingDelivery', label: '打包交付数量' },
+] as const;
+type MetricId = (typeof METRIC_OPTIONS)[number]['id'];
+const DEFAULT_METRIC_IDS: MetricId[] = ['total', 'copyQaPassed', 'discarded', 'packingDelivery'];
+
 const EMPTY_CONFIG: QueryConfig = {
-  time: { field: 'FIRST_MANUAL_COPY_ASSIGNMENT', mode: 'RELATIVE', days: 30 },
-  match: 'ALL', conditions: [], sort: 'FIRST_MANUAL_COPY_ASSIGNMENT', order: 'DESC', pageSize: 50,
+  time: { field: 'FIRST_COPY_REVIEW_ACTION', mode: 'ABSOLUTE', ...relativeRange(1) },
+  match: 'ALL', conditions: [], sort: 'FIRST_COPY_REVIEW_ACTION', order: 'DESC', pageSize: 20,
 };
 
 function chinaToday() {
@@ -105,7 +100,7 @@ function relativeRange(days: number) {
 }
 
 function numericCondition(field: ConditionField) {
-  return PEOPLE_FIELDS.some(([candidate]) => candidate === field) || ['TASK_ID', 'REJECTION_COUNT', 'REASSIGNMENT_COUNT'].includes(field);
+  return PEOPLE_FIELDS.some(([candidate]) => candidate === field) || ['REJECTION_COUNT', 'REASSIGNMENT_COUNT'].includes(field);
 }
 
 function serializedConditions(conditions: Condition[]) {
@@ -115,8 +110,7 @@ function serializedConditions(conditions: Condition[]) {
 }
 
 function queryBody(config: QueryConfig, page: number) {
-  const range = config.time.mode === 'RELATIVE' ? relativeRange(config.time.days) : { from: config.time.from, to: config.time.to };
-  return { time: { field: config.time.field, ...range }, match: config.match,
+  return { time: { field: 'FIRST_COPY_REVIEW_ACTION', from: config.time.from, to: config.time.to }, match: 'ALL',
     conditions: serializedConditions(config.conditions),
     page, pageSize: config.pageSize, sort: config.sort, order: config.order };
 }
@@ -139,42 +133,28 @@ function peopleText(people: Person[] | null | undefined) {
   return people?.length ? people.map(personText).join(' → ') : '—';
 }
 
-function reviewersText(people: Person[] | null | undefined) {
-  return people?.length ? people.map(personText).join('、') : '—';
-}
-
-function releaseModeText(value: string | null | undefined) {
-  if (!value) return '—';
-  if (['PASSED', 'HUMAN_PASSED', 'MANUAL_PASSED', 'HUMAN_PASS'].includes(value)) return '抽检通过';
-  if (['RELEASED', 'BATCH_RELEASED', 'UNSAMPLED', 'BATCH_RELEASE'].includes(value)) return '免检放行';
-  if (value === 'ADMIN_DIRECT') return '管理员直放';
-  if (value === 'NO_QA_REQUIRED_OR_LEGACY') return '历史记录 / 无需质检';
-  return value;
-}
-
-function qaStatusText(value: string | null | undefined) {
-  if (!value) return '—';
-  const labels: Record<string, string> = {
-    PASSED: '人工通过', RELEASED: '批次放行', RETURNED: '已退回', PENDING: '待质检',
-    NOT_SELECTED: '未抽中，待批次结果', BATCH_AFFECTED: '整批打回波及', BATCH_RETURNED: '整批打回',
-    SUPERSEDED: '已被新版本取代', NOT_REQUIRED_OR_LEGACY: '无需质检 / 历史记录',
-  };
-  return labels[value] ?? value;
-}
-
-function selectOptions(field: ExtraField) {
-  if (field === 'STATE') return STATE_OPTIONS;
-  if (field === 'COPY_STATUS' || field === 'IMAGE_STATUS') return STAGE_OPTIONS;
-  return null;
-}
-
-function newCondition(field: ExtraField): Condition {
-  return { field, op: field === 'TASK_NAME' ? 'CONTAINS' : 'EQ', value: '' };
-}
-
 function cleanConfig(value: QueryConfig): QueryConfig {
   // Saved configurations come from the server; keep a fresh copy for form edits.
-  return { ...EMPTY_CONFIG, ...value, time: { ...value.time }, conditions: Array.isArray(value.conditions) ? value.conditions.map(condition => ({ ...condition, value: String(condition.value ?? '') })) : [] };
+  const savedTime = value?.time as TimeSelection | { mode: 'RELATIVE'; days: number };
+  const range = value === EMPTY_CONFIG ? relativeRange(1) : savedTime && 'from' in savedTime && 'to' in savedTime
+    ? { from: savedTime.from, to: savedTime.to }
+    : relativeRange(savedTime && 'days' in savedTime ? savedTime.days : 1);
+  const allowed = new Set<ConditionField>(['TASK_ID_OR_NAME', 'ANNOTATOR', 'STATE',
+    'REJECTION_COUNT', 'REASSIGNMENT_COUNT', 'COPY_QA_REVIEWER', 'IMAGE_QA_REVIEWER']);
+  const seen = new Set<ConditionField>();
+  const conditions = Array.isArray(value?.conditions) ? value.conditions.filter(condition => {
+    if (!allowed.has(condition.field) || seen.has(condition.field)) return false;
+    if (condition.field === 'STATE' && !FILTER_STATES.has(String(condition.value))) return false;
+    seen.add(condition.field);
+    return true;
+  }).map(condition => ({
+    field: condition.field,
+    op: condition.field === 'TASK_ID_OR_NAME' ? 'CONTAINS' as const
+      : condition.field === 'REASSIGNMENT_COUNT' ? 'GTE' as const : 'EQ' as const,
+    value: String(condition.value ?? ''),
+  })) : [];
+  return { ...EMPTY_CONFIG, time: { field: 'FIRST_COPY_REVIEW_ACTION', mode: 'ABSOLUTE', ...range },
+    match: 'ALL', conditions };
 }
 
 const EVENT_LABELS: Record<string, string> = {
@@ -204,6 +184,59 @@ function eventDetailText(details: Record<string, unknown> | null | undefined) {
     }).join(' · ');
 }
 
+function taskStatusText(row: TaskRow) {
+  if (row.state === 'CANCELLED') return '已废弃';
+  if (row.deliveredAt) return '已交付';
+  if (row.state === 'REVIEWED') return '待打包';
+  if (row.state === 'COPY_REVIEW_PENDING') return row.copyStatus === 'RETURNED' ? '文案待审核（返修）' : '文案待审核';
+  if (row.state === 'PENDING_SECOND_ASSIGNMENT') return '文案待审核（返修）';
+  if (row.state === 'COPY_QC_PENDING') return '待文案质检';
+  if (row.state === 'IMAGE_RUNNING' || row.state === 'IMAGE_QUEUED') return '生图中';
+  if (row.state === 'MANUAL_ARCHIVE') return '待图片审核';
+  if (row.state === 'IMAGE_REWORK_PENDING') return '待图片审核（返修）';
+  if (row.state === 'IMAGE_QC_PENDING') return '待图片质检';
+  return STATE_LABELS[row.state] ?? row.state;
+}
+
+function OverviewCards({ overview }: { overview: ReportResponse['overview'] }) {
+  const total = overview && [overview.unpacked, overview.packed, overview.delivered].every(Number.isFinite)
+    ? overview.unpacked + overview.packed + overview.delivered : undefined;
+  const cards = [
+    { label: '新增交付数', hint: '未打包、已打包、已交付合计', count: total, Icon: Boxes },
+    { label: '新增未打包', hint: '按进入交付池时间统计', count: overview?.unpacked, Icon: PackageOpen },
+    { label: '新增已打包', hint: '按打包时间统计，尚未交付', count: overview?.packed, Icon: PackageCheck },
+    { label: '新增已交付', hint: '按交付时间统计', count: overview?.delivered, Icon: Truck },
+  ];
+  return <div className={styles.overview}>
+    {cards.map(({ label, hint, count, Icon }) => <div key={label} className={styles.overviewCard}>
+      <div className={styles.overviewLabel}><span className={styles.overviewIcon}><Icon size={19} aria-hidden="true" /></span><div className={styles.overviewText}><span>{label}</span><small>{hint}</small></div></div>
+      <strong>{count == null ? '—' : count.toLocaleString('zh-CN')}</strong>
+    </div>)}
+  </div>;
+}
+
+function MetricCards({ summary, visibleIds }: { summary: ReportResponse['summary']; visibleIds: MetricId[] }) {
+  const counts: Record<MetricId, number> = {
+    total: summary.total,
+    copyReviewPending: summary.copyReviewPending,
+    imageReviewPending: summary.imageReviewPending,
+    copyQaPending: summary.copyQaPending,
+    imageQaPending: summary.imageQaPending,
+    imageQueued: summary.byState.IMAGE_QUEUED ?? 0,
+    copyQaPassed: summary.copyQaPassed,
+    imageQaPassed: summary.imageQaPassed,
+    discarded: summary.discarded,
+    packingDelivery: summary.packingDelivery,
+  };
+  return <div className={styles.summary}>
+    {METRIC_OPTIONS.filter(option => visibleIds.includes(option.id)).map(option =>
+      <div key={option.id} className={styles.summaryCard}>
+        <span>{option.label}</span><strong>{counts[option.id].toLocaleString('zh-CN')}</strong>
+        {option.id === 'copyQaPassed' && <small>一次质检通过 {summary.copyQaFirstPassed.toLocaleString('zh-CN')}</small>}
+      </div>)}
+  </div>;
+}
+
 function TaskTimeline({ taskId }: { taskId: number }) {
   const [detail, setDetail] = useState<TaskDetailResponse | null>(null);
   const [busy, setBusy] = useState(true);
@@ -228,43 +261,6 @@ function TaskTimeline({ taskId }: { taskId: number }) {
   </div>;
 }
 
-function TaskDetails({ row }: { row: TaskRow }) {
-  return <div className={styles.detailContent}><div className={styles.details}>
-    <div><h3>任务与分配</h3><dl>
-      <div><dt>创建时间</dt><dd>{timeText(row.createdAt)}</dd></div>
-      <div><dt>词包 / 批次</dt><dd>{row.queryPackageName || '—'}{row.productionBatchId ? ` / #${row.productionBatchId}` : ''}</dd></div>
-      <div><dt>首次管理员文案分配</dt><dd>{timeText(row.firstManualCopyAssignmentAt)}</dd></div>
-      <div><dt>首次文案分配（含自动派单）</dt><dd>{timeText(row.firstCopyAssignmentAt)}</dd></div>
-      <div><dt>当前标注人</dt><dd>{personText(row.currentAnnotator)}</dd></div>
-      <div><dt>历任标注人</dt><dd>{row.annotationPeople?.length ? row.annotationPeople.map((person, index) => <span key={`${person.accountId ?? 'unknown'}-${index}`} className={styles.personStep}>{personText(person)}{person.assignedAt ? ` · ${timeText(person.assignedAt)}` : ''}{person.source ? ` · ${person.source}` : ''}</span>) : '—'}</dd></div>
-    </dl></div>
-    <div><h3>文案</h3><dl>
-      <div><dt>当前状态</dt><dd>{STAGE_LABELS[row.copyStatus] ?? row.copyStatus ?? '—'}</dd></div>
-      <div><dt>最后审核人</dt><dd>{personText(row.lastCopyReviewer)}</dd></div>
-      <div><dt>审核通过</dt><dd>{timeText(row.copyReviewPassedAt)}</dd></div>
-      <div><dt>参与质检人</dt><dd>{reviewersText(row.copyQaPeople)}</dd></div>
-      <div><dt>质检状态 / 放行方式</dt><dd>{qaStatusText(row.copyQaStatus)} · {releaseModeText(row.copyQaReleaseMode)}</dd></div>
-      <div><dt>质检放行</dt><dd>{timeText(row.copyQaReleasedAt)}</dd></div>
-      <div><dt>人工判定通过</dt><dd>{timeText(row.copyQaHumanPassedAt)}</dd></div>
-      <div><dt>驳回次数</dt><dd>{row.copyRejectionCount ?? 0}</dd></div>
-    </dl></div>
-    <div><h3>图片与交付</h3><dl>
-      <div><dt>当前状态</dt><dd>{STAGE_LABELS[row.imageStatus] ?? row.imageStatus ?? '—'}</dd></div>
-      <div><dt>最后审核人</dt><dd>{personText(row.lastImageReviewer)}</dd></div>
-      <div><dt>审核通过</dt><dd>{timeText(row.imageReviewPassedAt)}</dd></div>
-      <div><dt>参与质检人</dt><dd>{reviewersText(row.imageQaPeople)}</dd></div>
-      <div><dt>质检状态 / 放行方式</dt><dd>{qaStatusText(row.imageQaStatus)} · {releaseModeText(row.imageQaReleaseMode)}</dd></div>
-      <div><dt>质检放行</dt><dd>{timeText(row.imageQaReleasedAt)}</dd></div>
-      <div><dt>人工判定通过</dt><dd>{timeText(row.imageQaHumanPassedAt)}</dd></div>
-      <div><dt>驳回次数</dt><dd>{row.imageRejectionCount ?? 0}</dd></div>
-      <div><dt>交付确认</dt><dd>{timeText(row.deliveredAt)}</dd></div>
-    </dl></div>
-  </div>{(row.dataQuality?.assignmentHistoryIncomplete === true || row.dataQuality?.copyApprovalHistoryIncomplete === true || row.dataQuality?.imageApprovalHistoryIncomplete === true) &&
-    <p className={styles.qualityNote}>这条任务的部分历史记录不完整；空白时间或人员不代表该阶段未发生。</p>}
-    <TaskTimeline taskId={row.taskId} />
-  </div>;
-}
-
 export function TaskDataReport() {
   const [draft, setDraft] = useState<QueryConfig>(() => cleanConfig(EMPTY_CONFIG));
   const [applied, setApplied] = useState<QueryConfig>(() => cleanConfig(EMPTY_CONFIG));
@@ -280,10 +276,26 @@ export function TaskDataReport() {
   const [schemeName, setSchemeName] = useState('');
   const [schemeBusy, setSchemeBusy] = useState(false);
   const [schemeMessage, setSchemeMessage] = useState('');
+  const [visibleMetricIds, setVisibleMetricIds] = useState<MetricId[]>(DEFAULT_METRIC_IDS);
+  const [draftMetricIds, setDraftMetricIds] = useState<MetricId[]>(DEFAULT_METRIC_IDS);
+  const [metricSettingsOpen, setMetricSettingsOpen] = useState(false);
+  const [metricStorageError, setMetricStorageError] = useState('');
+  const [schemeOpen, setSchemeOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
   const [openTaskId, setOpenTaskId] = useState<number | null>(null);
-  const [newField, setNewField] = useState<ExtraField>('TASK_NAME');
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState('');
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(METRIC_STORAGE_KEY);
+      if (stored === null) return;
+      const parsed: unknown = JSON.parse(stored);
+      if (Array.isArray(parsed)) {
+        setVisibleMetricIds(METRIC_OPTIONS.filter(option => parsed.includes(option.id)).map(option => option.id));
+      }
+    } catch { /* Invalid or unavailable browser storage keeps the default selection. */ }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -298,7 +310,8 @@ export function TaskDataReport() {
         const preferred = items.find(item => item.isDefault);
         if (preferred?.query) {
           const config = cleanConfig(preferred.query);
-          setDraft(config); setApplied(config); setSelectedId(preferred.id); setSchemeName(preferred.name);
+          const todayConfig: QueryConfig = { ...config, pageSize: 20, time: { field: 'FIRST_COPY_REVIEW_ACTION', mode: 'ABSOLUTE', ...relativeRange(1) } };
+          setDraft(todayConfig); setApplied(todayConfig); setSelectedId(preferred.id); setSchemeName(preferred.name);
         }
       })
       .catch(() => { if (!cancelled) setSchemeMessage('暂时无法读取查询方案，仍可查询任务。'); })
@@ -321,39 +334,41 @@ export function TaskDataReport() {
 
   const accountOptions = useMemo(() => accounts.toSorted((a, b) =>
     (a.displayName || a.username).localeCompare(b.displayName || b.username, 'zh-CN')), [accounts]);
+  const annotatorOptions = accountOptions.filter(account =>
+    account.role === 'USER' && account.copyReviewEnabled !== false);
+  const copyQaOptions = accountOptions.filter(account =>
+    account.role === 'ADMIN' || account.copyQcEnabled === true);
+  const imageQaOptions = accountOptions.filter(account =>
+    account.role === 'ADMIN' || (account.role === 'REVIEWER' && account.imageQcEnabled === true));
   const selected = saved.find(item => item.id === selectedId);
-  const fixedValues = useMemo(() => new Map(draft.conditions.filter(condition => PEOPLE_FIELDS.some(([field]) => field === condition.field))
-    .map(condition => [condition.field, condition.value])), [draft.conditions]);
-  const extra = draft.conditions.filter(condition => EXTRA_FIELDS.some(([field]) => field === condition.field));
+  const fixedValues = useMemo(() => new Map(draft.conditions.map(condition =>
+    [condition.field, condition.value] as const)), [draft.conditions]);
   const totalPages = Math.max(1, Math.ceil((report?.total ?? 0) / (report?.pageSize || draft.pageSize)));
-  const invalidDate = draft.time.mode === 'ABSOLUTE' && (!draft.time.from || !draft.time.to || draft.time.from > draft.time.to);
+  const invalidDate = !draft.time.from || !draft.time.to || draft.time.from > draft.time.to;
   const invalidNumber = draft.conditions.some(condition => numericCondition(condition.field) && String(condition.value).trim()
     && (!Number.isSafeInteger(Number(condition.value))
-      || Number(condition.value) < (condition.field === 'TASK_ID' || PEOPLE_FIELDS.some(([field]) => field === condition.field) ? 1 : 0)
+      || Number(condition.value) < (PEOPLE_FIELDS.some(([field]) => field === condition.field) ? 1 : 0)
       || (['REJECTION_COUNT', 'REASSIGNMENT_COUNT'].includes(condition.field) && Number(condition.value) > 100_000)));
   const tooManyConditions = draft.conditions.filter(condition => String(condition.value).trim()).length > 20;
 
+  function saveMetricSettings() {
+    const next = METRIC_OPTIONS.filter(option => draftMetricIds.includes(option.id)).map(option => option.id);
+    try {
+      window.localStorage.setItem(METRIC_STORAGE_KEY, JSON.stringify(next));
+      setVisibleMetricIds(next);
+      setMetricSettingsOpen(false);
+      setMetricStorageError('');
+    } catch {
+      setMetricStorageError('无法保存到此浏览器的本地存储，请检查浏览器设置。');
+    }
+  }
+
   function updateTime(next: TimeSelection) { setDraft(previous => ({ ...previous, time: next })); }
-  function updateFixed(field: PeopleField, value: string) {
-    setDraft(previous => ({ ...previous, conditions: [...previous.conditions.filter(condition => condition.field !== field), ...(value ? [{ field, op: 'EQ' as const, value }] : [])] }));
-  }
-  function updateExtra(index: number, patch: Partial<Condition>) {
-    setDraft(previous => {
-      const conditions = [...previous.conditions];
-      const positions = conditions.map((condition, position) => EXTRA_FIELDS.some(([field]) => field === condition.field) ? position : -1).filter(position => position >= 0);
-      const position = positions[index];
-      if (position !== undefined) conditions[position] = { ...conditions[position], ...patch };
-      return { ...previous, conditions };
-    });
-  }
-  function removeExtra(index: number) {
-    setDraft(previous => {
-      let seen = -1;
-      return { ...previous, conditions: previous.conditions.filter(condition => {
-        if (!EXTRA_FIELDS.some(([field]) => field === condition.field)) return true;
-        seen += 1; return seen !== index;
-      }) };
-    });
+  function updateFixed(field: ConditionField, value: string, op: Condition['op'] = 'EQ') {
+    setDraft(previous => ({ ...previous, conditions: [
+      ...previous.conditions.filter(condition => condition.field !== field),
+      ...(value.trim() ? [{ field, op, value }] : []),
+    ] }));
   }
   function apply(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -418,11 +433,14 @@ export function TaskDataReport() {
     <header className={styles.header}>
       <div><span className={styles.kicker}>报表统计 / 任务数据统计</span><h1>任务数据统计</h1>
         <p>以任务为单位查看分配、标注、审核、质检与交付。每个任务只占一行。</p></div>
-      <div className={styles.headerActions}><Button variant="outline" size="sm" type="button" disabled={!report || loading || exporting} onClick={() => void exportCsv()}><Download size={15} aria-hidden="true" />{exporting ? '导出中…' : '导出 CSV'}</Button>
-        <Button variant="outline" size="sm" type="button" disabled={loading || !ready} onClick={() => setRefresh(value => value + 1)}><RefreshCw size={15} aria-hidden="true" />刷新数据</Button></div>
+      <div className={styles.headerActions}>
+        <Button variant="outline" size="sm" type="button" disabled={loading || !ready} onClick={() => setRefresh(value => value + 1)}><RefreshCw size={15} aria-hidden="true" />刷新数据</Button>
+      </div>
     </header>
 
-    <section className={`${styles.scheme} panel`} aria-label="查询方案">
+    {schemeOpen && <div className={styles.schemeBackdrop} onClick={() => setSchemeOpen(false)}>
+      <section className={`${styles.scheme} panel`} role="dialog" aria-modal="true" aria-label="查询方案设置" onClick={event => event.stopPropagation()}>
+      <button type="button" className={styles.schemeClose} aria-label="关闭查询方案设置" onClick={() => setSchemeOpen(false)}><X size={18} aria-hidden="true" /></button>
       <div className={styles.schemeTitle}><strong>我的查询方案</strong><span>切换后立即查询；保存的是条件与排序，不保存结果。</span></div>
       <div className={styles.schemeControls}>
         <label>选择方案<select value={selectedId ?? ''} onChange={event => chooseScheme(event.target.value)}>
@@ -437,95 +455,146 @@ export function TaskDataReport() {
         </div>
       </div>
       {schemeMessage && <p className={styles.schemeMessage} role="status">{schemeMessage}</p>}
-    </section>
+    </section></div>}
 
     <form className={`${styles.filters} panel`} onSubmit={apply}>
-      <div className={styles.sectionHead}><div><h2>查询条件</h2><p>默认时间按首次管理员文案分配（领取）计；后续驳回和改派不会重置。</p></div></div>
-      <div className={styles.timeControls}>
-        <label>时间参考维度<select value={draft.time.field} onChange={event => updateTime({ ...draft.time, field: event.target.value as TimeField })}>
-          {TIME_FIELDS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+      <div className={styles.primaryFilters}>
+        <label>时间区间<div className={styles.dateRange}>
+          <input type="date" aria-label="开始日期" value={draft.time.from} onChange={event => updateTime({ ...draft.time, from: event.target.value })} />
+          <span>至</span>
+          <input type="date" aria-label="结束日期" value={draft.time.to} onChange={event => updateTime({ ...draft.time, to: event.target.value })} />
+        </div></label>
+        <label>标注人<select value={fixedValues.get('ANNOTATOR') ?? ''} onChange={event => updateFixed('ANNOTATOR', event.target.value)}>
+          <option value="">全部标注人</option>{annotatorOptions.map(account => <option key={account.id} value={account.id}>{account.displayName || account.username}（{account.username}）{account.status === 'DISABLED' ? ' · 已停用' : ''}</option>)}
         </select></label>
-        <label>时间区间<select value={draft.time.mode === 'RELATIVE' ? String(draft.time.days) : 'CUSTOM'} onChange={event => {
-          if (event.target.value === 'CUSTOM') { const range = relativeRange(30); updateTime({ field: draft.time.field, mode: 'ABSOLUTE', ...range }); }
-          else updateTime({ field: draft.time.field, mode: 'RELATIVE', days: Number(event.target.value) });
-        }}><option value="7">近 7 天</option><option value="30">近 30 天</option><option value="90">近 90 天</option>
-          {draft.time.mode === 'RELATIVE' && ![7, 30, 90].includes(draft.time.days) && <option value={draft.time.days}>近 {draft.time.days} 天</option>}
-          <option value="CUSTOM">自定义日期</option></select></label>
-        {draft.time.mode === 'ABSOLUTE' && <><label>开始日期<input type="date" value={draft.time.from} onChange={event => updateTime({ field: draft.time.field, mode: 'ABSOLUTE', from: event.target.value, to: draft.time.mode === 'ABSOLUTE' ? draft.time.to : '' })} /></label>
-          <label>结束日期<input type="date" value={draft.time.to} onChange={event => updateTime({ field: draft.time.field, mode: 'ABSOLUTE', from: draft.time.mode === 'ABSOLUTE' ? draft.time.from : '', to: event.target.value })} /></label></>}
+        <label>任务状态<select value={fixedValues.get('STATE') ?? ''} onChange={event => updateFixed('STATE', event.target.value)}>
+          <option value="">全部状态</option>{FILTER_STATE_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+        </select></label>
+        <button className={styles.moreButton} type="button" onClick={() => setMoreOpen(value => !value)} aria-expanded={moreOpen}>
+          更多条件 <ChevronDown size={15} aria-hidden="true" />
+        </button>
+        <Button type="submit" size="sm" disabled={invalidDate || invalidNumber || tooManyConditions || loading}><Search size={15} aria-hidden="true" />查询任务</Button>
       </div>
-      {draft.time.field === 'FIRST_MANUAL_COPY_ASSIGNMENT' && <p className={styles.timeHint}>此口径只包含有管理员首次文案分配记录的任务。自动派单或无法追溯该记录的历史任务，可切换至“首次文案分配（含自动派单）”或“任务创建时间”查看。</p>}
-      <div className={styles.matchRow}><span>符合以下</span><select aria-label="条件组合方式" value={draft.match} onChange={event => setDraft(previous => ({ ...previous, match: event.target.value as 'ALL' | 'ANY' }))}>
-        <option value="ALL">所有</option><option value="ANY">任一</option></select><span>已填写条件</span><small>时间区间始终生效；空白人员条件不参与筛选。</small></div>
-      <div className={styles.peopleGrid}>{PEOPLE_FIELDS.map(([field, label, hint]) => <label key={field} title={hint}>{label}
-        <select value={fixedValues.get(field) ?? ''} onChange={event => updateFixed(field, event.target.value)}>
-          <option value="">全部人员</option>{accountOptions.map(account => <option key={account.id} value={account.id}>{account.displayName || account.username}（{account.username}）{account.status === 'DISABLED' ? ' · 已停用' : ''}</option>)}
-        </select></label>)}</div>
-      {extra.length > 0 && <div className={styles.extraList} aria-label="新增条件">{extra.map((condition, index) => {
-        const field = EXTRA_FIELDS.find(([value]) => value === condition.field) ?? EXTRA_FIELDS[0];
-        const options = selectOptions(condition.field as ExtraField);
-        return <div className={styles.extraRow} key={`${index}-${condition.field}`}>
-          <select aria-label={`第 ${index + 1} 个条件字段`} value={condition.field} onChange={event => updateExtra(index, newCondition(event.target.value as ExtraField))}>{EXTRA_FIELDS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
-          <select aria-label={`第 ${index + 1} 个条件比较方式`} value={condition.op} onChange={event => updateExtra(index, { op: event.target.value as Condition['op'] })}>
-            <option value="EQ">等于</option>{field[2] === 'text' && <option value="CONTAINS">包含</option>}{field[2] === 'number' && condition.field !== 'TASK_ID' && <><option value="GTE">大于等于</option><option value="LTE">小于等于</option></>}
-          </select>
-          {options ? <select aria-label={`第 ${index + 1} 个条件值`} value={condition.value} onChange={event => updateExtra(index, { value: event.target.value })}>
-            <option value="">请选择</option>{options.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-          </select> : <input aria-label={`第 ${index + 1} 个条件值`} type={field[2] === 'number' ? 'number' : 'text'} min={field[2] === 'number' ? (condition.field === 'TASK_ID' ? 1 : 0) : undefined} max={['REJECTION_COUNT', 'REASSIGNMENT_COUNT'].includes(condition.field) ? 100_000 : undefined} step={field[2] === 'number' ? 1 : undefined} value={condition.value} onChange={event => updateExtra(index, { value: event.target.value })} placeholder={field[2] === 'number' ? '请输入数字' : '请输入关键词'} />}
-          <button type="button" className={styles.remove} aria-label={`删除第 ${index + 1} 个条件`} onClick={() => removeExtra(index)}><Trash2 size={15} aria-hidden="true" /></button>
-        </div>;
-      })}</div>}
-      <div className={styles.filterFooter}>
-        <div className={styles.addCondition}><select aria-label="要添加的条件" value={newField} onChange={event => setNewField(event.target.value as ExtraField)}>{EXTRA_FIELDS.map(([field, label]) => <option key={field} value={field}>{label}</option>)}</select>
-          <Button variant="outline" size="sm" type="button" disabled={draft.conditions.length >= 20} onClick={() => setDraft(previous => ({ ...previous, conditions: [...previous.conditions, newCondition(newField)] }))}><Plus size={14} aria-hidden="true" />添加条件</Button></div>
-        <div className={styles.queryActions}><label>排序<select value={`${draft.sort}:${draft.order}`} onChange={event => {
-          const [sort, order] = event.target.value.split(':');
-          setDraft(previous => ({ ...previous, sort: sort as QueryConfig['sort'], order: order as QueryConfig['order'] }));
-        }}><option value="FIRST_MANUAL_COPY_ASSIGNMENT:DESC">首次分配时间 · 新到旧</option><option value="FIRST_MANUAL_COPY_ASSIGNMENT:ASC">首次分配时间 · 旧到新</option><option value="CREATED_AT:DESC">创建时间 · 新到旧</option><option value="TASK_ID:DESC">任务编号 · 大到小</option></select></label>
-          <Button type="submit" size="sm" disabled={invalidDate || invalidNumber || tooManyConditions || loading}><Search size={15} aria-hidden="true" />查询任务</Button></div>
-      </div>
+      {moreOpen && <div className={styles.moreFilters}>
+        <label>任务ID或任务名
+          <input type="text" value={fixedValues.get('TASK_ID_OR_NAME') ?? ''}
+            onChange={event => updateFixed('TASK_ID_OR_NAME', event.target.value, 'CONTAINS')}
+            maxLength={200} placeholder="任务ID或任务名"
+            title="输入 #ID 精确查询任务，其他输入按任务名查询" />
+        </label>
+        <label>驳回次数<select value={fixedValues.get('REJECTION_COUNT') ?? ''} onChange={event => updateFixed('REJECTION_COUNT', event.target.value)}>
+          <option value="">不限</option><option value="0">0 次</option><option value="1">1 次</option><option value="2">2 次</option>
+        </select></label>
+        <label>改派次数（≥）<input type="number" min={0} max={100000} step={1}
+          value={fixedValues.get('REASSIGNMENT_COUNT') ?? ''}
+          onChange={event => updateFixed('REASSIGNMENT_COUNT', event.target.value, 'GTE')}
+          placeholder="不限" /></label>
+        {PEOPLE_FIELDS.filter(([field]) => field !== 'ANNOTATOR').map(([field, label, hint]) =>
+          <label key={field} title={hint}>{label}<select value={fixedValues.get(field) ?? ''}
+            onChange={event => updateFixed(field, event.target.value)}>
+            <option value="">全部{label}</option>{(field === 'COPY_QA_REVIEWER' ? copyQaOptions : imageQaOptions).map(account =>
+              <option key={account.id} value={account.id}>{account.displayName || account.username}（{account.username}）{account.status === 'DISABLED' ? ' · 已停用' : ''}</option>)}
+          </select></label>)}
+      </div>}
       {invalidDate && <p role="alert" className={styles.error}>请选择有效的开始和结束日期。</p>}
-      {invalidNumber && <p role="alert" className={styles.error}>任务编号、人员账号及次数条件应填写有效整数。</p>}
+      {invalidNumber && <p role="alert" className={styles.error}>人员账号及次数条件应填写有效整数。</p>}
       {tooManyConditions && <p role="alert" className={styles.error}>最多可以同时使用 20 个已填写条件。</p>}
     </form>
 
     {error && <div role="alert" className={styles.errorBox}>{error}</div>}
     {exportError && <div role="alert" className={styles.errorBox}>{exportError}</div>}
-    {report && <><div className={styles.summary} aria-label="报表概览">
-      {[
-        ['任务总数', report.summary.total], ['文案质检已放行', report.summary.copyQaReleased], ['图片质检已放行', report.summary.imageQaReleased],
-        ['已确认交付', report.summary.delivered], ['发生过驳回', report.summary.withRejection], ['发生过改派', report.summary.withReassignment],
-      ].map(([label, value]) => <div key={label} className={styles.summaryCard}><span>{label}</span><strong>{Number(value ?? 0).toLocaleString('zh-CN')}</strong></div>)}
-    </div>
-    {(report.dataQuality?.legacyAssignmentCount || report.dataQuality?.missingFirstManualAssignmentCount) ? <p className={styles.qualityNote} role="note">
-      历史分配记录可能不完整：{report.dataQuality.legacyAssignmentCount ?? 0} 条历史记录，{report.dataQuality.missingFirstManualAssignmentCount ?? 0} 条无法确认首次管理员分配时间。缺失值显示“—”，不推断为零次。
-    </p> : null}
+    {report && <><section className={styles.overviewSection} aria-labelledby="task-delivery-overview-title">
+      <div className={styles.overviewToolbar}>
+        <h2 id="task-delivery-overview-title">任务交付概览</h2>
+        <p>仅受时间区间和标注人影响</p>
+      </div>
+      <OverviewCards overview={report.overview} />
+    </section>
+    <section className={styles.summarySection} aria-label="任务数量详情">
+      <div className={styles.summaryToolbar}>
+        <h2>任务数量详情</h2>
+        <Button variant="outline" size="sm" type="button" onClick={() => {
+          setDraftMetricIds(visibleMetricIds);
+          setMetricStorageError('');
+          setMetricSettingsOpen(true);
+        }}><Settings2 size={15} aria-hidden="true" />展示设置</Button>
+      </div>
+      <MetricCards summary={report.summary} visibleIds={visibleMetricIds} />
+    </section>
     <section className={`${styles.results} panel`} aria-label="任务数据明细">
       <div className={styles.resultHead}><div><h2>任务明细</h2><p>共 {report.total.toLocaleString('zh-CN')} 条任务 · 第 {report.page} / {totalPages} 页 · 北京时间 · 更新于 {timeText(report.asOf)}</p></div>
         {loading && <span role="status">正在更新…</span>}</div>
-      <div className={styles.tableScroll} role="region" aria-label="任务数据明细，可横向滚动" tabIndex={0}><table><thead><tr>
-        <th scope="col">任务</th><th scope="col">首次管理员分配</th><th scope="col">历任标注人</th><th scope="col">文案质检人</th><th scope="col">图片质检人</th>
-        <th scope="col">最后文案审核人</th><th scope="col">最后图片审核人</th><th scope="col">文案状态</th><th scope="col">图片状态</th>
-        <th scope="col">驳回</th><th scope="col">改派</th><th scope="col">文案审核通过</th><th scope="col">文案质检通过</th><th scope="col">文案质检放行</th><th scope="col">图片审核通过</th><th scope="col">图片质检通过</th><th scope="col">图片质检放行</th><th scope="col">交付确认</th>
+      <div className={styles.tableScroll} role="region" aria-label="任务数据明细" tabIndex={0}><table><thead><tr>
+        <th scope="col">任务ID</th><th scope="col">任务名</th><th scope="col">当前标注人</th><th scope="col">文案质检人</th><th scope="col">图片质检人</th><th scope="col">任务状态</th><th scope="col">驳回次数</th><th scope="col">改派次数</th>
       </tr></thead><tbody>{report.items.map(row => <FragmentRow key={row.taskId} row={row} open={openTaskId === row.taskId} onToggle={() => setOpenTaskId(current => current === row.taskId ? null : row.taskId)} />)}</tbody></table>
-        {!report.items.length && <div className={styles.empty}>该范围没有符合条件的任务。可调整时间维度或筛选条件。</div>}
+        {!report.items.length && <div className={styles.empty}>该范围没有符合条件的任务。可调整日期或筛选条件。</div>}
       </div>
       <div className={styles.pagination}><span>每页 {report.pageSize} 条</span><div><Button variant="outline" size="sm" type="button" disabled={page <= 1 || loading} onClick={() => setPage(value => value - 1)}>上一页</Button>
         <span>{page} / {totalPages}</span><Button variant="outline" size="sm" type="button" disabled={page >= totalPages || loading} onClick={() => setPage(value => value + 1)}>下一页</Button></div></div>
     </section></>}
+    <Dialog open={metricSettingsOpen} onOpenChange={setMetricSettingsOpen}>
+      <DialogContent className={styles.metricDialog} overlayClassName={styles.metricOverlay}>
+        <DialogTitle className={styles.metricDialogTitle}>选择显示的数量标签</DialogTitle>
+        <DialogDescription className={styles.metricDialogDescription}>勾选后保存，设置仅保存在当前浏览器。</DialogDescription>
+        <div className={styles.metricChoices}>
+          {METRIC_OPTIONS.map(option => <label key={option.id} className={styles.metricChoice}>
+            <input type="checkbox" checked={draftMetricIds.includes(option.id)}
+              onChange={event => setDraftMetricIds(previous => event.target.checked
+                ? [...previous, option.id] : previous.filter(id => id !== option.id))} />
+            <span>{option.label}</span>
+          </label>)}
+        </div>
+        {metricStorageError && <p className={styles.error} role="alert">{metricStorageError}</p>}
+        <div className={styles.metricDialogActions}>
+          <Button variant="outline" type="button" onClick={() => setMetricSettingsOpen(false)}>取消</Button>
+          <Button type="button" onClick={saveMetricSettings}>保存设置</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
     {!report && loading && <p className={styles.loading} role="status">正在汇总任务生命周期数据…</p>}
   </div>;
 }
 
+function AssignmentHistoryBadge({ row }: { row: TaskRow }) {
+  const [position, setPosition] = useState<{ top?: number; bottom?: number; left: number } | null>(null);
+  const tooltipId = `task-assignment-history-${row.taskId}`;
+  function show(target: HTMLSpanElement) {
+    const rect = target.getBoundingClientRect();
+    const width = Math.min(420, window.innerWidth - 24);
+    const left = Math.max(12, Math.min(rect.left, window.innerWidth - width - 12));
+    const above = window.innerHeight - rect.bottom < 220 && rect.top > window.innerHeight / 2;
+    setPosition(above
+      ? { bottom: window.innerHeight - rect.top + 8, left }
+      : { top: rect.bottom + 8, left });
+  }
+  return <>
+    <span className={styles.reassignmentBadge} tabIndex={0}
+      aria-label={`改派 ${row.reassignmentCount} 次，查看流转记录`}
+      aria-describedby={position ? tooltipId : undefined}
+      onMouseEnter={event => show(event.currentTarget)}
+      onMouseLeave={() => setPosition(null)}
+      onFocus={event => show(event.currentTarget)}
+      onBlur={() => setPosition(null)}>{row.reassignmentCount}</span>
+    {position && createPortal(<div id={tooltipId} role="tooltip" className={styles.assignmentTooltip} style={position}>
+      <strong>标注人流转记录</strong>
+      {row.annotationPeople.length ? row.annotationPeople.map((person, index) =>
+        <span key={index}>{personText(person)}{person.assignedAt ? ' · ' + timeText(person.assignedAt) : ''}</span>)
+        : <span>暂无可追溯的流转记录</span>}
+    </div>, document.body)}
+  </>;
+}
+
 function FragmentRow({ row, open, onToggle }: { row: TaskRow; open: boolean; onToggle: () => void }) {
   return <><tr className={styles.taskRow}>
-    <td><button className={styles.taskButton} type="button" onClick={onToggle} aria-expanded={open} aria-label={`${open ? '收起' : '展开'}任务 ${row.taskId} 详情`}>
-      {open ? <ChevronDown size={15} aria-hidden="true" /> : <ChevronRight size={15} aria-hidden="true" />}<span><strong>#{row.taskId}</strong><small title={row.taskName}>{row.taskName || '未命名任务'}</small><em>{STATE_LABELS[row.state] ?? row.state}</em></span></button></td>
-    <td>{timeText(row.firstManualCopyAssignmentAt)}</td><td className={styles.peopleCell} title={peopleText(row.annotationPeople)}>{peopleText(row.annotationPeople)}{row.dataQuality?.assignmentHistoryIncomplete === true && <small className={styles.incomplete}>历史记录可能不完整</small>}</td>
-    <td>{reviewersText(row.copyQaPeople)}</td><td>{reviewersText(row.imageQaPeople)}</td><td>{personText(row.lastCopyReviewer)}</td><td>{personText(row.lastImageReviewer)}</td>
-    <td>{STAGE_LABELS[row.copyStatus] ?? row.copyStatus ?? '—'}</td><td>{STAGE_LABELS[row.imageStatus] ?? row.imageStatus ?? '—'}</td>
-    <td>{row.rejectionCount ?? 0}</td><td>{row.reassignmentCount ?? 0}{row.dataQuality?.assignmentHistoryIncomplete === true && <small className={styles.incomplete}>历史记录可能不完整</small>}</td><td>{timeText(row.copyReviewPassedAt)}</td><td>{timeText(row.copyQaHumanPassedAt)}</td>
-    <td><span className={styles.releaseCell}>{row.copyQaReleasedAt && <small>{releaseModeText(row.copyQaReleaseMode)}</small>}{timeText(row.copyQaReleasedAt)}</span></td>
-    <td>{timeText(row.imageReviewPassedAt)}</td><td>{timeText(row.imageQaHumanPassedAt)}</td><td><span className={styles.releaseCell}>{row.imageQaReleasedAt && <small>{releaseModeText(row.imageQaReleaseMode)}</small>}{timeText(row.imageQaReleasedAt)}</span></td><td>{timeText(row.deliveredAt)}</td>
-  </tr>{open && <tr className={styles.detailRow}><td colSpan={18}><TaskDetails row={row} /></td></tr>}</>;
+    <td className={styles.taskIdCell}>{row.taskId}</td>
+    <td><button className={styles.taskButton} type="button" onClick={onToggle} aria-expanded={open} aria-label={open ? '收起任务时间线' : '展开任务时间线'}>
+      {open ? <ChevronDown size={15} aria-hidden="true" /> : <ChevronRight size={15} aria-hidden="true" />}<span title={row.taskName}>{row.taskName || '未命名任务'}</span></button></td>
+    <td><div className={styles.annotator}>{personText(row.currentAnnotator)}
+      {row.reassignmentCount > 0 && <AssignmentHistoryBadge row={row} />}</div></td>
+    <td className={styles.qaPeopleCell} title={peopleText(row.copyQaPeople)}>{peopleText(row.copyQaPeople)}</td>
+    <td className={styles.qaPeopleCell} title={peopleText(row.imageQaPeople)}>{peopleText(row.imageQaPeople)}</td>
+    <td>{taskStatusText(row)}</td>
+    <td>{row.rejectionCount > 0 ? <strong className={styles.countHighlight}>{row.rejectionCount}</strong> : '—'}</td>
+    <td>{row.reassignmentCount > 0 ? <strong className={styles.countHighlight}>{row.reassignmentCount}</strong> : '—'}</td>
+  </tr>{open && <tr className={styles.detailRow}><td colSpan={8}><TaskTimeline taskId={row.taskId} /></td></tr>}</>;
 }
