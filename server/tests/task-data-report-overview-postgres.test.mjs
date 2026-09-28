@@ -12,7 +12,7 @@ const BOUNDARY_DAY = '2026-09-25';
 const FIRST_REVIEW_AT = new Date('2026-09-01T12:00:00+08:00');
 const NODE_ID = 'report-overview-node';
 
-test('fixed delivery overview has mutually exclusive current-version stages and operation-time owners', {
+test('delivery overview uses ready dates with mutually exclusive current-version stages and frozen owners', {
   skip: process.env.RUN_POSTGRES_E2E !== '1', timeout: 180_000,
 }, async t => {
   const database = await startTemporaryPostgres18();
@@ -132,11 +132,11 @@ test('fixed delivery overview has mutually exclusive current-version stages and 
       assert.equal(result.summary.packingDelivery, 0,
         'current delivery eligibility still uses first COPY review dates in the lower summary');
       const ledger = await listDeliveryItems(db, {
-        view: 'CURRENT', dateField: 'UPDATED', from: day, to: day,
+        view: 'CURRENT', dateField: 'READY', from: day, to: day,
       }, admin);
       assert.deepEqual({
         unpacked: ledger.summary.unpacked, packed: ledger.summary.packed, delivered: ledger.summary.delivered,
-      }, expected, 'overview stages match the CURRENT delivery ledger');
+      }, expected, 'overview stages match the CURRENT delivery ledger filtered by ready dates');
     }
 
     const unpackedA = await readyTask('进入交付池后改派，仍归甲', {
@@ -174,7 +174,7 @@ test('fixed delivery overview has mutually exclusive current-version stages and 
     });
 
     await t.test('a later confirmation and an old delivered version cannot leave a task in multiple stages', async () => {
-      const deliveredAfterRange = await readyTask('范围后才交付，当前不能仍算已打包', {
+      const deliveredAfterRange = await readyTask('范围后才交付，仍归进入交付池当天', {
         owner: b, readyAt: '2026-09-20T14:00:00+08:00',
       });
       await pack(deliveredAfterRange, '2026-09-20T15:00:00+08:00', '2026-09-21T15:00:00+08:00');
@@ -186,10 +186,11 @@ test('fixed delivery overview has mutually exclusive current-version stages and 
       assert.notEqual(newVersion.copyRevisionId, oldDelivered.copyRevisionId);
       assert.ok((await db.query('SELECT item_id FROM delivery_item_confirmations WHERE item_id=$1',
         [oldItemId])).rows[0], 'the earlier confirmation remains in immutable history');
-      await assertOverview({ unpacked: 3, packed: 1, delivered: 1 });
-      assert.deepEqual((await report('2026-09-21')).overview, { unpacked: 0, packed: 0, delivered: 1 });
+      await assertOverview({ unpacked: 3, packed: 1, delivered: 2 });
+      assert.deepEqual((await report('2026-09-21')).overview, { unpacked: 0, packed: 0, delivered: 0 },
+        'a later confirmation does not move the ready-date cohort to the confirmation day');
       assert.deepEqual((await report(DAY, [], '2026-09-21')).overview,
-        { unpacked: 3, packed: 1, delivered: 2 }, 'each current tuple is counted once even over several operation days');
+        { unpacked: 3, packed: 1, delivered: 2 }, 'each current tuple is counted once even when packing and confirmation span several days');
     });
 
     const invalidDetailTasks = [];
@@ -228,13 +229,13 @@ test('fixed delivery overview has mutually exclusive current-version stages and 
       const notReviewed = await readyTask('状态不是REVIEWED');
       await db.query("UPDATE tasks SET state='IMAGE_QC_PENDING' WHERE id=$1", [notReviewed.taskId]);
       invalidDetailTasks.push(withdrawn, cancelled, staleCopy, staleImage, noQa, noReady, notReviewed);
-      await assertOverview({ unpacked: 3, packed: 1, delivered: 1 });
+      await assertOverview({ unpacked: 3, packed: 1, delivered: 2 });
     });
 
     await t.test('upper and lower delivery counts share eligibility and differ only in their date basis', async () => {
-      const operationPeriod = await report(DAY);
-      assert.deepEqual(operationPeriod.overview, { unpacked: 3, packed: 1, delivered: 1 });
-      assert.equal(operationPeriod.summary.packingDelivery, 0);
+      const readyPeriod = await report(DAY);
+      assert.deepEqual(readyPeriod.overview, { unpacked: 3, packed: 1, delivered: 2 });
+      assert.equal(readyPeriod.summary.packingDelivery, 0);
       const reviewPeriod = await report('2026-09-01');
       assert.deepEqual(reviewPeriod.overview, { unpacked: 0, packed: 0, delivered: 0 });
       assert.equal(reviewPeriod.summary.packingDelivery, 6);
@@ -253,19 +254,18 @@ test('fixed delivery overview has mutually exclusive current-version stages and 
       assert.equal(wide.items.some(item => item.taskName.startsWith('测试')), false);
     });
 
-    await t.test('each stage uses its own operation timestamp with inclusive Beijing days', async () => {
+    await t.test('all current stages use the ready timestamp with inclusive Beijing days', async () => {
       for (const stage of ['unpacked', 'packed', 'delivered']) {
-        for (const [label, operationAt] of [
+        for (const [label, readyAt] of [
           ['起点', '2026-09-25T00:00:00+08:00'],
           ['当日末尾', '2026-09-25T23:59:59.999+08:00'],
           ['起点之前', '2026-09-24T23:59:59.999+08:00'],
           ['结束之后', '2026-09-26T00:00:00+08:00'],
         ]) {
-          const task = await readyTask(stage + ' ' + label, {
-            readyAt: stage === 'unpacked' ? operationAt : '2026-09-19T10:00:00+08:00',
-          });
-          if (stage === 'packed') await pack(task, operationAt);
-          if (stage === 'delivered') await pack(task, '2026-09-19T11:00:00+08:00', operationAt);
+          const task = await readyTask(stage + ' ' + label, { readyAt });
+          if (stage === 'packed') await pack(task, '2026-09-27T10:00:00+08:00');
+          if (stage === 'delivered') await pack(task, '2026-09-27T11:00:00+08:00',
+            '2026-09-28T12:00:00+08:00');
         }
       }
       await assertOverview({ unpacked: 2, packed: 2, delivered: 2 }, BOUNDARY_DAY);
@@ -283,11 +283,11 @@ test('fixed delivery overview has mutually exclusive current-version stages and 
       const result = await report(DAY, extraConditions);
       assert.equal(result.total, 0);
       assert.equal(result.summary.total, 0);
-      assert.deepEqual(result.overview, { unpacked: 3, packed: 1, delivered: 1 });
+      assert.deepEqual(result.overview, { unpacked: 3, packed: 1, delivered: 2 });
       assert.deepEqual((await report(DAY, [annotator(a), ...extraConditions])).overview,
         { unpacked: 2, packed: 0, delivered: 0 });
       assert.deepEqual((await report(DAY, [annotator(b), ...extraConditions])).overview,
-        { unpacked: 1, packed: 1, delivered: 1 });
+        { unpacked: 1, packed: 1, delivered: 2 });
     });
     await t.test('pool overview is global, excludes future tasks and shares the report snapshot', async () => {
       const baseline = await report();
@@ -454,6 +454,35 @@ test('fixed delivery overview has mutually exclusive current-version stages and 
       assert.deepEqual(nextSnapshot.poolOverview, {
         ...expected, copyQaPending: expected.copyQaPending + 1, deliveryTotal: expected.deliveryTotal + 1,
       }, 'the subsequent report includes both committed tasks in its new snapshot');
+    });
+
+    await t.test('later packing and confirmation never move delivery additions away from their ready day', async () => {
+      const earlierPacked = await readyTask('较早入池、后来打包仍按入池日期', {
+        owner: a, readyAt: '2026-09-10T08:00:00+08:00',
+      });
+      await reassign(earlierPacked, a, b, '2026-09-10T12:00:00+08:00');
+      await pack(earlierPacked, '2026-09-11T10:00:00+08:00');
+      await reassign(earlierPacked, b, c, '2026-09-12T10:00:00+08:00');
+      const earlierDelivered = await readyTask('较早入池、后来确认仍按入池日期', {
+        owner: b, readyAt: '2026-09-10T09:00:00+08:00',
+      });
+      await pack(earlierDelivered, '2026-09-10T11:00:00+08:00', '2026-09-11T11:00:00+08:00');
+      const laterDelivered = await readyTask('当天入池、以后打包交付仍归进入池当天', {
+        owner: b, readyAt: '2026-09-12T08:00:00+08:00',
+      });
+      await pack(laterDelivered, '2026-09-13T10:00:00+08:00', '2026-09-14T11:00:00+08:00');
+
+      await assertOverview({ unpacked: 0, packed: 1, delivered: 1 }, '2026-09-10');
+      await assertOverview({ unpacked: 0, packed: 0, delivered: 0 }, '2026-09-11');
+      await assertOverview({ unpacked: 0, packed: 0, delivered: 1 }, '2026-09-12');
+      await assertOverview({ unpacked: 0, packed: 0, delivered: 0 }, '2026-09-13');
+      await assertOverview({ unpacked: 0, packed: 0, delivered: 0 }, '2026-09-14');
+      assert.deepEqual((await report('2026-09-10', [annotator(b)])).overview,
+        { unpacked: 0, packed: 1, delivered: 1 },
+        'ready-date filtering preserves the annotator snapshot taken when the content was packed');
+      for (const person of [a, c]) assert.deepEqual((await report('2026-09-10', [annotator(person)])).overview,
+        { unpacked: 0, packed: 0, delivered: 0 },
+        'neither the pre-packing nor the later assignee replaces the frozen packed owner');
     });
   } finally {
     await repository.close();

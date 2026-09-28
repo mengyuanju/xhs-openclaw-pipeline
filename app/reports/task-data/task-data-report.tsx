@@ -229,13 +229,13 @@ function OverviewCards({ overview, activity }: {
   const deliveryTotal = overview && [overview.unpacked, overview.packed, overview.delivered].every(Number.isFinite)
     ? overview.unpacked + overview.packed + overview.delivered : undefined;
   const cards = [
-    { label: '新增文案首次审核', hint: '按首次文案审核时间统计', count: activity?.copyReview, Icon: FileClock },
-    { label: '新增文案返修', hint: '按返修提交时间统计', count: activity?.copyRework, Icon: RefreshCw },
+    { label: '文案首次审核', hint: '按首次文案审核时间统计', count: activity?.copyReview, Icon: FileClock },
+    { label: '文案返修', hint: '按返修提交时间统计', count: activity?.copyRework, Icon: RefreshCw },
     { label: '新增文案质检', hint: '按文案质检时间统计', count: activity?.copyQa, Icon: FileSearch, hidden: true },
-    { label: '新增图片审核', hint: '按图片审核时间统计', count: activity?.imageReview, Icon: ImageUp },
+    { label: '图片审核', hint: '按图片审核时间统计', count: activity?.imageReview, Icon: ImageUp },
     { label: '新增图片质检', hint: '按图片质检时间统计', count: activity?.imageQa, Icon: ScanSearch,
       passed: activity?.imageQaPassed, hidden: true },
-    { label: '新增交付数', hint: '未打包、已打包、已交付合计', count: deliveryTotal, Icon: Boxes },
+    { label: '新增交付数', hint: '按进入交付池时间统计', count: deliveryTotal, Icon: Boxes },
   ];
   return <div className={styles.overview}>
     {cards.filter(card => !card.hidden).map(({ label, hint, count, Icon, passed }) => <div key={label} className={styles.overviewCard}>
@@ -264,7 +264,6 @@ function MetricCards({ summary, visibleIds }: { summary: ReportResponse['summary
     {METRIC_OPTIONS.filter(option => visibleIds.includes(option.id)).map(option =>
       <div key={option.id} className={styles.summaryCard}>
         <span>{option.label}</span><strong>{counts[option.id] == null ? '—' : counts[option.id].toLocaleString('zh-CN')}</strong>
-        {option.id === 'effectiveTotal' && <small>只记录文案审核过一次的数据</small>}
         {option.id === 'copyInitialReviewPending' && <small>改派之后待审核</small>}
       </div>)}
   </div>;

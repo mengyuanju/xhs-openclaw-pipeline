@@ -513,8 +513,7 @@ async function readTaskDeliveryOverview(client,query) {
     SELECT delivery.task_id,
       CASE WHEN confirmation.item_id IS NOT NULL THEN 'DELIVERED'
         WHEN item.id IS NOT NULL THEN 'PACKED' ELSE 'UNPACKED' END AS phase,
-      CASE WHEN confirmation.item_id IS NOT NULL THEN confirmation.confirmed_at
-        WHEN item.id IS NOT NULL THEN batch.created_at ELSE delivery.approved_at END AS operated_at,
+      delivery.approved_at AS ready_at,
       CASE WHEN item.id IS NOT NULL THEN owner.account_id ELSE ready_owner.account_id END AS account_id
     FROM tasks t JOIN delivery_entries delivery ON delivery.task_id=t.id
     LEFT JOIN delivery_batch_items item ON item.task_id=delivery.task_id
@@ -540,8 +539,8 @@ async function readTaskDeliveryOverview(client,query) {
     count(DISTINCT task_id) FILTER(WHERE phase='UNPACKED')::integer AS unpacked,
     count(DISTINCT task_id) FILTER(WHERE phase='PACKED')::integer AS packed,
     count(DISTINCT task_id) FILTER(WHERE phase='DELIVERED')::integer AS delivered
-  FROM delivery_records operation WHERE operated_at >= $1::timestamptz
-    AND operated_at < $2::timestamptz${peopleFilter}`,params)).rows[0] ?? {};
+  FROM delivery_records operation WHERE ready_at >= $1::timestamptz
+    AND ready_at < $2::timestamptz${peopleFilter}`,params)).rows[0] ?? {};
   return {unpacked:Number(row.unpacked ?? 0),packed:Number(row.packed ?? 0),delivered:Number(row.delivered ?? 0)};
 }
 
