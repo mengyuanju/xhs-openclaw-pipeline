@@ -74,7 +74,7 @@ const METRIC_STORAGE_KEY = 'task-data-report:visible-metrics:v3';
 const PREVIOUS_METRIC_STORAGE_KEY = 'task-data-report:visible-metrics:v2';
 const METRIC_OPTIONS = [
   { id: 'effectiveTotal', label: '有效任务数' },
-  { id: 'copyInitialReviewPending', label: '文案待审核' },
+  { id: 'copyInitialReviewPending', label: '文案待审核(改派)' },
   { id: 'copyReviewPending', label: '文案待返修' },
   { id: 'copyQaPending', label: '文案待质检' },
   { id: 'imageGenerating', label: '待生图及生图中' },
@@ -261,6 +261,7 @@ function MetricCards({ summary, visibleIds }: { summary: ReportResponse['summary
       <div key={option.id} className={styles.summaryCard}>
         <span>{option.label}</span><strong>{counts[option.id] == null ? '—' : counts[option.id].toLocaleString('zh-CN')}</strong>
         {option.id === 'effectiveTotal' && <small>只记录文案审核过一次的数据</small>}
+        {option.id === 'copyInitialReviewPending' && <small>改派之后待审核</small>}
       </div>)}
   </div>;
 }
