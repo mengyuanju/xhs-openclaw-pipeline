@@ -1,7 +1,7 @@
 import { ControlPlaneAuthorizationError } from './domain.mjs';
 
 const TIME_FIELDS = new Set([
-  'FIRST_MANUAL_COPY_ASSIGNMENT', 'FIRST_COPY_ASSIGNMENT', 'CREATED_AT',
+  'FIRST_MANUAL_COPY_ASSIGNMENT', 'FIRST_COPY_ASSIGNMENT', 'FIRST_COPY_REVIEW_ACTION', 'CREATED_AT',
   'COPY_REVIEW_PASSED_AT', 'COPY_QA_RELEASED_AT',
   'IMAGE_REVIEW_PASSED_AT', 'IMAGE_QA_RELEASED_AT',
 ]);
@@ -10,7 +10,7 @@ const PERSON_FIELDS = new Set([
   'LAST_COPY_REVIEWER', 'LAST_IMAGE_REVIEWER',
 ]);
 const STATUS_VALUES = new Set(['PENDING', 'REVIEW_PASSED', 'QA_PENDING', 'QA_RELEASED', 'RETURNED']);
-const SORT_FIELDS = new Set(['FIRST_MANUAL_COPY_ASSIGNMENT', 'CREATED_AT', 'TASK_ID']);
+const SORT_FIELDS = new Set(['FIRST_MANUAL_COPY_ASSIGNMENT', 'FIRST_COPY_ASSIGNMENT', 'FIRST_COPY_REVIEW_ACTION', 'CREATED_AT', 'TASK_ID']);
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/u;
 const MAX_CONDITIONS = 20;
 
@@ -19,6 +19,34 @@ const FIRST_MANUAL_SQL = `(SELECT min(e.created_at) FROM task_assignment_events 
 const FIRST_COPY_SQL = `LEAST((SELECT min(e.created_at) FROM task_assignment_events e
   WHERE e.task_id=t.id AND e.assignee_user_id IS NOT NULL),
   (SELECT min(a.assigned_at) FROM task_assignment_records a WHERE a.task_id=t.id))`;
+// Scoreless direct discards have no dedicated decision row; their task message identifies that review outcome.
+const FIRST_COPY_REVIEW_SQL = `(SELECT min(reviewed_at) FROM (
+  SELECT a.created_at AS reviewed_at FROM human_quality_assessments a
+    WHERE a.task_id=t.id AND a.stage='COPY' AND a.action IN ('APPROVE','RETRY','DISCARD')
+  UNION ALL
+  SELECT a.approved_at FROM copy_approval_events a
+    WHERE a.task_id=t.id AND a.approval_mode='MANUAL'
+  UNION ALL
+  SELECT r.approved_at FROM copy_revisions r
+    WHERE r.task_id=t.id AND r.approved_at IS NOT NULL
+      AND r.approval_mode IS DISTINCT FROM 'ADMIN_BYPASS'
+      AND NOT EXISTS(SELECT 1 FROM copy_approval_events a WHERE a.copy_revision_id=r.id)
+  UNION ALL
+  SELECT t.finished_at WHERE t.state='CANCELLED'
+    AND t.cancelled_from_state='COPY_REVIEW_PENDING'
+    AND t.progress_message='文案已被质检废弃'
+) first_review_actions)`;
+// Tasks without a manual copy decision enter the report on their bypass or current discard date.
+const FIRST_REPORT_EVENT_SQL = `LEAST(
+  ${FIRST_COPY_REVIEW_SQL},
+  (SELECT min(a.approved_at) FROM copy_approval_events a
+    WHERE a.task_id=t.id AND a.approval_mode='ADMIN_BYPASS'),
+  (SELECT min(r.approved_at) FROM copy_revisions r
+    WHERE r.task_id=t.id AND r.approval_mode='ADMIN_BYPASS'
+      AND r.approved_at IS NOT NULL
+      AND NOT EXISTS(SELECT 1 FROM copy_approval_events a WHERE a.copy_revision_id=r.id)),
+  CASE WHEN t.state='CANCELLED' THEN t.finished_at END
+)`;
 const COPY_REVIEW_SQL = `COALESCE((SELECT a.approved_at FROM copy_approval_events a
   WHERE a.task_id=t.id AND a.copy_revision_id=t.current_copy_revision_id
   ORDER BY a.approved_at DESC,a.id DESC LIMIT 1),
@@ -81,6 +109,7 @@ const REASSIGNMENT_SQL = `((SELECT count(*) FROM task_assignment_events e
 const TIME_SQL = Object.freeze({
   FIRST_MANUAL_COPY_ASSIGNMENT: FIRST_MANUAL_SQL,
   FIRST_COPY_ASSIGNMENT: FIRST_COPY_SQL,
+  FIRST_COPY_REVIEW_ACTION: FIRST_REPORT_EVENT_SQL,
   CREATED_AT: 't.created_at',
   COPY_REVIEW_PASSED_AT: COPY_REVIEW_SQL,
   COPY_QA_RELEASED_AT: COPY_QA_RELEASE_SQL,
@@ -127,6 +156,12 @@ function conditionOf(raw) {
     }
     return { field, op, value: value.trim() };
   }
+  if (field === 'TASK_ID_OR_NAME') {
+    if (op !== 'CONTAINS' || typeof value !== 'string' || !value.trim() || [...value].length > 200) {
+      throw new TypeError('任务ID或任务名条件无效');
+    }
+    return { field, op, value: value.trim() };
+  }
   if (field === 'STATE') {
     if (op !== 'EQ' || typeof value !== 'string' || !/^[A-Z_]{2,40}$/u.test(value)) throw new TypeError('任务状态无效');
     return { field, op, value };
@@ -146,7 +181,7 @@ function conditionOf(raw) {
 
 export function normalizeTaskDataReportQuery(input = {}, now = new Date()) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('报表查询无效');
-  const timeInput = input.time ?? { field: 'FIRST_MANUAL_COPY_ASSIGNMENT', mode: 'RELATIVE', days: 30 };
+  const timeInput = input.time ?? { field: 'FIRST_COPY_REVIEW_ACTION', mode: 'RELATIVE', days: 1 };
   if (!timeInput || typeof timeInput !== 'object' || !TIME_FIELDS.has(timeInput.field)) throw new TypeError('时间字段无效');
   const mode = timeInput.mode ?? (timeInput.from || timeInput.to ? 'ABSOLUTE' : 'RELATIVE');
   let from, to;
@@ -168,8 +203,8 @@ export function normalizeTaskDataReportQuery(input = {}, now = new Date()) {
   const rawConditions = input.conditions ?? [];
   if (!Array.isArray(rawConditions) || rawConditions.length > MAX_CONDITIONS) throw new TypeError('查询条件最多 20 个');
   const page = positiveInteger(input.page ?? 1, '页码', 1_000_000);
-  const pageSize = positiveInteger(input.pageSize ?? 50, '每页条数', 200);
-  const sort = input.sort ?? 'FIRST_MANUAL_COPY_ASSIGNMENT';
+  const pageSize = positiveInteger(input.pageSize ?? 20, '每页条数', 200);
+  const sort = input.sort ?? 'FIRST_COPY_REVIEW_ACTION';
   const order = input.order ?? 'DESC';
   if (!SORT_FIELDS.has(sort) || !['ASC', 'DESC'].includes(order)) throw new TypeError('排序方式无效');
   return {
@@ -216,6 +251,15 @@ export function buildTaskDataReportFilter(query) {
       ORDER BY a.submitted_at DESC,a.id DESC LIMIT 1)=${p}::bigint`;
     if (field === 'TASK_ID') return `t.id=${p}::bigint`;
     if (field === 'TASK_NAME') return op === 'CONTAINS' ? `t.query ILIKE ${p} ESCAPE '\\'` : `t.query=${p}`;
+    if (field === 'TASK_ID_OR_NAME') {
+      const idMatch = value.match(/^#(\d+)$/u);
+      const taskId = idMatch ? Number(idMatch[1]) : null;
+      if (Number.isSafeInteger(taskId) && taskId > 0) {
+        params[params.length - 1] = taskId;
+        return `t.id=${p}::bigint`;
+      }
+      return `position(lower(${p}) in lower(t.query))>0`;
+    }
     if (field === 'STATE') return `t.state=${p}`;
     if (field === 'COPY_STATUS') return `${COPY_STATUS_SQL}=${p}`;
     if (field === 'IMAGE_STATUS') return `${IMAGE_STATUS_SQL}=${p}`;
@@ -232,6 +276,8 @@ const DETAIL_SQL = `SELECT t.id,t.query,t.state,t.created_at,t.production_batch_
   t.copy_qa_rework_pending,t.updated_at,
   ${FIRST_MANUAL_SQL} AS first_manual_copy_assignment_at,
   ${FIRST_COPY_SQL} AS first_copy_assignment_at,
+  ${FIRST_COPY_REVIEW_SQL} AS first_copy_review_at,
+  ${FIRST_REPORT_EVENT_SQL} AS report_at,
   ${COPY_REVIEW_SQL} AS copy_review_passed_at,
   ${IMAGE_REVIEW_SQL} AS image_review_passed_at,
   ${COPY_QA_RELEASE_SQL} AS copy_qa_released_at,
@@ -347,6 +393,8 @@ function rowFrom(row) {
     productionBatchId: number(row.production_batch_id), queryPackageName: row.source_query_package_name ?? null,
     firstManualCopyAssignmentAt: iso(row.first_manual_copy_assignment_at),
     firstCopyAssignmentAt: iso(row.first_copy_assignment_at),
+    firstCopyReviewAt: iso(row.first_copy_review_at),
+    reportAt: iso(row.report_at),
     annotationPeople: [],
     currentAnnotator: person(row.current_annotator_id, row.assigned_to_user_id, row.current_annotator_name),
     copyQaPeople: [], imageQaPeople: [],
@@ -412,9 +460,35 @@ export async function readTaskDataReport(pool, actor, input = {}, { now = new Da
     const asOf = iso((await client.query('SELECT clock_timestamp() AS at')).rows[0].at);
     const summaryRows = (await client.query(`WITH filtered AS MATERIALIZED (
       SELECT t.id,t.state,t.current_copy_revision_id,t.copy_qc_released_revision_id,
-        t.current_image_run_id,t.image_qc_released_approval_event_id
+        t.current_image_run_id,t.image_qc_released_approval_event_id,t.image_qc_legacy_accepted
       FROM tasks t WHERE ${filter.sql})
       SELECT count(*)::integer AS total,
+        count(*) FILTER(WHERE state IN ('COPY_REVIEW_PENDING','PENDING_SECOND_ASSIGNMENT'))::integer AS copy_review_pending,
+        count(*) FILTER(WHERE state IN ('MANUAL_ARCHIVE','IMAGE_REWORK_PENDING'))::integer AS image_review_pending,
+        count(*) FILTER(WHERE state='COPY_QC_PENDING')::integer AS copy_qa_pending,
+        count(*) FILTER(WHERE state='IMAGE_QC_PENDING')::integer AS image_qa_pending,
+        count(*) FILTER(WHERE state='CANCELLED')::integer AS discarded,
+        count(*) FILTER(WHERE state='REVIEWED')::integer AS packing_delivery,
+        -- The current QA release includes human passes, batch releases and legacy
+        -- delivery-ready tasks whose acceptance predates the current QA records.
+        count(*) FILTER(WHERE state='REVIEWED' OR
+          (current_copy_revision_id IS NOT NULL
+            AND copy_qc_released_revision_id=current_copy_revision_id))::integer AS copy_qa_passed,
+        count(*) FILTER(WHERE current_copy_revision_id IS NOT NULL AND EXISTS(
+          SELECT 1 FROM copy_qa_batch_members_v2 m WHERE m.task_id=filtered.id
+            AND m.copy_revision_id=filtered.current_copy_revision_id AND m.status='PASSED'
+          UNION ALL SELECT 1 FROM copy_sampling_items i WHERE i.task_id=filtered.id
+            AND i.copy_revision_id=filtered.current_copy_revision_id AND i.status='PASSED'
+        ) AND NOT EXISTS(SELECT 1 FROM copy_qa_return_events_v2 e WHERE e.task_id=filtered.id)
+          AND NOT EXISTS(SELECT 1 FROM copy_sampling_items i WHERE i.task_id=filtered.id AND i.status='RETURNED')
+          AND NOT EXISTS(SELECT 1 FROM copy_sampling_items i JOIN copy_sampling_events e
+            ON e.freeze_id=i.freeze_id AND (e.sampling_item_id IS NULL OR e.sampling_item_id=i.id)
+            WHERE i.task_id=filtered.id AND e.action IN ('RETURN_SINGLE','RETURN_BATCH')))::integer AS copy_qa_first_passed,
+        count(*) FILTER(WHERE state='REVIEWED' OR image_qc_legacy_accepted OR
+          (image_qc_released_approval_event_id IS NOT NULL AND EXISTS(
+            SELECT 1 FROM image_approval_events approval
+            WHERE approval.id=filtered.image_qc_released_approval_event_id
+              AND approval.image_run_id=filtered.current_image_run_id)))::integer AS image_qa_passed,
         count(*) FILTER(WHERE current_copy_revision_id IS NOT NULL
           AND copy_qc_released_revision_id=current_copy_revision_id)::integer AS copy_qa_released,
         count(*) FILTER(WHERE image_qc_released_approval_event_id IS NOT NULL
@@ -450,6 +524,17 @@ export async function readTaskDataReport(pool, actor, input = {}, { now = new Da
     return {
       summary: {
         total, byState: summaryRows.by_state ?? {},
+        reviewPending: Number(summaryRows.copy_review_pending) + Number(summaryRows.image_review_pending),
+        copyReviewPending: Number(summaryRows.copy_review_pending),
+        imageReviewPending: Number(summaryRows.image_review_pending),
+        qaPending: Number(summaryRows.copy_qa_pending) + Number(summaryRows.image_qa_pending),
+        copyQaPending: Number(summaryRows.copy_qa_pending),
+        imageQaPending: Number(summaryRows.image_qa_pending),
+        discarded: Number(summaryRows.discarded),
+        packingDelivery: Number(summaryRows.packing_delivery),
+        copyQaPassed: Number(summaryRows.copy_qa_passed),
+        copyQaFirstPassed: Number(summaryRows.copy_qa_first_passed),
+        imageQaPassed: Number(summaryRows.image_qa_passed),
         copyQaReleased: Number(summaryRows.copy_qa_released),
         imageQaReleased: Number(summaryRows.image_qa_released),
         delivered: Number(summaryRows.delivered),
@@ -588,6 +673,7 @@ const CSV_COLUMNS = [
   ['taskId', '任务编号'], ['taskName', '任务名'], ['state', '当前状态'],
   ['createdAt', '创建时间'], ['firstManualCopyAssignmentAt', '首次管理员文案分配时间'],
   ['firstCopyAssignmentAt', '首次文案分配时间'],
+  ['firstCopyReviewAt', '首次文案审核时间'], ['reportAt', '报表归属时间'],
   ['annotationPeople', '历任标注人'], ['currentAnnotator', '当前标注人'],
   ['copyQaPeople', '文案质检人'], ['imageQaPeople', '图片质检人'],
   ['lastCopyReviewer', '最后文案审核人'], ['lastImageReviewer', '最后图片审核人'],
@@ -602,8 +688,8 @@ const CSV_COLUMNS = [
   ['deliveredAt', '交付确认时间'],
 ];
 const CSV_DATE_COLUMNS = new Set([
-  'createdAt', 'firstManualCopyAssignmentAt', 'firstCopyAssignmentAt',
-  'copyReviewPassedAt', 'copyQaHumanPassedAt', 'copyQaReleasedAt',
+  'createdAt', 'firstManualCopyAssignmentAt', 'firstCopyAssignmentAt', 'firstCopyReviewAt',
+  'reportAt', 'copyReviewPassedAt', 'copyQaHumanPassedAt', 'copyQaReleasedAt',
   'imageReviewPassedAt', 'imageQaHumanPassedAt', 'imageQaReleasedAt', 'deliveredAt',
 ]);
 const BEIJING_CSV_TIME = new Intl.DateTimeFormat('sv-SE', {

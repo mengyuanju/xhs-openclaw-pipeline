@@ -32,6 +32,17 @@ test('saved report config preserves relative date semantics and removes current 
   assert.deepEqual(config.time, { field: 'FIRST_MANUAL_COPY_ASSIGNMENT', mode: 'RELATIVE', days: 30 });
   assert.equal(config.page, undefined);
   assert.equal(config.conditions.length, 6);
+  const reviewQuery = normalizeSavedTaskReportQueryConfig({
+    time: { field: 'FIRST_COPY_REVIEW_ACTION', mode: 'ABSOLUTE',
+      from: '2026-09-23', to: '2026-09-24' },
+    sort: 'FIRST_COPY_REVIEW_ACTION',
+  });
+  assert.equal(reviewQuery.time.field, 'FIRST_COPY_REVIEW_ACTION');
+  assert.equal(reviewQuery.sort, 'FIRST_COPY_REVIEW_ACTION');
+  assert.equal(normalizeSavedTaskReportQueryConfig({}).time.field, 'FIRST_COPY_REVIEW_ACTION');
+  assert.deepEqual(normalizeSavedTaskReportQueryConfig({
+    conditions: [{ field: 'TASK_ID_OR_NAME', op: 'CONTAINS', value: '  #1024  ' }],
+  }).conditions, [{ field: 'TASK_ID_OR_NAME', op: 'CONTAINS', value: '#1024' }]);
   assert.deepEqual(normalizeSavedTaskReportQueryConfig({
     time: { field: 'IMAGE_QA_RELEASED_AT', mode: 'ABSOLUTE', from: '2026-09-01', to: '2026-09-24' },
   }).time, { field: 'IMAGE_QA_RELEASED_AT', mode: 'ABSOLUTE', from: '2026-09-01', to: '2026-09-24' });
@@ -56,6 +67,9 @@ test('saved report config rejects unsupported conditions and invalid date interv
   assert.throws(() => normalizeSavedTaskReportQueryConfig({
     time: { mode: 'ABSOLUTE', from: '2026-09-24', to: '2026-09-01' },
   }), /after/u);
+  assert.throws(() => normalizeSavedTaskReportQueryConfig({
+    conditions: [{ field: 'TASK_ID_OR_NAME', op: 'EQ', value: '#1024' }],
+  }), /task name condition/u);
   assert.throws(() => normalizeSavedTaskReportQueryConfig({
     conditions: [{ field: 'IMAGE_STATUS', op: 'EQ', value: 'INVENTED_STATUS' }],
   }), /status/u);

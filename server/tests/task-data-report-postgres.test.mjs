@@ -8,7 +8,7 @@ import {
 } from '../src/task-data-report.mjs';
 import { startTemporaryPostgres18 } from './helpers/personal-postgres.mjs';
 
-test('task data report keeps first manual assignment and separates QA verdict from batch release', {
+test('task data report dates tasks by first review, discard or bypass and keeps QA counts', {
   skip: process.env.RUN_POSTGRES_E2E !== '1', timeout: 180_000,
 }, async () => {
   const database = await startTemporaryPostgres18();
@@ -23,9 +23,10 @@ test('task data report keeps first manual assignment and separates QA verdict fr
         ('report-annotator-b','标注乙','USER','test-only','ACTIVE'),
         ('report-copy-qa-a','文案质检甲','REVIEWER','test-only','ACTIVE'),
         ('report-copy-qa-b','文案质检乙','REVIEWER','test-only','ACTIVE')
-      RETURNING id,username,role`)).rows;
+      RETURNING id,username,role,credential_version`)).rows;
     const [admin, annotatorA, annotatorB, qaA, qaB] = accounts.map(row => ({
       userId: Number(row.id), username: row.username, role: row.role,
+      credentialVersion: Number(row.credential_version),
     }));
     const assignedAt = new Date(Date.now() - 10 * 86_400_000);
     const assignedDay = new Intl.DateTimeFormat('en-CA', {
@@ -54,6 +55,39 @@ test('task data report keeps first manual assignment and separates QA verdict fr
     }
     const passed = await createTask('人工抽检通过', true, qaA.userId);
     const released = await createTask('=SUM(1,1)', false);
+    const pendingQuery = { time: { field: 'FIRST_COPY_ASSIGNMENT', mode: 'ABSOLUTE',
+      from: assignedDay, to: assignedDay } };
+    let pendingReport = await readTaskDataReport(db, admin, pendingQuery);
+    assert.equal(pendingReport.summary.qaPending, 2);
+    assert.equal(pendingReport.summary.copyQaPending, 2);
+    assert.equal(pendingReport.summary.imageQaPending, 0);
+    assert.equal(pendingReport.summary.reviewPending, 0);
+    await db.query("UPDATE tasks SET state='IMAGE_QC_PENDING',current_stage='IMAGE_QC_PENDING' WHERE id=$1",
+      [released.taskId]);
+    pendingReport = await readTaskDataReport(db, admin, pendingQuery);
+    assert.equal(pendingReport.summary.qaPending, 2);
+    assert.equal(pendingReport.summary.copyQaPending, 1);
+    assert.equal(pendingReport.summary.imageQaPending, 1);
+    await db.query("UPDATE tasks SET state='COPY_REVIEW_PENDING',current_stage='COPY_REVIEW_PENDING' WHERE id=$1",
+      [passed.taskId]);
+    await db.query("UPDATE tasks SET state='MANUAL_ARCHIVE',current_stage='MANUAL_ARCHIVE' WHERE id=$1",
+      [released.taskId]);
+    let reviewReport = await readTaskDataReport(db, admin, pendingQuery);
+    assert.equal(reviewReport.summary.reviewPending, 2);
+    assert.equal(reviewReport.summary.copyReviewPending, 1);
+    assert.equal(reviewReport.summary.imageReviewPending, 1);
+    await db.query("UPDATE tasks SET state='PENDING_SECOND_ASSIGNMENT',current_stage='PENDING_SECOND_ASSIGNMENT' WHERE id=$1",
+      [passed.taskId]);
+    await db.query("UPDATE tasks SET state='IMAGE_REWORK_PENDING',current_stage='IMAGE_REWORK_PENDING' WHERE id=$1",
+      [released.taskId]);
+    reviewReport = await readTaskDataReport(db, admin, pendingQuery);
+    assert.equal(reviewReport.summary.reviewPending, 2);
+    assert.equal(reviewReport.summary.copyReviewPending, 1);
+    assert.equal(reviewReport.summary.imageReviewPending, 1);
+    await db.query("UPDATE tasks SET state='COPY_QC_PENDING',current_stage='COPY_QC_PENDING' WHERE id=$1",
+      [passed.taskId]);
+    await db.query("UPDATE tasks SET state='COPY_QC_PENDING',current_stage='COPY_QC_PENDING' WHERE id=$1",
+      [released.taskId]);
     const batch = (await db.query(`INSERT INTO copy_qa_batches_v2(mode,full_inspection,
       blind_review_enabled,sampling_rate_bps,return_threshold_bps,return_trigger_count,
       member_count,sample_count,status,created_by_account_id,completed_at)
@@ -130,6 +164,25 @@ test('task data report keeps first manual assignment and separates QA verdict fr
     const report = await readTaskDataReport(db, admin, query);
     assert.equal(report.total, 2);
     assert.equal(report.summary.copyQaReleased, 2);
+    assert.equal(report.summary.copyQaPassed, 2);
+    assert.equal(report.summary.copyQaFirstPassed, 1);
+    assert.equal(report.summary.imageQaPassed, 2);
+    assert.equal(report.summary.reviewPending, 0);
+    assert.equal(report.summary.copyReviewPending, 0);
+    assert.equal(report.summary.imageReviewPending, 0);
+    assert.equal(report.summary.qaPending, 0);
+    assert.equal(report.summary.copyQaPending, 0);
+    assert.equal(report.summary.imageQaPending, 0);
+    assert.equal(report.summary.discarded, 0);
+    assert.equal(report.summary.packingDelivery, 2);
+    assert.ok(report.summary.copyQaPassed >= report.summary.packingDelivery);
+    assert.ok(report.summary.imageQaPassed >= report.summary.packingDelivery);
+    const firstAssignmentReport = await readTaskDataReport(db, admin, {
+      time: { field: 'FIRST_COPY_ASSIGNMENT', mode: 'ABSOLUTE',
+        from: assignedDay, to: assignedDay },
+      sort: 'FIRST_COPY_ASSIGNMENT',
+    });
+    assert.equal(firstAssignmentReport.total, 2);
     const byId = new Map(report.items.map(item => [item.taskId, item]));
     const passedRow = byId.get(passed.taskId);
     const releasedRow = byId.get(released.taskId);
@@ -165,6 +218,28 @@ test('task data report keeps first manual assignment and separates QA verdict fr
       ...query, conditions: [{ field: 'IMAGE_QA_REVIEWER', op: 'EQ', value: qaB.userId }],
     });
     assert.deepEqual(imageQaResult.items.map(item => item.taskId), [passed.taskId]);
+    const idSearch = await readTaskDataReport(db, admin, {
+      ...query, conditions: [
+        { field: 'TASK_ID_OR_NAME', op: 'CONTAINS', value: `#${passed.taskId}` },
+        { field: 'STATE', op: 'EQ', value: 'REVIEWED' },
+        { field: 'REASSIGNMENT_COUNT', op: 'GTE', value: 1 },
+        { field: 'COPY_QA_REVIEWER', op: 'EQ', value: qaA.userId },
+        { field: 'IMAGE_QA_REVIEWER', op: 'EQ', value: qaB.userId },
+      ],
+    });
+    assert.deepEqual(idSearch.items.map(item => item.taskId), [passed.taskId]);
+    const nameSearch = await readTaskDataReport(db, admin, {
+      ...query, conditions: [{ field: 'TASK_ID_OR_NAME', op: 'CONTAINS', value: '人工抽检' }],
+    });
+    assert.deepEqual(nameSearch.items.map(item => item.taskId), [passed.taskId]);
+    const bareNumber = await readTaskDataReport(db, admin, {
+      ...query, conditions: [{ field: 'TASK_ID_OR_NAME', op: 'CONTAINS', value: String(passed.taskId) }],
+    });
+    assert.equal(bareNumber.items.some(item => item.taskId === passed.taskId), false);
+    const literalPercent = await readTaskDataReport(db, admin, {
+      ...query, conditions: [{ field: 'TASK_ID_OR_NAME', op: 'CONTAINS', value: '%' }],
+    });
+    assert.equal(literalPercent.total, 0);
     const detail = await readTaskDataReportTask(db, admin, passed.taskId);
     assert.equal(detail.item.taskId, passed.taskId);
     assert.ok(detail.events.some(event => event.kind === 'ASSIGNMENT'));
@@ -173,6 +248,103 @@ test('task data report keeps first manual assignment and separates QA verdict fr
     assert.match(csv, /"'=SUM\(1,1\)"/u);
     assert.match(csv, /文案质检放行时间（北京时间）/u);
     assert.equal(csv.split('\r\n').filter(Boolean).length, 3); // Header and two task rows.
+    const todayDay = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(new Date());
+    const yesterdayAt = new Date(new Date(`${todayDay}T00:00:00+08:00`).getTime() - 12 * 3_600_000);
+    const yesterdayDay = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(yesterdayAt);
+    const reviewedYesterday = await createTask('先审核后通过', false);
+    await db.query('UPDATE tasks SET created_at=$2 WHERE id=$1',
+      [reviewedYesterday.taskId, new Date(yesterdayAt.getTime() - 86_400_000)]);
+    const reviewSessionId = randomUUID();
+    const fingerprint = 'f'.repeat(64);
+    await db.query(`INSERT INTO human_quality_review_submissions(
+      review_session_id,task_id,stage,reviewer_username,request_fingerprint)
+      VALUES($1,$2,'COPY',$3,$4)`,
+    [reviewSessionId, reviewedYesterday.taskId, annotatorA.username, fingerprint]);
+    await db.query(`INSERT INTO human_quality_assessments(
+      task_id,stage,copy_revision_id,score_x10,rating_context,action,
+      reviewer_username,review_session_id,request_fingerprint,created_at)
+      VALUES($1,'COPY',$2,20,'ORIGINAL','RETRY',$3,$4,$5,$6)`,
+    [reviewedYesterday.taskId, reviewedYesterday.revisionId, annotatorA.username,
+      reviewSessionId, fingerprint, yesterdayAt]);
+
+    async function createUnreviewedTask(name, state, progressMessage = null,
+      cancelledFromState = 'COPY_REVIEW_PENDING') {
+      return (await db.query(`INSERT INTO tasks(query,input,state,created_by_node_id,
+        assigned_to_user_id,assignment_source,assigned_at,cancelled_from_state,
+        progress_message,finished_at)
+        VALUES($1,'{}',$2::text,'report-node',$3,'MANUAL',now(),
+          CASE WHEN $2::text='CANCELLED' THEN $5::text ELSE NULL END,
+          COALESCE($4,''),CASE WHEN $2::text='CANCELLED' THEN now() ELSE NULL END)
+        RETURNING id,finished_at`,
+      [name, state, annotatorA.username, progressMessage, cancelledFromState])).rows[0];
+    }
+    const bypassed = await createTask('管理员跳过审核', false);
+    await db.query('DELETE FROM copy_approval_events WHERE id=$1', [bypassed.approvalId]);
+    await db.query("UPDATE copy_revisions SET approval_mode='ADMIN_BYPASS' WHERE id=$1",
+      [bypassed.revisionId]);
+    const directlyDiscarded = await createUnreviewedTask(
+      '文案审核直接废弃', 'CANCELLED', '文案已被质检废弃');
+    const generallyCancelled = await createUnreviewedTask(
+      '通用废弃', 'CANCELLED', '任务已被人工废弃', 'COPY_QUEUED');
+    const restoredAfterDiscard = await createUnreviewedTask(
+      '废弃后恢复', 'CANCELLED', '排队任务已废弃，可由管理员重新加入队列', 'COPY_QUEUED');
+    await repository.requeueCancelledTask(Number(restoredAfterDiscard.id));
+    const waitingForReview = await createUnreviewedTask('仍待文案审核', 'COPY_REVIEW_PENDING');
+    const todayReport = await readTaskDataReport(db, admin, {}, { now: new Date() });
+    assert.equal(todayReport.total, 5);
+    assert.equal(todayReport.summary.discarded, 2);
+    assert.deepEqual(new Set(todayReport.items.map(item => item.taskId)),
+      new Set([passed.taskId, released.taskId, bypassed.taskId,
+        Number(directlyDiscarded.id), Number(generallyCancelled.id)]));
+    assert.equal(todayReport.items.find(item => item.taskId === Number(directlyDiscarded.id))
+      .firstCopyReviewAt, directlyDiscarded.finished_at.toISOString());
+    const genericRow = todayReport.items.find(item => item.taskId === Number(generallyCancelled.id));
+    assert.equal(genericRow.firstCopyReviewAt, null);
+    assert.ok(genericRow.reportAt);
+    const bypassRow = todayReport.items.find(item => item.taskId === bypassed.taskId);
+    assert.equal(bypassRow.firstCopyReviewAt, null);
+    assert.ok(bypassRow.reportAt);
+    assert.equal(todayReport.items.some(item => item.taskId === Number(restoredAfterDiscard.id)), false);
+    assert.equal(todayReport.items.some(item => item.taskId === Number(waitingForReview.id)), false);
+    const yesterdayReport = await readTaskDataReport(db, admin, {
+      time: { field: 'FIRST_COPY_REVIEW_ACTION', mode: 'ABSOLUTE',
+        from: yesterdayDay, to: yesterdayDay },
+    });
+    assert.deepEqual(yesterdayReport.items.map(item => item.taskId), [reviewedYesterday.taskId]);
+    assert.equal(yesterdayReport.items[0].firstCopyReviewAt, yesterdayAt.toISOString());
+    const restoredTaskId = Number(restoredAfterDiscard.id);
+    const restoredRevision = (await db.query(`INSERT INTO copy_revisions(
+      task_id,revision,content,revision_origin,approved_at,approval_mode)
+      VALUES($1,1,$2,'GENERATION',now(),'MANUAL') RETURNING id`,
+    [restoredTaskId, { copy: { title: '恢复后审核', body: '正文', tags: [] }, imagePlan: [] }])).rows[0];
+    await db.query(`UPDATE tasks SET state='COPY_QC_PENDING',current_stage='COPY_QC_PENDING',
+      current_copy_revision_id=$2 WHERE id=$1`, [restoredTaskId, restoredRevision.id]);
+    await db.query(`INSERT INTO copy_approval_events(task_id,copy_revision_id,
+      approval_mode,approved_by_account_id,approved_by_username,content_sha256)
+      VALUES($1,$2,'MANUAL',$3,$4,$5)`,
+    [restoredTaskId, restoredRevision.id, annotatorA.userId, annotatorA.username, 'a'.repeat(64)]);
+    const afterRestoredReview = await readTaskDataReport(db, admin, {}, { now: new Date() });
+    assert.equal(afterRestoredReview.total, 6);
+    const reviewedRestoredRow = afterRestoredReview.items.find(item => item.taskId === restoredTaskId);
+    assert.ok(reviewedRestoredRow.firstCopyReviewAt);
+    assert.equal(reviewedRestoredRow.reportAt, reviewedRestoredRow.firstCopyReviewAt);
+    const reviewedBeforeDiscard = await createTask('审核后废弃并恢复', false);
+    await db.query("UPDATE tasks SET state='COPY_REVIEW_PENDING',current_stage='COPY_REVIEW_PENDING' WHERE id=$1",
+      [reviewedBeforeDiscard.taskId]);
+    const cancelledAfterReview = await repository.cancelTask(reviewedBeforeDiscard.taskId,
+      { actor: admin });
+    await repository.restoreCancelledTask(reviewedBeforeDiscard.taskId,
+      { expectedUpdatedAt: cancelledAfterReview.updatedAt.toISOString() }, { actor: admin });
+    const restoredWithPriorReview = await readTaskDataReport(db, admin, {}, { now: new Date() });
+    assert.equal(restoredWithPriorReview.total, 7);
+    const priorReviewRow = restoredWithPriorReview.items.find(
+      item => item.taskId === reviewedBeforeDiscard.taskId);
+    assert.ok(priorReviewRow.firstCopyReviewAt);
+    assert.equal(priorReviewRow.reportAt, priorReviewRow.firstCopyReviewAt);
     await assert.rejects(readTaskDataReport(db, { ...admin, role: 'USER' }, query),
       /仅管理员/u);
   } finally {

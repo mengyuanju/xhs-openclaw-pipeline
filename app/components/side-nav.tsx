@@ -55,6 +55,7 @@ const navigationGroups: NavigationGroup[] = [
     items: [
       { href: '/reports', label: '报表统计', icon: BarChart3, adminOnly: true, children: [
         { href: '/reports/task-data', label: '任务数据统计', icon: BarChart3 },
+        { href: '/reports/annotation-jobs', label: '标注作业统计报表', icon: BarChart3 },
       ] },
       { href: '/workbench-statistics', label: '数据统计', icon: BarChart3 },
       { href: '/settings', label: '生产配置', icon: Settings2 },

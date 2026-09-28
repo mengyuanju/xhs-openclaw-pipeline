@@ -32,6 +32,7 @@ const routeMeta: Array<{ match: (pathname: string) => boolean; meta: RouteMeta }
   { match: (pathname) => pathname === '/image-editor', meta: { section: '创作工作台', title: '图片编辑', icon: PanelsTopLeft } },
   { match: (pathname) => pathname === '/workbench-statistics', meta: { section: '运营与系统', title: '作业统计', icon: BarChart3 } },
   { match: (pathname) => pathname.startsWith('/reports/task-data'), meta: { section: '报表统计', title: '任务数据统计', icon: BarChart3 } },
+  { match: (pathname) => pathname.startsWith('/reports/annotation-jobs'), meta: { section: '报表统计', title: '标注作业统计报表', icon: BarChart3 } },
   { match: (pathname) => pathname.startsWith('/query-packages'), meta: { section: '创作工作台', title: 'Query 词包', icon: PackageSearch } },
   { match: (pathname) => pathname.startsWith('/copy-qa'), meta: { section: '质量与审核', title: '文案质检', icon: ShieldCheck } },
   { match: (pathname) => pathname.startsWith('/reassignment'), meta: { section: '创作工作台', title: '待二次分配', icon: Users } },
