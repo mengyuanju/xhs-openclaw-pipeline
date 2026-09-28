@@ -1,5 +1,6 @@
 import { readAccountQualityFacts } from './account-quality-statistics.mjs';
 import { readAnnotationDiscardFacts } from './annotation-discard-facts.mjs';
+import { readAnnotationAssignmentReport } from './annotation-assignment-report.mjs';
 import { randomUUID } from 'node:crypto';
 import { readQaFacts } from './quality-review-statistics.mjs';
 import { readInspectionRounds } from './quality-rounds.mjs';
@@ -46,27 +47,6 @@ const CROSS_ACCOUNT_RECHECK_SQL=`SELECT s.task_id,s.stage,recheck.account_id,rec
     ORDER BY e.occurred_at,e.sequence_id LIMIT 1
   ) recheck ON true
   LIMIT ${LIMIT+1}`;
-
-const FIRST_COPY_VERDICTS_SQL=`WITH cohort AS (
-    SELECT task_id,account_id,min(submitted_at) AS submitted_at
-    FROM jsonb_to_recordset($1::jsonb) AS item(task_id bigint,account_id bigint,submitted_at timestamptz)
-    GROUP BY task_id,account_id
-  )
-  SELECT cohort.task_id,cohort.account_id,verdict.action
-  FROM cohort JOIN account_quality_records record ON record.task_id=cohort.task_id
-    AND record.stage='COPY' AND record.operator_account_id=cohort.account_id
-  JOIN account_quality_events verdict ON verdict.event_key=record.first_event_key
-  WHERE record.first_qa_at>=cohort.submitted_at AND record.first_qa_at<=$2::timestamptz
-    AND verdict.action IN ('PASS','RETURN')`;
-
-async function readFirstCopyVerdicts(client,report) {
-  const submissions=report.rows.filter(row=>row.kind==='SUBMIT' && row.stage==='COPY'
-    && !row.rework && !row.exclusion && Number.isSafeInteger(row.accountId) && row.accountId>0)
-    .map(row=>({task_id:row.taskId,account_id:row.accountId,submitted_at:row.at}));
-  if(!submissions.length) return [];
-  const rows=(await client.query(FIRST_COPY_VERDICTS_SQL,[JSON.stringify(submissions),report.asOf])).rows;
-  return rows.map(row=>({taskId:Number(row.task_id),accountId:Number(row.account_id),outcome:row.action}));
-}
 
 const CURRENT_SQL=`SELECT latest.*,t.query,t.production_batch_id AS batch_id,t.assigned_at,
     (SELECT q.data||jsonb_build_object('id',q.event_key,'taskId',q.task_id,'accountId',q.account_id,
@@ -183,10 +163,11 @@ export async function readOperatorPerformance(pool,actor,input={},options={}) {
         id:Number(row.id),taskId:Number(row.task_id),accountId:number(row.account_id),stage:row.stage,phase:row.phase,state:row.state,
         at:iso(row.occurred_at),baseline:row.baseline})):[];
       const report=buildPerformanceSnapshot(events,current,timeline,filters,asOf,[...events,...otherRechecks],roster);
-      const firstCopyVerdicts=options.kind==='annotationJobReport' ? await readFirstCopyVerdicts(client,report) : null;
+      const annotation=options.kind==='annotationJobReport' ? await readAnnotationAssignmentReport(client,report) : null;
       await client.query('COMMIT');
       const token=randomUUID();
-      snapshot={report,current,timeline,firstCopyVerdicts,actor:actorKey(actor),expires:now+TTL,token};
+      snapshot={report,current,timeline,annotationReport:annotation?.report??null,
+        firstCopyVerdicts:annotation?.firstCopyVerdicts??null,actor:actorKey(actor),expires:now+TTL,token};
       // Keep memory bounded; an evicted snapshot returns an explicit refresh error.
       while(cache.size>=8 || [...cache.values()].reduce((n,s)=>n+s.report.rows.length+s.report.people.length+s.timeline.length,0)
         +events.length+report.people.length+timeline.length>150_000) {
@@ -199,17 +180,19 @@ export async function readOperatorPerformance(pool,actor,input={},options={}) {
   }
   const {report}=snapshot;
   if(options.kind==='annotationJobReport') {
-    if(snapshot.firstCopyVerdicts==null) {
+    if(snapshot.annotationReport==null) {
       const client=await pool.connect();
       try {
         await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
         await client.query("SET LOCAL statement_timeout='15s'");
-        snapshot.firstCopyVerdicts=await readFirstCopyVerdicts(client,report);
+        const annotation=await readAnnotationAssignmentReport(client,report);
+        snapshot.annotationReport=annotation.report;
+        snapshot.firstCopyVerdicts=annotation.firstCopyVerdicts;
         await client.query('COMMIT');
       } catch(error) { await client.query('ROLLBACK');throw error; }
       finally {client.release();}
     }
-    return buildAnnotationJobReport(report,snapshot.firstCopyVerdicts);
+    return buildAnnotationJobReport(snapshot.annotationReport,snapshot.firstCopyVerdicts);
   }
   if(options.kind==='export') return {csv:performanceCsv(report),asOf:report.asOf};
   if(options.kind==='detail' || options.accountId!==undefined) {

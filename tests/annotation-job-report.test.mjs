@@ -28,9 +28,12 @@ test('annotation job report counts direct discard work and ignores QA dispositio
   assert.deepEqual(report.people.map(row=>row.accountId),[11,22]);
   assert.deepEqual(report.people[0],{
     accountId:11,username:'worker-11',displayName:'标注11',totalJobs:4,
-    copyReview:1,copyRework:2,copyReworkTasks:1,
+    copyReview:1,copyReviewTasks:1,copyRework:2,copyReworkTasks:1,
+    copyReworkOfFirstTasks:1,copyReworkOtherTasks:0,
     imageReview:1,imageFirstReview:1,imageRework:0,imageReworkTasks:0,discarded:1,
-    copyFirstPassRate:1,copyFirstPassed:1,copyDecided:1,returned:2,
+    copyFirstPassRate:1,copyFirstPassed:1,copyDecided:1,
+    copyFirstReturned:0,copyFirstQaDiscarded:0,copyFirstUnjudged:0,copyFirstDirectDiscarded:0,
+    copyFirstPending:0,copyFirstBypassed:0,copyFirstUnjudgedOther:0,returned:2,
   });
   assert.equal(report.people[1].totalJobs,1);
 });
@@ -71,6 +74,8 @@ test('direct discard decisions count as work and deduplicate discarded tasks',()
   assert.equal(report.people[0].copyReview,1);
   assert.equal(report.people[0].imageFirstReview,1);
   assert.equal(report.people[0].discarded,1);
+  assert.equal(report.people[0].copyFirstDirectDiscarded,1);
+  assert.equal(report.people[0].copyFirstUnjudged,0);
 });
 
 test('first-pass rate follows first copy submissions and ignores rework verdicts',()=>{
@@ -116,4 +121,155 @@ test('image submissions split into first review and rework without changing tota
   assert.equal(report.people[0].discarded,1);
   assert.equal(report.people[0].totalJobs,4);
   assert.equal(report.summary.totalJobs,4);
+});
+
+test('rework tasks reconcile with first review tasks without implying first-pass failures',()=>{
+  const events=[
+    fact('first-1',11,'SUBMIT',{taskId:1}),
+    fact('first-2',11,'SUBMIT',{taskId:2}),
+    fact('rework-1',11,'SUBMIT',{taskId:1,rework:true}),
+    fact('rework-2',11,'SUBMIT',{taskId:3,rework:true}),
+    fact('rework-3',11,'SUBMIT',{taskId:3,rework:true}),
+  ];
+  const filters=normalizePerformanceFilters({period:'custom',from:'2026-09-24',to:'2026-09-24'},now);
+  const report=buildAnnotationJobReport(buildPerformanceSnapshot(events,[],[],filters,at),[
+    {taskId:1,accountId:11,outcome:'PASS'},
+    {taskId:2,accountId:11,outcome:'RETURN'},
+    {taskId:3,accountId:11,outcome:'RETURN'},
+  ]);
+  const person=report.people[0];
+  assert.equal(person.copyReviewTasks,2);
+  assert.equal(person.copyRework,3);
+  assert.equal(person.copyReworkTasks,2);
+  assert.equal(person.copyReworkOfFirstTasks,1);
+  assert.equal(person.copyReworkOtherTasks,1);
+  assert.equal(person.copyFirstPassed,1);
+  assert.equal(person.copyFirstReturned,1);
+  assert.equal(person.copyDecided,2);
+  assert.equal(person.copyFirstPassRate,.5);
+});
+
+test('a first QA discard is a failed verdict while a direct discard is outside the QA denominator',()=>{
+  const events=[
+    fact('first-1',11,'SUBMIT',{taskId:1}),
+    fact('first-2',11,'SUBMIT',{taskId:2}),
+    fact('discard-3',11,'ANNOTATION_DISCARD',{taskId:3}),
+    fact('first-4',11,'SUBMIT',{taskId:4}),
+  ];
+  const filters=normalizePerformanceFilters({period:'custom',from:'2026-09-24',to:'2026-09-24'},now);
+  const report=buildAnnotationJobReport(buildPerformanceSnapshot(events,[],[],filters,at),[
+    {taskId:1,accountId:11,outcome:'PASS'},
+    {taskId:2,accountId:11,outcome:'DISCARD'},
+    {taskId:2,accountId:11,outcome:'DISCARD'},
+  ]);
+  const person=report.people[0];
+  assert.equal(person.copyReviewTasks,4);
+  assert.equal(person.copyDecided,2);
+  assert.equal(person.copyFirstPassed,1);
+  assert.equal(person.copyFirstQaDiscarded,1);
+  assert.equal(person.copyFirstReturned,0);
+  assert.equal(person.copyFirstUnjudged,1);
+  assert.equal(person.copyFirstDirectDiscarded,1);
+  assert.equal(person.copyFirstPassRate,.5);
+  assert.equal(person.discarded,1);
+});
+
+test('restored direct discards follow their later submissions without overlapping first-review categories',()=>{
+  const events=[
+    fact('discard-1',11,'ANNOTATION_DISCARD',{taskId:1}),
+    fact('restored-1',11,'SUBMIT',{taskId:1}),
+    fact('discard-2',11,'ANNOTATION_DISCARD',{taskId:2}),
+    fact('restored-2',11,'SUBMIT',{taskId:2}),
+  ];
+  const filters=normalizePerformanceFilters({period:'custom',from:'2026-09-24',to:'2026-09-24'},now);
+  const report=buildAnnotationJobReport(buildPerformanceSnapshot(events,[],[],filters,at),[
+    {taskId:1,accountId:11,outcome:'PASS'},
+  ]);
+  const person=report.people[0];
+  assert.equal(person.copyReview,4);
+  assert.equal(person.copyReviewTasks,2);
+  assert.equal(person.copyDecided,1);
+  assert.equal(person.copyFirstUnjudged,1);
+  assert.equal(person.copyFirstDirectDiscarded,0);
+  assert.equal(person.copyFirstPassRate,1);
+  assert.equal(person.discarded,2);
+});
+
+test('personal first operations override workflow rework flags in both stages',()=>{
+  const events=[
+    fact('copy-first',11,'SUBMIT',{taskId:1,rework:true,annotationCycleKey:'copy-new',annotationFirst:true}),
+    fact('copy-next',11,'SUBMIT',{taskId:1,rework:false,annotationCycleKey:'copy-new',annotationFirst:false}),
+    fact('image-first',11,'SUBMIT',{stage:'IMAGE',taskId:1,rework:true,annotationCycleKey:'image-new',annotationFirst:true}),
+    fact('image-next',11,'ANNOTATION_DISCARD',{stage:'IMAGE',taskId:1,rework:false,annotationCycleKey:'image-new',annotationFirst:false}),
+  ];
+  const filters=normalizePerformanceFilters({period:'custom',from:'2026-09-24',to:'2026-09-24'},now);
+  const report=buildAnnotationJobReport(buildPerformanceSnapshot(events,[],[],filters,at),[
+    {cycleKey:'copy-new',taskId:1,accountId:11,submitted:true,outcome:'PASS'},
+  ]);
+  const person=report.people[0];
+  assert.equal(person.copyReview,1);
+  assert.equal(person.copyRework,1);
+  assert.equal(person.imageFirstReview,1);
+  assert.equal(person.imageRework,1);
+  assert.equal(person.totalJobs,4);
+  assert.equal(person.copyFirstPassRate,1);
+});
+
+test('returning to the same task starts a separate personal first and QA denominator',()=>{
+  const events=[
+    fact('first-cycle-1',11,'SUBMIT',{taskId:1,annotationCycleKey:'assignment-1',annotationFirst:true}),
+    fact('rework-cycle-1',11,'SUBMIT',{taskId:1,annotationCycleKey:'assignment-1',annotationFirst:false}),
+    fact('first-cycle-2',11,'SUBMIT',{taskId:1,annotationCycleKey:'assignment-2',annotationFirst:true}),
+  ];
+  const filters=normalizePerformanceFilters({period:'custom',from:'2026-09-24',to:'2026-09-24'},now);
+  const report=buildAnnotationJobReport(buildPerformanceSnapshot(events,[],[],filters,at),[
+    {cycleKey:'assignment-1',taskId:1,accountId:11,submitted:true,outcome:'RETURN'},
+    {cycleKey:'assignment-2',taskId:1,accountId:11,submitted:true,outcome:'PASS'},
+    {cycleKey:'assignment-before-period',taskId:1,accountId:11,submitted:true,outcome:'RETURN'},
+  ]);
+  const person=report.people[0];
+  assert.equal(person.copyReview,2);
+  assert.equal(person.copyReviewTasks,1);
+  assert.equal(person.copyRework,1);
+  assert.equal(person.copyDecided,2);
+  assert.equal(person.copyFirstPassed,1);
+  assert.equal(person.copyFirstReturned,1);
+  assert.equal(person.copyFirstPassRate,.5);
+});
+
+test('first discard restored and submitted after the period follows its own first QA',()=>{
+  const events=[fact('initial-discard',11,'ANNOTATION_DISCARD',{
+    taskId:1,annotationCycleKey:'restored-cycle',annotationFirst:true,
+  })];
+  const filters=normalizePerformanceFilters({period:'custom',from:'2026-09-24',to:'2026-09-24'},now);
+  const report=buildAnnotationJobReport(buildPerformanceSnapshot(events,[],[],filters,at),[
+    {cycleKey:'restored-cycle',taskId:1,accountId:11,submitted:true,outcome:'PASS'},
+  ]);
+  const person=report.people[0];
+  assert.equal(person.totalJobs,1);
+  assert.equal(person.copyReview,1);
+  assert.equal(person.copyFirstDirectDiscarded,0);
+  assert.equal(person.copyDecided,1);
+  assert.equal(person.copyFirstPassRate,1);
+});
+
+test('unjudged personal cycles distinguish pending, bypassed and absent records',()=>{
+  const events=[1,2,3,4,5].map(id=>fact(`first-${id}`,11,id===5?'ANNOTATION_DISCARD':'SUBMIT',{
+    taskId:id,annotationCycleKey:`cycle-${id}`,annotationFirst:true,
+  }));
+  const filters=normalizePerformanceFilters({period:'custom',from:'2026-09-24',to:'2026-09-24'},now);
+  const report=buildAnnotationJobReport(buildPerformanceSnapshot(events,[],[],filters,at),[
+    ...['PENDING','ADMIN_DIRECT','NOT_SELECTED','NO_RECORD'].map((reason,index)=>({
+      cycleKey:`cycle-${index+1}`,taskId:index+1,accountId:11,submitted:true,outcome:null,reason,
+    })),
+    {cycleKey:'cycle-5',taskId:5,accountId:11,submitted:false,outcome:null},
+  ]);
+  const person=report.people[0];
+  assert.equal(person.copyReview,5);
+  assert.equal(person.copyDecided,0);
+  assert.equal(person.copyFirstUnjudged,4);
+  assert.equal(person.copyFirstPending,1);
+  assert.equal(person.copyFirstBypassed,2);
+  assert.equal(person.copyFirstUnjudgedOther,1);
+  assert.equal(person.copyFirstDirectDiscarded,1);
 });

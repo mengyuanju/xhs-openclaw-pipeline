@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronDown, ChevronRight, RefreshCw, Search, Settings2, Trash2, X } from 'lucide-react';
+import { Boxes, ChevronDown, ChevronRight, PackageCheck, PackageOpen, RefreshCw, Search, Settings2, Trash2, Truck, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { apiRequest } from '../../components/api-client';
@@ -48,6 +48,7 @@ type TaskRow = {
   deliveredAt: string | null; dataQuality?: Record<string, unknown>;
 };
 type ReportResponse = {
+  overview?: { unpacked: number; packed: number; delivered: number };
   summary: { total: number; reviewPending: number; copyReviewPending: number; imageReviewPending: number; qaPending: number; copyQaPending: number; imageQaPending: number; byState: Record<string, number>; copyQaPassed: number; copyQaFirstPassed: number; imageQaPassed: number; discarded: number; packingDelivery: number };
   items: TaskRow[]; total: number; page: number; pageSize: number; asOf: string;
   dataQuality?: { legacyAssignmentCount?: number; missingFirstManualAssignmentCount?: number };
@@ -64,6 +65,9 @@ const STATE_OPTIONS = [
   ['REVIEWED', '交付池'], ['CANCELLED', '已废弃'],
 ] as const;
 const STATE_LABELS = Object.fromEntries(STATE_OPTIONS);
+const HIDDEN_FILTER_STATES = new Set(['COPY_QUEUED', 'COPY_RUNNING', 'COPY_FAILED', 'IMAGE_FAILED']);
+const FILTER_STATE_OPTIONS = STATE_OPTIONS.filter(([value]) => !HIDDEN_FILTER_STATES.has(value));
+const FILTER_STATES = new Set<string>(FILTER_STATE_OPTIONS.map(([value]) => value));
 const METRIC_STORAGE_KEY = 'task-data-report:visible-metrics:v1';
 const METRIC_OPTIONS = [
   { id: 'total', label: '任务总数' },
@@ -140,6 +144,7 @@ function cleanConfig(value: QueryConfig): QueryConfig {
   const seen = new Set<ConditionField>();
   const conditions = Array.isArray(value?.conditions) ? value.conditions.filter(condition => {
     if (!allowed.has(condition.field) || seen.has(condition.field)) return false;
+    if (condition.field === 'STATE' && !FILTER_STATES.has(String(condition.value))) return false;
     seen.add(condition.field);
     return true;
   }).map(condition => ({
@@ -191,6 +196,23 @@ function taskStatusText(row: TaskRow) {
   if (row.state === 'IMAGE_REWORK_PENDING') return '待图片审核（返修）';
   if (row.state === 'IMAGE_QC_PENDING') return '待图片质检';
   return STATE_LABELS[row.state] ?? row.state;
+}
+
+function OverviewCards({ overview }: { overview: ReportResponse['overview'] }) {
+  const total = overview && [overview.unpacked, overview.packed, overview.delivered].every(Number.isFinite)
+    ? overview.unpacked + overview.packed + overview.delivered : undefined;
+  const cards = [
+    { label: '新增交付数', hint: '未打包、已打包、已交付合计', count: total, Icon: Boxes },
+    { label: '新增未打包', hint: '按进入交付池时间统计', count: overview?.unpacked, Icon: PackageOpen },
+    { label: '新增已打包', hint: '按打包时间统计，尚未交付', count: overview?.packed, Icon: PackageCheck },
+    { label: '新增已交付', hint: '按交付时间统计', count: overview?.delivered, Icon: Truck },
+  ];
+  return <div className={styles.overview}>
+    {cards.map(({ label, hint, count, Icon }) => <div key={label} className={styles.overviewCard}>
+      <div className={styles.overviewLabel}><span className={styles.overviewIcon}><Icon size={19} aria-hidden="true" /></span><div className={styles.overviewText}><span>{label}</span><small>{hint}</small></div></div>
+      <strong>{count == null ? '—' : count.toLocaleString('zh-CN')}</strong>
+    </div>)}
+  </div>;
 }
 
 function MetricCards({ summary, visibleIds }: { summary: ReportResponse['summary']; visibleIds: MetricId[] }) {
@@ -446,7 +468,7 @@ export function TaskDataReport() {
           <option value="">全部标注人</option>{annotatorOptions.map(account => <option key={account.id} value={account.id}>{account.displayName || account.username}（{account.username}）{account.status === 'DISABLED' ? ' · 已停用' : ''}</option>)}
         </select></label>
         <label>任务状态<select value={fixedValues.get('STATE') ?? ''} onChange={event => updateFixed('STATE', event.target.value)}>
-          <option value="">全部状态</option>{STATE_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          <option value="">全部状态</option>{FILTER_STATE_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select></label>
         <button className={styles.moreButton} type="button" onClick={() => setMoreOpen(value => !value)} aria-expanded={moreOpen}>
           更多条件 <ChevronDown size={15} aria-hidden="true" />
@@ -481,9 +503,16 @@ export function TaskDataReport() {
 
     {error && <div role="alert" className={styles.errorBox}>{error}</div>}
     {exportError && <div role="alert" className={styles.errorBox}>{exportError}</div>}
-    {report && <><section className={styles.summarySection} aria-label="报表概览">
+    {report && <><section className={styles.overviewSection} aria-labelledby="task-delivery-overview-title">
+      <div className={styles.overviewToolbar}>
+        <h2 id="task-delivery-overview-title">任务交付概览</h2>
+        <p>仅受时间区间和标注人影响</p>
+      </div>
+      <OverviewCards overview={report.overview} />
+    </section>
+    <section className={styles.summarySection} aria-label="任务数量详情">
       <div className={styles.summaryToolbar}>
-        <h2>数量概览</h2>
+        <h2>任务数量详情</h2>
         <Button variant="outline" size="sm" type="button" onClick={() => {
           setDraftMetricIds(visibleMetricIds);
           setMetricStorageError('');

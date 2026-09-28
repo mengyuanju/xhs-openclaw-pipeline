@@ -152,6 +152,10 @@ test('task data report dates tasks by first review, discard or bypass and keeps 
       await db.query(`UPDATE tasks SET state='REVIEWED',current_stage='REVIEWED',
         image_qc_released_approval_event_id=$2,image_reviewed_at=now() WHERE id=$1`,
       [fixture.taskId, imageApproval.id]);
+      await db.query(`INSERT INTO delivery_entries(
+        task_id,copy_revision_id,image_run_id,approved_by_account_id,approved_by_username)
+        VALUES($1,$2,$3,$4,$5)`,
+      [fixture.taskId, fixture.revisionId, runId, qaB.userId, qaB.username]);
     }
     await db.query(`UPDATE tasks SET assigned_to_user_id=$2,assignment_source='MANUAL',assigned_at=now()
       WHERE id=$1`, [passed.taskId, annotatorB.username]);
@@ -175,6 +179,8 @@ test('task data report dates tasks by first review, discard or bypass and keeps 
     assert.equal(report.summary.imageQaPending, 0);
     assert.equal(report.summary.discarded, 0);
     assert.equal(report.summary.packingDelivery, 2);
+    assert.deepEqual(report.overview, { unpacked: 0, packed: 0, delivered: 0 },
+      'the assignment-day detail cohort differs from today\'s delivery-ready operations');
     assert.ok(report.summary.copyQaPassed >= report.summary.packingDelivery);
     assert.ok(report.summary.imageQaPassed >= report.summary.packingDelivery);
     const firstAssignmentReport = await readTaskDataReport(db, admin, {
@@ -297,6 +303,8 @@ test('task data report dates tasks by first review, discard or bypass and keeps 
     const todayReport = await readTaskDataReport(db, admin, {}, { now: new Date() });
     assert.equal(todayReport.total, 5);
     assert.equal(todayReport.summary.discarded, 2);
+    assert.equal(todayReport.summary.packingDelivery, 2);
+    assert.deepEqual(todayReport.overview, { unpacked: 2, packed: 0, delivered: 0 });
     assert.deepEqual(new Set(todayReport.items.map(item => item.taskId)),
       new Set([passed.taskId, released.taskId, bypassed.taskId,
         Number(directlyDiscarded.id), Number(generallyCancelled.id)]));
@@ -345,6 +353,88 @@ test('task data report dates tasks by first review, discard or bypass and keeps 
       item => item.taskId === reviewedBeforeDiscard.taskId);
     assert.ok(priorReviewRow.firstCopyReviewAt);
     assert.equal(priorReviewRow.reportAt, priorReviewRow.firstCopyReviewAt);
+    async function deliveryCandidate(name, { testRun = false, entryStatus = 'READY',
+      hasEntry = true, qaAccepted = true } = {}) {
+      const fixture = await createTask('资格回归 ' + name, false);
+      const imageRunId = randomUUID();
+      await db.query(`INSERT INTO image_runs(
+        id,task_id,copy_revision_id,status,image_production_chain_id)
+        VALUES($1,$2,$3,'COMPLETED',$1)`, [imageRunId, fixture.taskId, fixture.revisionId]);
+      await db.query(`UPDATE tasks SET input=$2,current_image_run_id=$3,
+        state='REVIEWED',current_stage='REVIEWED' WHERE id=$1`,
+      [fixture.taskId, { testRun }, imageRunId]);
+      await db.query('UPDATE tasks SET image_qc_legacy_accepted=$2 WHERE id=$1',
+        [fixture.taskId, qaAccepted]);
+      if (hasEntry) await db.query(`INSERT INTO delivery_entries(task_id,copy_revision_id,
+        image_run_id,status,approved_by_account_id,approved_by_username,withdrawn_at)
+        VALUES($1,$2,$3,$4::varchar,$5,$6,CASE WHEN $4::varchar='WITHDRAWN' THEN now() END)`,
+      [fixture.taskId, fixture.revisionId, imageRunId, entryStatus, qaB.userId, qaB.username]);
+      return { ...fixture, imageRunId };
+    }
+
+    const invalidWithdrawn = await deliveryCandidate('非测试已撤回', { entryStatus: 'WITHDRAWN' });
+    const invalidCopy = await deliveryCandidate('非测试文案版本变化');
+    const changedCopyRevisionId = Number((await db.query(`INSERT INTO copy_revisions(
+      task_id,revision,content,approved_at,approval_mode)
+      VALUES($1,2,'{}',now(),'MANUAL') RETURNING id`, [invalidCopy.taskId])).rows[0].id);
+    await db.query('UPDATE tasks SET current_copy_revision_id=$2 WHERE id=$1',
+      [invalidCopy.taskId, changedCopyRevisionId]);
+    const invalidImage = await deliveryCandidate('非测试图片版本变化');
+    const changedImageRunId = randomUUID();
+    await db.query(`INSERT INTO image_runs(id,task_id,copy_revision_id,status,image_production_chain_id)
+      VALUES($1,$2,$3,'COMPLETED',$1)`, [changedImageRunId, invalidImage.taskId, invalidImage.revisionId]);
+    await db.query('UPDATE tasks SET current_image_run_id=$2 WHERE id=$1',
+      [invalidImage.taskId, changedImageRunId]);
+    await db.query('UPDATE tasks SET image_qc_legacy_accepted=true WHERE id=$1', [invalidImage.taskId]);
+    const invalidQa = await deliveryCandidate('非测试尚未图片质检放行', { qaAccepted: false });
+    const invalidNoEntry = await deliveryCandidate('非测试没有READY入口', { hasEntry: false });
+    const normalPending = await createTask('资格回归 正常待文案审核', false);
+    await db.query("UPDATE tasks SET state='COPY_REVIEW_PENDING',current_stage='COPY_REVIEW_PENDING' WHERE id=$1",
+      [normalPending.taskId]);
+    const normalDiscarded = await createTask('资格回归 正常废弃', false);
+    await db.query(`UPDATE tasks SET state='CANCELLED',cancelled_from_state='COPY_REVIEW_PENDING',
+      finished_at=now(),progress_message='任务已被人工废弃' WHERE id=$1`, [normalDiscarded.taskId]);
+    await deliveryCandidate('测试 #264 已撤回但状态REVIEWED', { testRun: true, entryStatus: 'WITHDRAWN' });
+    await deliveryCandidate('测试READY当前版本', { testRun: true });
+    for (const [name, state] of [
+      ['测试待文案质检', 'COPY_QC_PENDING'],
+      ['测试待文案审核', 'COPY_REVIEW_PENDING'],
+      ['测试废弃', 'CANCELLED'],
+    ]) {
+      const fixture = await createTask('资格回归 ' + name, false);
+      await db.query(`UPDATE tasks SET input='{"testRun":true}',state=$2::text,current_stage=$2::text,
+        cancelled_from_state=CASE WHEN $2::text='CANCELLED' THEN 'COPY_REVIEW_PENDING' END,
+        finished_at=CASE WHEN $2::text='CANCELLED' THEN now() END WHERE id=$1`,
+      [fixture.taskId, state]);
+    }
+    const eligibilityQuery = {
+      time: { field: 'FIRST_COPY_REVIEW_ACTION', mode: 'ABSOLUTE', from: todayDay, to: todayDay },
+      conditions: [{ field: 'TASK_ID_OR_NAME', op: 'CONTAINS', value: '资格回归' }],
+    };
+    const eligibilityReport = await readTaskDataReport(db, admin, eligibilityQuery);
+    const retainedIds = [invalidWithdrawn, invalidCopy, invalidImage, invalidQa, invalidNoEntry,
+      normalPending, normalDiscarded].map(fixture => fixture.taskId);
+    assert.equal(eligibilityReport.total, 7);
+    assert.deepEqual(new Set(eligibilityReport.items.map(item => item.taskId)), new Set(retainedIds),
+      'ordinary tasks remain in details even when they cannot enter the current delivery pool');
+    assert.equal(eligibilityReport.summary.packingDelivery, 0,
+      'REVIEWED alone is insufficient without a matching READY version and the image QA gate');
+    assert.equal(eligibilityReport.summary.reviewPending, 1);
+    assert.equal(eligibilityReport.summary.copyReviewPending, 1);
+    assert.equal(eligibilityReport.summary.discarded, 1);
+    assert.equal(eligibilityReport.summary.qaPending, 0);
+    assert.equal(eligibilityReport.summary.copyQaPassed, 5);
+    assert.equal(eligibilityReport.summary.imageQaPassed, 5);
+    const eligibilityCsv = await exportTaskDataReportCsv(db, admin, eligibilityQuery);
+    assert.equal(eligibilityCsv.split('\r\n').filter(Boolean).length, 8);
+    assert.doesNotMatch(eligibilityCsv, /资格回归 测试/u, 'CSV exports must also omit all testRun tasks');
+    const fullInterval = await readTaskDataReport(db, admin, {
+      time: { field: 'FIRST_COPY_REVIEW_ACTION', mode: 'ABSOLUTE', from: assignedDay, to: todayDay },
+    });
+    assert.equal(fullInterval.summary.packingDelivery, 2);
+    assert.equal(fullInterval.overview.unpacked + fullInterval.overview.packed + fullInterval.overview.delivered,
+      fullInterval.summary.packingDelivery, 'a range containing review and operation dates has identical delivery eligibility');
+    assert.equal(fullInterval.items.some(item => item.taskName.startsWith('资格回归 测试')), false);
     await assert.rejects(readTaskDataReport(db, { ...admin, role: 'USER' }, query),
       /仅管理员/u);
   } finally {

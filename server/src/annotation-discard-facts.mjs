@@ -51,11 +51,12 @@ JOIN tasks task ON task.id=discard.task_id
 WHERE ($4::bigint IS NULL OR discard.account_id=$4)
   AND ($5::text='' OR discard.stage=$5)
   AND ($6::bigint IS NULL OR task.production_batch_id=$6)
+  AND ($7::bigint[] IS NULL OR discard.task_id=ANY($7))
 ORDER BY discard.occurred_at,discard.event_key
 LIMIT 50001`;
 
-export async function readAnnotationDiscardFacts(client,{start,end,asOf,accountId=null,stage='',batchId=null}) {
-  const rows=(await client.query(DISCARDS_SQL,[start,end,asOf,accountId,stage,batchId])).rows;
+export async function readAnnotationDiscardFacts(client,{start,end,asOf,accountId=null,stage='',batchId=null,taskIds=null}) {
+  const rows=(await client.query(DISCARDS_SQL,[start,end,asOf,accountId,stage,batchId,taskIds])).rows;
   if(rows.length>LIMIT) throw new RangeError('统计范围超过 50,000 次废弃操作，请缩小日期或选择人员');
   return rows.map(row=>({
     id:'annotation-discard:'+row.event_key,kind:'ANNOTATION_DISCARD',

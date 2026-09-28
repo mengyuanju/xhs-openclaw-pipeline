@@ -14,6 +14,14 @@ const SORT_FIELDS = new Set(['FIRST_MANUAL_COPY_ASSIGNMENT', 'FIRST_COPY_ASSIGNM
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/u;
 const MAX_CONDITIONS = 20;
 
+const REPORT_TASK_SQL = `t.task_kind='CONTENT' AND NOT (t.input @> '{"testRun":true}'::jsonb)`;
+// Both delivery groups share current-version eligibility and apply their own date filters.
+const CURRENT_DELIVERY_SQL = `${REPORT_TASK_SQL} AND t.state='REVIEWED' AND delivery.status='READY'
+  AND t.current_copy_revision_id=delivery.copy_revision_id AND t.current_image_run_id=delivery.image_run_id
+  AND (t.image_qc_legacy_accepted OR t.image_qc_released_approval_event_id IS NOT NULL)`;
+const HAS_CURRENT_DELIVERY_SQL = `EXISTS(SELECT 1 FROM delivery_entries delivery
+  WHERE delivery.task_id=t.id AND ${CURRENT_DELIVERY_SQL})`;
+
 const FIRST_MANUAL_SQL = `(SELECT min(e.created_at) FROM task_assignment_events e
   WHERE e.task_id=t.id AND e.source='MANUAL' AND e.assignee_user_id IS NOT NULL)`;
 const FIRST_COPY_SQL = `LEAST((SELECT min(e.created_at) FROM task_assignment_events e
@@ -22,6 +30,9 @@ const FIRST_COPY_SQL = `LEAST((SELECT min(e.created_at) FROM task_assignment_eve
 // Scoreless direct discards have no dedicated decision row; their task message identifies that review outcome.
 const FIRST_COPY_REVIEW_SQL = `(SELECT min(reviewed_at) FROM (
   SELECT a.created_at AS reviewed_at FROM human_quality_assessments a
+    WHERE a.task_id=t.id AND a.stage='COPY' AND a.action IN ('APPROVE','RETRY','DISCARD')
+  UNION ALL
+  SELECT a.created_at FROM task_reassignment_assessment_records a
     WHERE a.task_id=t.id AND a.stage='COPY' AND a.action IN ('APPROVE','RETRY','DISCARD')
   UNION ALL
   SELECT a.approved_at FROM copy_approval_events a
@@ -219,7 +230,7 @@ function escapedLike(value) {
 
 export function buildTaskDataReportFilter(query) {
   const params = [query.time.start, query.time.end];
-  const where = [`t.task_kind='CONTENT'`, `${TIME_SQL[query.time.field]} >= $1::timestamptz`, `${TIME_SQL[query.time.field]} < $2::timestamptz`];
+  const where = [REPORT_TASK_SQL, `${TIME_SQL[query.time.field]} >= $1::timestamptz`, `${TIME_SQL[query.time.field]} < $2::timestamptz`];
   const fragments = query.conditions.map(({ field, op, value }) => {
     params.push(field === 'TASK_NAME' && op === 'CONTAINS' ? `%${escapedLike(value)}%` : value);
     const p = `$${params.length}`;
@@ -227,9 +238,12 @@ export function buildTaskDataReportFilter(query) {
       OR EXISTS(SELECT 1 FROM task_assignment_events e JOIN app_users u ON u.username=e.assignee_user_id
         AND u.created_at<=e.created_at WHERE e.task_id=t.id AND u.id=${p}::bigint))`;
     if (field === 'COPY_QA_REVIEWER') return `(EXISTS(SELECT 1 FROM copy_qa_batch_members_v2 m
-        WHERE m.task_id=t.id AND m.status='PASSED' AND m.reviewed_by_account_id=${p}::bigint)
-      OR EXISTS(SELECT 1 FROM copy_qa_return_events_v2 e JOIN copy_qa_batch_members_v2 m ON m.id=e.member_id
-        WHERE e.task_id=t.id AND e.kind='DIRECT' AND m.reviewed_by_account_id=${p}::bigint)
+        WHERE m.task_id=t.id AND m.status IN ('PASSED','DISCARDED') AND m.reviewed_by_account_id=${p}::bigint)
+      OR EXISTS(SELECT 1 FROM copy_qa_return_events_v2 e
+        LEFT JOIN copy_qa_batch_members_v2 m ON m.id=e.member_id
+        LEFT JOIN copy_sampling_items legacy ON legacy.id=e.legacy_item_id
+        WHERE e.task_id=t.id
+          AND COALESCE(m.reviewed_by_account_id,legacy.reviewed_by_account_id)=${p}::bigint)
       OR EXISTS(SELECT 1 FROM copy_sampling_events e JOIN copy_sampling_items i ON i.id=e.sampling_item_id
         WHERE i.task_id=t.id AND e.action IN ('PASS','RETURN_SINGLE') AND e.actor_account_id=${p}::bigint)
       OR EXISTS(SELECT 1 FROM copy_sampling_items i WHERE i.task_id=t.id AND i.selected
@@ -239,8 +253,13 @@ export function buildTaskDataReportFilter(query) {
       JOIN image_sampling_items i ON i.id=e.sampling_item_id
       WHERE i.task_id=t.id AND e.action IN ('PASS','RETURN_SINGLE')
         AND e.actor_account_id=${p}::bigint)
-      OR EXISTS(SELECT 1 FROM image_sampling_items i WHERE i.task_id=t.id AND i.selected
-        AND i.status IN ('PASSED','RETURNED') AND i.reviewed_at IS NOT NULL
+      OR EXISTS(SELECT 1 FROM image_sampling_events e JOIN image_sampling_items i ON i.freeze_id=e.freeze_id
+        WHERE i.task_id=t.id AND e.action='RETURN_BATCH'
+          AND (e.details->'affectedTaskIds') @> jsonb_build_array(i.task_id)
+          AND e.actor_account_id=${p}::bigint)
+      OR EXISTS(SELECT 1 FROM image_sampling_items i WHERE i.task_id=t.id
+        AND ((i.selected AND i.status IN ('PASSED','RETURNED') AND i.reviewed_at IS NOT NULL)
+          OR i.status='BATCH_RETURNED')
         AND i.reviewed_by_account_id=${p}::bigint))`;
     if (field === 'LAST_COPY_REVIEWER') return `(SELECT CASE WHEN a.approval_mode='MANUAL'
       THEN a.approved_by_account_id END FROM copy_approval_events a WHERE a.task_id=t.id
@@ -341,10 +360,13 @@ FROM (
 const QA_PEOPLE_SQL = `SELECT p.task_id,p.stage,p.account_id,u.username,u.display_name
 FROM (SELECT m.task_id,'COPY'::text AS stage,m.reviewed_by_account_id AS account_id
   FROM copy_qa_batch_members_v2 m WHERE m.task_id=ANY($1::bigint[])
-    AND m.status='PASSED' AND m.reviewed_by_account_id IS NOT NULL
-  UNION SELECT e.task_id,'COPY',m.reviewed_by_account_id
-    FROM copy_qa_return_events_v2 e JOIN copy_qa_batch_members_v2 m ON m.id=e.member_id
-    WHERE e.task_id=ANY($1::bigint[]) AND e.kind='DIRECT' AND m.reviewed_by_account_id IS NOT NULL
+    AND m.status IN ('PASSED','DISCARDED') AND m.reviewed_by_account_id IS NOT NULL
+  UNION SELECT e.task_id,'COPY',COALESCE(m.reviewed_by_account_id,legacy.reviewed_by_account_id)
+    FROM copy_qa_return_events_v2 e
+    LEFT JOIN copy_qa_batch_members_v2 m ON m.id=e.member_id
+    LEFT JOIN copy_sampling_items legacy ON legacy.id=e.legacy_item_id
+    WHERE e.task_id=ANY($1::bigint[])
+      AND COALESCE(m.reviewed_by_account_id,legacy.reviewed_by_account_id) IS NOT NULL
   UNION SELECT i.task_id,'COPY',e.actor_account_id
     FROM copy_sampling_events e JOIN copy_sampling_items i ON i.id=e.sampling_item_id
     WHERE i.task_id=ANY($1::bigint[]) AND e.action IN ('PASS','RETURN_SINGLE')
@@ -356,9 +378,16 @@ FROM (SELECT m.task_id,'COPY'::text AS stage,m.reviewed_by_account_id AS account
     FROM image_sampling_events e JOIN image_sampling_items i ON i.id=e.sampling_item_id
     WHERE i.task_id=ANY($1::bigint[]) AND e.action IN ('PASS','RETURN_SINGLE')
       AND e.actor_account_id IS NOT NULL
+  UNION SELECT i.task_id,'IMAGE',e.actor_account_id
+    FROM image_sampling_events e JOIN image_sampling_items i ON i.freeze_id=e.freeze_id
+    WHERE i.task_id=ANY($1::bigint[]) AND e.action='RETURN_BATCH'
+      AND (e.details->'affectedTaskIds') @> jsonb_build_array(i.task_id)
+      AND e.actor_account_id IS NOT NULL
   UNION SELECT i.task_id,'IMAGE',i.reviewed_by_account_id FROM image_sampling_items i
-    WHERE i.task_id=ANY($1::bigint[]) AND i.selected AND i.status IN ('PASSED','RETURNED')
-      AND i.reviewed_at IS NOT NULL AND i.reviewed_by_account_id IS NOT NULL) p
+    WHERE i.task_id=ANY($1::bigint[])
+      AND ((i.selected AND i.status IN ('PASSED','RETURNED') AND i.reviewed_at IS NOT NULL)
+        OR i.status='BATCH_RETURNED')
+      AND i.reviewed_by_account_id IS NOT NULL) p
 LEFT JOIN app_users u ON u.id=p.account_id ORDER BY p.task_id,p.stage,p.account_id`;
 
 function iso(value) { return value == null ? null : new Date(value).toISOString(); }
@@ -443,6 +472,48 @@ async function readDetailRows(client, ids) {
   return ids.map(id => byId.get(id)).filter(Boolean);
 }
 
+async function readTaskDeliveryOverview(client,query) {
+  const annotators=query.conditions.filter(condition=>condition.field==='ANNOTATOR');
+  const params=[query.time.start,query.time.end,...annotators.map(condition=>condition.value)];
+  const peopleFilter=annotators.length
+    ? ` AND (${annotators.map((_,index)=>`operation.account_id=$${index+3}::bigint`)
+      .join(query.match==='ANY'?' OR ':' AND ')})` : '';
+  const row=(await client.query(`WITH delivery_records AS (
+    SELECT delivery.task_id,
+      CASE WHEN confirmation.item_id IS NOT NULL THEN 'DELIVERED'
+        WHEN item.id IS NOT NULL THEN 'PACKED' ELSE 'UNPACKED' END AS phase,
+      CASE WHEN confirmation.item_id IS NOT NULL THEN confirmation.confirmed_at
+        WHEN item.id IS NOT NULL THEN batch.created_at ELSE delivery.approved_at END AS operated_at,
+      CASE WHEN item.id IS NOT NULL THEN owner.account_id ELSE ready_owner.account_id END AS account_id
+    FROM tasks t JOIN delivery_entries delivery ON delivery.task_id=t.id
+    LEFT JOIN delivery_batch_items item ON item.task_id=delivery.task_id
+      AND item.copy_revision_id=delivery.copy_revision_id AND item.image_run_id=delivery.image_run_id
+    LEFT JOIN delivery_batches batch ON batch.id=item.delivery_batch_id
+    LEFT JOIN delivery_item_owners owner ON owner.item_id=item.id
+    LEFT JOIN delivery_item_confirmations confirmation ON confirmation.item_id=item.id
+    LEFT JOIN LATERAL (
+      SELECT history.account_id FROM (
+        SELECT assignment.id,assignment.assigned_at,assignment.assignee_account_id AS account_id,0 AS source_order
+        FROM task_assignment_records assignment WHERE assignment.task_id=t.id
+          AND assignment.assigned_at<=delivery.approved_at
+          AND (assignment.ended_at IS NULL OR assignment.ended_at>delivery.approved_at)
+        UNION ALL
+        SELECT event.id,event.created_at,account.id,1
+        FROM task_assignment_events event LEFT JOIN app_users account
+          ON account.username=event.assignee_user_id AND account.created_at<=event.created_at
+        WHERE event.task_id=t.id AND event.created_at<=delivery.approved_at
+      ) history ORDER BY history.assigned_at DESC,history.source_order,history.id DESC LIMIT 1
+    ) ready_owner ON item.id IS NULL
+    WHERE ${CURRENT_DELIVERY_SQL}
+  ) SELECT
+    count(DISTINCT task_id) FILTER(WHERE phase='UNPACKED')::integer AS unpacked,
+    count(DISTINCT task_id) FILTER(WHERE phase='PACKED')::integer AS packed,
+    count(DISTINCT task_id) FILTER(WHERE phase='DELIVERED')::integer AS delivered
+  FROM delivery_records operation WHERE operated_at >= $1::timestamptz
+    AND operated_at < $2::timestamptz${peopleFilter}`,params)).rows[0] ?? {};
+  return {unpacked:Number(row.unpacked ?? 0),packed:Number(row.packed ?? 0),delivered:Number(row.delivered ?? 0)};
+}
+
 function assertAdmin(actor) {
   if (actor?.role !== 'ADMIN' || !Number.isSafeInteger(actor.userId) || actor.userId < 1) {
     throw new ControlPlaneAuthorizationError('仅管理员可以查看任务数据报表');
@@ -458,9 +529,11 @@ export async function readTaskDataReport(pool, actor, input = {}, { now = new Da
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
     await client.query(exportAll ? "SET LOCAL statement_timeout='60s'" : "SET LOCAL statement_timeout='20s'");
     const asOf = iso((await client.query('SELECT clock_timestamp() AS at')).rows[0].at);
+    const overview = await readTaskDeliveryOverview(client,query);
     const summaryRows = (await client.query(`WITH filtered AS MATERIALIZED (
       SELECT t.id,t.state,t.current_copy_revision_id,t.copy_qc_released_revision_id,
-        t.current_image_run_id,t.image_qc_released_approval_event_id,t.image_qc_legacy_accepted
+        t.current_image_run_id,t.image_qc_released_approval_event_id,t.image_qc_legacy_accepted,
+        ${HAS_CURRENT_DELIVERY_SQL} AS delivery_eligible
       FROM tasks t WHERE ${filter.sql})
       SELECT count(*)::integer AS total,
         count(*) FILTER(WHERE state IN ('COPY_REVIEW_PENDING','PENDING_SECOND_ASSIGNMENT'))::integer AS copy_review_pending,
@@ -468,7 +541,7 @@ export async function readTaskDataReport(pool, actor, input = {}, { now = new Da
         count(*) FILTER(WHERE state='COPY_QC_PENDING')::integer AS copy_qa_pending,
         count(*) FILTER(WHERE state='IMAGE_QC_PENDING')::integer AS image_qa_pending,
         count(*) FILTER(WHERE state='CANCELLED')::integer AS discarded,
-        count(*) FILTER(WHERE state='REVIEWED')::integer AS packing_delivery,
+        count(*) FILTER(WHERE delivery_eligible)::integer AS packing_delivery,
         -- The current QA release includes human passes, batch releases and legacy
         -- delivery-ready tasks whose acceptance predates the current QA records.
         count(*) FILTER(WHERE state='REVIEWED' OR
@@ -498,7 +571,8 @@ export async function readTaskDataReport(pool, actor, input = {}, { now = new Da
         (SELECT coalesce(jsonb_object_agg(state,n),'{}'::jsonb) FROM
           (SELECT state,count(*)::integer AS n FROM filtered GROUP BY state) grouped) AS by_state,
         (SELECT count(DISTINCT f.id)::integer FROM filtered f JOIN delivery_batch_items i ON i.task_id=f.id
-          JOIN delivery_item_confirmations c ON c.item_id=i.id) AS delivered,
+          AND i.copy_revision_id=f.current_copy_revision_id AND i.image_run_id=f.current_image_run_id
+          JOIN delivery_item_confirmations c ON c.item_id=i.id WHERE f.delivery_eligible) AS delivered,
         (SELECT count(*)::integer FROM filtered f JOIN tasks t ON t.id=f.id
           WHERE ${REJECTION_SQL}>0) AS with_rejection,
         (SELECT count(*)::integer FROM filtered f JOIN tasks t ON t.id=f.id
@@ -522,6 +596,7 @@ export async function readTaskDataReport(pool, actor, input = {}, { now = new Da
     await client.query('COMMIT');
     const total = Number(summaryRows.total);
     return {
+      overview,
       summary: {
         total, byState: summaryRows.by_state ?? {},
         reviewPending: Number(summaryRows.copy_review_pending) + Number(summaryRows.image_review_pending),
