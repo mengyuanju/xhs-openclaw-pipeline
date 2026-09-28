@@ -264,7 +264,6 @@ function MetricCards({ summary, visibleIds }: { summary: ReportResponse['summary
     {METRIC_OPTIONS.filter(option => visibleIds.includes(option.id)).map(option =>
       <div key={option.id} className={styles.summaryCard}>
         <span>{option.label}</span><strong>{counts[option.id] == null ? '—' : counts[option.id].toLocaleString('zh-CN')}</strong>
-        {option.id === 'effectiveTotal' && <small>只记录文案审核过一次的数据</small>}
         {option.id === 'copyInitialReviewPending' && <small>改派之后待审核</small>}
       </div>)}
   </div>;
