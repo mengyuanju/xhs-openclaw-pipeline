@@ -34,6 +34,14 @@ test('fixed delivery overview has mutually exclusive current-version stages and 
     }));
     const annotator = person => ({ field: 'ANNOTATOR', op: 'EQ', value: person.userId });
 
+    const empty = await readTaskDataReport(db, admin, {
+      time: { field: 'FIRST_COPY_REVIEW_ACTION', mode: 'ABSOLUTE', from: DAY, to: DAY },
+    });
+    assert.deepEqual(empty.poolOverview, {
+      copyReviewPending: 0, copyReworkPending: 0, secondAssignmentPending: 0, copyQaPending: 0, imageGenerating: 0,
+      imageReviewPending: 0, imageQaPending: 0, deliveryTotal: 0,
+    }, 'an empty task pool returns zero for all eight global overview fields');
+
     async function version(task, approvedAt, qa = 'legacy') {
       await db.query(`UPDATE delivery_entries SET status='WITHDRAWN',withdrawn_at=$2
         WHERE task_id=$1 AND status='READY'`, [task.taskId, approvedAt]);
@@ -117,6 +125,10 @@ test('fixed delivery overview has mutually exclusive current-version stages and 
       assert.deepEqual(result.overview, expected);
       assert.equal(result.total, 0, 'the detail list keeps its first COPY review date outside the query interval');
       assert.equal(result.summary.total, 0, 'overview delivery dates do not change the detail summary');
+      assert.equal(result.summary.copyInitialReviewPending, 0,
+        'the new detail initial review count still follows the first COPY review cohort');
+      assert.equal(result.summary.copyReworkPending, 0);
+
       assert.equal(result.summary.packingDelivery, 0,
         'current delivery eligibility still uses first COPY review dates in the lower summary');
       const ledger = await listDeliveryItems(db, {
@@ -276,6 +288,172 @@ test('fixed delivery overview has mutually exclusive current-version stages and 
         { unpacked: 2, packed: 0, delivered: 0 });
       assert.deepEqual((await report(DAY, [annotator(b), ...extraConditions])).overview,
         { unpacked: 1, packed: 1, delivered: 1 });
+    });
+    await t.test('pool overview is global, excludes future tasks and shares the report snapshot', async () => {
+      const baseline = await report();
+      assert.deepEqual(baseline.poolOverview, {
+        copyReviewPending: 0, copyReworkPending: 0, secondAssignmentPending: 0, copyQaPending: 0, imageGenerating: 0,
+        imageReviewPending: 0, imageQaPending: 1, deliveryTotal: 18,
+      }, 'only valid current deliveries and the existing pending QA task occupy the global pool');
+      const currentLedger = await listDeliveryItems(db, { view: 'CURRENT' }, admin);
+      assert.equal(currentLedger.summary.total, 18);
+      assert.equal(currentLedger.summary.unpacked + currentLedger.summary.packed + currentLedger.summary.delivered,
+        baseline.poolOverview.deliveryTotal, 'the global delivery total shares CURRENT ledger eligibility');
+      const allStates = [
+        'COPY_REVIEW_PENDING', 'PENDING_SECOND_ASSIGNMENT', 'COPY_QC_PENDING',
+        'IMAGE_QUEUED', 'IMAGE_RUNNING', 'MANUAL_ARCHIVE', 'IMAGE_REWORK_PENDING', 'IMAGE_QC_PENDING',
+        'REVIEWED', 'CANCELLED', 'COPY_QUEUED', 'COPY_RUNNING', 'COPY_FAILED', 'IMAGE_FAILED',
+      ];
+      const poolStates = allStates.slice(0, 8);
+      async function poolTask(state, { testRun = false, future = false, taskKind = 'CONTENT',
+        owner = null, rework = false, mandatoryOrigin = null } = {}) {
+        return (await db.query(`INSERT INTO tasks(query,input,state,current_stage,created_by_node_id,
+          task_kind,created_at,assigned_to_user_id,assignment_source,assigned_at,copy_qa_rework_pending,
+          mandatory_copy_qc,mandatory_copy_qc_origin)
+          VALUES($1,$2,$3::text,$3::text,$4,$5,
+            clock_timestamp()+CASE WHEN $6::boolean THEN interval '1 day' ELSE interval '-1 second' END,
+            $7::varchar,CASE WHEN $7::varchar IS NOT NULL THEN 'MANUAL' END,
+            CASE WHEN $7::varchar IS NOT NULL THEN clock_timestamp()-interval '1 second' END,$8,$9,$10)
+          RETURNING id,created_at,assigned_to_user_id,copy_qa_rework_pending,
+            mandatory_copy_qc,mandatory_copy_qc_origin`,
+        ['全池回归 ' + state, { testRun }, state, NODE_ID, taskKind, future, owner?.username ?? null,
+          rework, mandatoryOrigin !== null, mandatoryOrigin])).rows[0];
+      }
+      async function firstCopyReview(fixture, owner, currentOrigin = null) {
+        const reviewedRevisionId = Number((await db.query(`INSERT INTO copy_revisions(task_id,revision,content,
+          revision_origin,approved_at,approval_mode)
+          VALUES($1,1,'{}','GENERATION',clock_timestamp()-interval '500 milliseconds','MANUAL') RETURNING id`,
+        [fixture.id])).rows[0].id);
+        await db.query(`INSERT INTO copy_approval_events(task_id,copy_revision_id,approval_mode,
+          approved_by_account_id,approved_by_username,content_sha256,approved_at)
+          VALUES($1,$2,'MANUAL',$3,$4,$5,clock_timestamp()-interval '400 milliseconds')`,
+        [fixture.id, reviewedRevisionId, owner.userId, owner.username, 'b'.repeat(64)]);
+        let currentRevisionId = reviewedRevisionId;
+        if (currentOrigin) currentRevisionId = Number((await db.query(`INSERT INTO copy_revisions(task_id,
+          revision,content,parent_revision_id,revision_origin)
+          VALUES($1,2,'{}',$2,$3) RETURNING id`, [fixture.id, reviewedRevisionId, currentOrigin])).rows[0].id);
+        await db.query('UPDATE tasks SET current_copy_revision_id=$2 WHERE id=$1',
+          [fixture.id, currentRevisionId]);
+      }
+      const normalRows = [];
+      for (const state of allStates) normalRows.push(await poolTask(state));
+      const unassignedOnly = await report();
+      assert.equal(unassignedOnly.poolOverview.copyReviewPending, 0,
+        'an unassigned COPY_REVIEW_PENDING task is not work waiting for an annotator to review');
+      assert.equal(unassignedOnly.poolOverview.secondAssignmentPending, 1,
+        'PENDING_SECOND_ASSIGNMENT occupies its own pool stage instead of the COPY review count');
+      const assignedFirstReview = await poolTask('COPY_REVIEW_PENDING', { owner: a });
+      const assignedRework = await poolTask('COPY_REVIEW_PENDING', { owner: b, rework: true });
+      await firstCopyReview(assignedRework, b, 'QA_RETURN');
+      normalRows.push(assignedFirstReview, assignedRework);
+      assert.equal(assignedFirstReview.assigned_to_user_id, a.username);
+      assert.equal(assignedRework.copy_qa_rework_pending, true);
+      const firstAndRework = await report();
+      assert.equal(firstAndRework.poolOverview.copyReviewPending, 1);
+      assert.equal(firstAndRework.poolOverview.copyReworkPending, 1,
+        'a QA return needs real historical COPY review evidence rather than a flag alone');
+      const reassignedRound = await poolTask('COPY_REVIEW_PENDING', { owner: b, mandatoryOrigin: 'SECOND_ASSIGNMENT' });
+      await firstCopyReview(reassignedRound, b, 'SECOND_ASSIGNMENT_RESET');
+      const restoredRound = await poolTask('COPY_REVIEW_PENDING', { owner: a, mandatoryOrigin: 'DISCARD_RESTORE' });
+      await firstCopyReview(restoredRound, a, 'DISCARD_RESTORE');
+      const legacyQaReturn = await poolTask('COPY_REVIEW_PENDING', { owner: a, mandatoryOrigin: 'QA_RETURN' });
+      await firstCopyReview(legacyQaReturn, a, 'QA_RETURN');
+      const finalReviewReturn = await poolTask('COPY_REVIEW_PENDING', { owner: b, mandatoryOrigin: 'FINAL_REWORK' });
+      await firstCopyReview(finalReviewReturn, b, 'FINAL_REWORK');
+      normalRows.push(reassignedRound, restoredRound, legacyQaReturn, finalReviewReturn);
+      for (const flags of [{ rework: true }, { mandatoryOrigin: 'QA_RETURN' }]) {
+        normalRows.push(await poolTask('COPY_REVIEW_PENDING', { owner: a, ...flags }));
+      }
+      const classifiedRounds = await report();
+      assert.equal(classifiedRounds.poolOverview.copyReviewPending, 4,
+        'second assignment, restored and FINAL_REWORK rounds without active COPY QA return remain pending review');
+      assert.equal(classifiedRounds.poolOverview.copyReworkPending, 2,
+        'current and legacy COPY QA returns need first review evidence; FINAL_REWORK alone is not COPY QA rework');
+      for (const state of allStates) await poolTask(state, { testRun: true });
+      await poolTask('COPY_REVIEW_PENDING', { testRun: true, owner: a });
+      const testRework = await poolTask('COPY_REVIEW_PENDING', { testRun: true, owner: b, rework: true });
+      await firstCopyReview(testRework, b, 'QA_RETURN');
+      const futureRows = [];
+      for (const state of poolStates) futureRows.push(await poolTask(state, { future: true }));
+      futureRows.push(await poolTask('COPY_REVIEW_PENDING', { future: true, owner: a }));
+      const futureReady = await readyTask('未来创建但有有效READY交付入口');
+      futureRows.push((await db.query(`UPDATE tasks SET created_at=clock_timestamp()+interval '1 day'
+        WHERE id=$1 RETURNING id,created_at`, [futureReady.taskId])).rows[0]);
+      assert.equal((await listDeliveryItems(db, { view: 'CURRENT' }, admin)).summary.total, 19,
+        'the future task qualifies as a current delivery before the report snapshot cutoff is applied');
+      await poolTask('MANUAL_ARCHIVE', { taskKind: 'STANDALONE_IMAGE_EDIT' });
+      const expected = {
+        copyReviewPending: 4, copyReworkPending: 2, secondAssignmentPending: 1, copyQaPending: 1, imageGenerating: 2,
+        imageReviewPending: 2, imageQaPending: 2, deliveryTotal: 18,
+      };
+      const input = {
+        time: { field: 'FIRST_COPY_REVIEW_ACTION', mode: 'ABSOLUTE', from: DAY, to: DAY },
+      };
+      const reference = await readTaskDataReport(db, admin, input, { now: new Date('2040-01-01T00:00:00Z') });
+      assert.deepEqual(reference.poolOverview, expected,
+        'current review rounds and proven active QA returns occupy separate pool stages');
+      assert.equal(reference.summary.copyInitialReviewPending, 0,
+        'global current review rounds do not enter details outside their first review dates');
+      assert.equal(reference.summary.copyReworkPending, 0);
+
+      assert.deepEqual(Object.keys(reference.poolOverview).sort(), Object.keys(expected).sort(),
+        'the eight-field pool overview exposes rework and second assignment without a task-pool total');
+      for (const row of normalRows) assert.ok(row.created_at <= new Date(reference.asOf),
+        'ordinary pool tasks were created by the response snapshot cutoff');
+      for (const row of futureRows) assert.ok(row.created_at > new Date(reference.asOf),
+        'future task creation is compared with DB asOf, not the caller-provided future now');
+      const conditions = [
+        annotator(admin),
+        { field: 'STATE', op: 'EQ', value: 'IMAGE_FAILED' },
+        { field: 'TASK_ID_OR_NAME', op: 'CONTAINS', value: 'definitely-no-matching-task' },
+        { field: 'REJECTION_COUNT', op: 'GTE', value: 99 },
+        { field: 'REASSIGNMENT_COUNT', op: 'GTE', value: 99 },
+        { field: 'COPY_QA_REVIEWER', op: 'EQ', value: admin.userId },
+        { field: 'IMAGE_QA_REVIEWER', op: 'EQ', value: admin.userId },
+      ];
+      const filtered = await readTaskDataReport(db, admin, {
+        time: { field: 'CREATED_AT', mode: 'ABSOLUTE', from: '1999-01-01', to: '1999-01-01' },
+        conditions,
+      });
+      assert.equal(filtered.total, 0);
+      assert.deepEqual(filtered.poolOverview, expected,
+        'date, time dimension, annotator, status and advanced report filters do not change the full pool');
+
+      let insertedAfterSnapshot = null;
+      let readyAfterSnapshot = null;
+      const concurrentPool = {
+        async connect() {
+          const client = await db.connect();
+          return {
+            async query(sql, params) {
+              const result = await client.query(sql, params);
+              if (sql === 'SELECT clock_timestamp() AS at' && insertedAfterSnapshot === null) {
+                const createdAt = new Date(new Date(result.rows[0].at).getTime() - 1000);
+                insertedAfterSnapshot = (await db.query(`INSERT INTO tasks(query,input,state,current_stage,
+                  created_by_node_id,created_at) VALUES('快照之后并发新任务','{}','COPY_QC_PENDING',
+                    'COPY_QC_PENDING',$1,$2) RETURNING id,created_at`, [NODE_ID, createdAt])).rows[0];
+                readyAfterSnapshot = await readyTask('快照之后并发新增有效交付任务');
+                readyAfterSnapshot.createdAt = (await db.query('SELECT created_at FROM tasks WHERE id=$1',
+                  [readyAfterSnapshot.taskId])).rows[0].created_at;
+              }
+              return result;
+            },
+            release() { client.release(); },
+          };
+        },
+      };
+      const sameSnapshot = await readTaskDataReport(concurrentPool, admin, input);
+      assert.ok(insertedAfterSnapshot, 'a real separate DB connection committed the concurrent task');
+      assert.ok(insertedAfterSnapshot.created_at <= new Date(sameSnapshot.asOf),
+        'the concurrent row passes the timestamp predicate and can only be excluded by snapshot isolation');
+      assert.ok(readyAfterSnapshot?.createdAt <= new Date(sameSnapshot.asOf),
+        'the concurrent READY task also passes the cutoff but is excluded by the shared report snapshot');
+      assert.deepEqual(sameSnapshot.poolOverview, expected,
+        'pool statistics use the same repeatable-read snapshot as the report asOf');
+      const nextSnapshot = await readTaskDataReport(db, admin, input);
+      assert.deepEqual(nextSnapshot.poolOverview, {
+        ...expected, copyQaPending: expected.copyQaPending + 1, deliveryTotal: expected.deliveryTotal + 1,
+      }, 'the subsequent report includes both committed tasks in its new snapshot');
     });
   } finally {
     await repository.close();

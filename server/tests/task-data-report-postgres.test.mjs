@@ -75,14 +75,20 @@ test('task data report dates tasks by first review, discard or bypass and keeps 
     let reviewReport = await readTaskDataReport(db, admin, pendingQuery);
     assert.equal(reviewReport.summary.reviewPending, 2);
     assert.equal(reviewReport.summary.copyReviewPending, 1);
+    assert.equal(reviewReport.summary.copyInitialReviewPending, 1);
+    assert.equal(reviewReport.summary.copyReworkPending, 0,
+      'a reviewed pending task without an active QA return does not need COPY rework');
     assert.equal(reviewReport.summary.imageReviewPending, 1);
     await db.query("UPDATE tasks SET state='PENDING_SECOND_ASSIGNMENT',current_stage='PENDING_SECOND_ASSIGNMENT' WHERE id=$1",
       [passed.taskId]);
     await db.query("UPDATE tasks SET state='IMAGE_REWORK_PENDING',current_stage='IMAGE_REWORK_PENDING' WHERE id=$1",
       [released.taskId]);
     reviewReport = await readTaskDataReport(db, admin, pendingQuery);
-    assert.equal(reviewReport.summary.reviewPending, 2);
-    assert.equal(reviewReport.summary.copyReviewPending, 1);
+    assert.equal(reviewReport.summary.reviewPending, 1);
+    assert.equal(reviewReport.summary.copyReviewPending, 0,
+      'PENDING_SECOND_ASSIGNMENT is distinct from assigned COPY review work');
+    assert.equal(reviewReport.summary.copyInitialReviewPending, 0);
+    assert.equal(reviewReport.summary.copyReworkPending, 0);
     assert.equal(reviewReport.summary.imageReviewPending, 1);
     await db.query("UPDATE tasks SET state='COPY_QC_PENDING',current_stage='COPY_QC_PENDING' WHERE id=$1",
       [passed.taskId]);
@@ -173,6 +179,8 @@ test('task data report dates tasks by first review, discard or bypass and keeps 
     assert.equal(report.summary.imageQaPassed, 2);
     assert.equal(report.summary.reviewPending, 0);
     assert.equal(report.summary.copyReviewPending, 0);
+    assert.equal(report.summary.copyInitialReviewPending, 0);
+    assert.equal(report.summary.copyReworkPending, 0);
     assert.equal(report.summary.imageReviewPending, 0);
     assert.equal(report.summary.qaPending, 0);
     assert.equal(report.summary.copyQaPending, 0);
@@ -391,6 +399,14 @@ test('task data report dates tasks by first review, discard or bypass and keeps 
     const normalPending = await createTask('资格回归 正常待文案审核', false);
     await db.query("UPDATE tasks SET state='COPY_REVIEW_PENDING',current_stage='COPY_REVIEW_PENDING' WHERE id=$1",
       [normalPending.taskId]);
+    const normalImageFailed = await createTask('资格回归 正常图片生成失败待重试', false);
+    const failedImageRunId = randomUUID();
+    await db.query(`INSERT INTO image_runs(id,task_id,copy_revision_id,status,image_production_chain_id,finished_at)
+      VALUES($1,$2,$3,'FAILED',$1,now())`,
+    [failedImageRunId, normalImageFailed.taskId, normalImageFailed.revisionId]);
+    await db.query(`UPDATE tasks SET state='IMAGE_FAILED',current_stage='IMAGE_FAILED',
+      current_image_run_id=$2,copy_qc_released_revision_id=$3 WHERE id=$1`,
+    [normalImageFailed.taskId, failedImageRunId, normalImageFailed.revisionId]);
     const normalDiscarded = await createTask('资格回归 正常废弃', false);
     await db.query(`UPDATE tasks SET state='CANCELLED',cancelled_from_state='COPY_REVIEW_PENDING',
       finished_at=now(),progress_message='任务已被人工废弃' WHERE id=$1`, [normalDiscarded.taskId]);
@@ -399,6 +415,7 @@ test('task data report dates tasks by first review, discard or bypass and keeps 
     for (const [name, state] of [
       ['测试待文案质检', 'COPY_QC_PENDING'],
       ['测试待文案审核', 'COPY_REVIEW_PENDING'],
+      ['测试图片生成失败', 'IMAGE_FAILED'],
       ['测试废弃', 'CANCELLED'],
     ]) {
       const fixture = await createTask('资格回归 ' + name, false);
@@ -413,20 +430,24 @@ test('task data report dates tasks by first review, discard or bypass and keeps 
     };
     const eligibilityReport = await readTaskDataReport(db, admin, eligibilityQuery);
     const retainedIds = [invalidWithdrawn, invalidCopy, invalidImage, invalidQa, invalidNoEntry,
-      normalPending, normalDiscarded].map(fixture => fixture.taskId);
-    assert.equal(eligibilityReport.total, 7);
+      normalPending, normalImageFailed, normalDiscarded].map(fixture => fixture.taskId);
+    assert.equal(eligibilityReport.total, 8);
     assert.deepEqual(new Set(eligibilityReport.items.map(item => item.taskId)), new Set(retainedIds),
       'ordinary tasks remain in details even when they cannot enter the current delivery pool');
     assert.equal(eligibilityReport.summary.packingDelivery, 0,
       'REVIEWED alone is insufficient without a matching READY version and the image QA gate');
     assert.equal(eligibilityReport.summary.reviewPending, 1);
     assert.equal(eligibilityReport.summary.copyReviewPending, 1);
+    assert.equal(eligibilityReport.summary.copyInitialReviewPending, 1);
+    assert.equal(eligibilityReport.summary.byState.IMAGE_FAILED, 1,
+      'a real failed image run remains visible for the retry card while testRun failures are excluded');
+    assert.equal(eligibilityReport.summary.copyReworkPending, 0);
     assert.equal(eligibilityReport.summary.discarded, 1);
     assert.equal(eligibilityReport.summary.qaPending, 0);
-    assert.equal(eligibilityReport.summary.copyQaPassed, 5);
+    assert.equal(eligibilityReport.summary.copyQaPassed, 6);
     assert.equal(eligibilityReport.summary.imageQaPassed, 5);
     const eligibilityCsv = await exportTaskDataReportCsv(db, admin, eligibilityQuery);
-    assert.equal(eligibilityCsv.split('\r\n').filter(Boolean).length, 8);
+    assert.equal(eligibilityCsv.split('\r\n').filter(Boolean).length, 9);
     assert.doesNotMatch(eligibilityCsv, /资格回归 测试/u, 'CSV exports must also omit all testRun tasks');
     const fullInterval = await readTaskDataReport(db, admin, {
       time: { field: 'FIRST_COPY_REVIEW_ACTION', mode: 'ABSOLUTE', from: assignedDay, to: todayDay },
@@ -435,6 +456,137 @@ test('task data report dates tasks by first review, discard or bypass and keeps 
     assert.equal(fullInterval.overview.unpacked + fullInterval.overview.packed + fullInterval.overview.delivered,
       fullInterval.summary.packingDelivery, 'a range containing review and operation dates has identical delivery eligibility');
     assert.equal(fullInterval.items.some(item => item.taskName.startsWith('资格回归 测试')), false);
+    const assignedCopyReview = await createTask('待审核口径回归 已分配普通待审核', false);
+    await db.query(`UPDATE tasks SET state='COPY_REVIEW_PENDING',current_stage='COPY_REVIEW_PENDING',
+      assigned_at=clock_timestamp() WHERE id=$1`, [assignedCopyReview.taskId]);
+    await db.query(`UPDATE task_assignment_events SET created_at=(SELECT assigned_at FROM tasks WHERE id=$1)
+      WHERE task_id=$1 AND previous_assignee_user_id IS NULL AND assignee_user_id=$2`,
+    [assignedCopyReview.taskId, annotatorA.username]);
+    const assignedCopyRework = await createTask('待审核口径回归 已分配返修待审核', false);
+    await db.query(`UPDATE tasks SET state='COPY_REVIEW_PENDING',current_stage='COPY_REVIEW_PENDING',
+      copy_qa_rework_pending=true WHERE id=$1`, [assignedCopyRework.taskId]);
+    await db.query(`UPDATE tasks SET assigned_to_user_id=$2,assignment_source='MANUAL',assigned_at=now()
+      WHERE id=$1`, [assignedCopyRework.taskId, annotatorB.username]);
+    await db.query(`INSERT INTO task_assignment_events(task_id,actor_username,previous_assignee_user_id,
+      assignee_user_id,source) VALUES($1,$2,$3,$4,'MANUAL')`,
+    [assignedCopyRework.taskId, admin.username, annotatorA.username, annotatorB.username]);
+    const secondAssignment = await createTask('待审核口径回归 待二次分配', false);
+    await db.query(`UPDATE tasks SET state='PENDING_SECOND_ASSIGNMENT',current_stage='PENDING_SECOND_ASSIGNMENT',
+      assigned_to_user_id=NULL,assignment_source=NULL,assigned_at=NULL WHERE id=$1`,
+    [secondAssignment.taskId]);
+    const unassignedCopyReview = await createTask('待审核口径回归 未分配文案待审核', false);
+    await db.query(`UPDATE tasks SET state='COPY_REVIEW_PENDING',current_stage='COPY_REVIEW_PENDING',
+      assigned_to_user_id=NULL,assignment_source=NULL,assigned_at=NULL WHERE id=$1`,
+    [unassignedCopyReview.taskId]);
+    const olderCopyReview = await createTask('待审核口径回归 昨日首次审核仍待处理', false);
+    await db.query('UPDATE copy_approval_events SET approved_at=$2 WHERE id=$1',
+      [olderCopyReview.approvalId, yesterdayAt]);
+    await db.query('UPDATE copy_revisions SET approved_at=$2 WHERE id=$1',
+      [olderCopyReview.revisionId, yesterdayAt]);
+    await db.query(`UPDATE tasks SET state='COPY_REVIEW_PENDING',current_stage='COPY_REVIEW_PENDING',
+      copy_qa_rework_pending=true WHERE id=$1`, [olderCopyReview.taskId]);
+    const neverReviewedCopy = await createUnreviewedTask('待审核口径回归 已分配但从未审核', 'COPY_REVIEW_PENDING');
+    const copyReviewQuery = {
+      time: { field: 'FIRST_COPY_REVIEW_ACTION', mode: 'ABSOLUTE', from: todayDay, to: todayDay },
+      conditions: [{ field: 'TASK_ID_OR_NAME', op: 'CONTAINS', value: '待审核口径回归' }],
+    };
+    const copyReviewReport = await readTaskDataReport(db, admin, copyReviewQuery);
+    assert.equal(copyReviewReport.total, 4,
+      'reviewed second-assignment and unassigned tasks remain visible in the detail cohort');
+    assert.deepEqual(new Set(copyReviewReport.items.map(item => item.taskId)), new Set([
+      assignedCopyReview.taskId, assignedCopyRework.taskId, secondAssignment.taskId, unassignedCopyReview.taskId,
+    ]));
+    assert.equal(copyReviewReport.summary.byState.COPY_REVIEW_PENDING, 3);
+    assert.equal(copyReviewReport.summary.byState.PENDING_SECOND_ASSIGNMENT, 1);
+    assert.equal(copyReviewReport.summary.copyReviewPending, 2,
+      'the compatibility COPY review count retains assigned ordinary and returned tasks');
+    assert.equal(copyReviewReport.summary.copyReworkPending, 1,
+      'only the assigned task with an active QA return enters the new COPY rework count');
+    assert.equal(copyReviewReport.summary.copyInitialReviewPending, 1,
+      'only the current review round without an active QA return enters the new initial review count');
+    assert.equal(copyReviewReport.summary.copyInitialReviewPending + copyReviewReport.summary.copyReworkPending,
+      copyReviewReport.summary.copyReviewPending, 'reviewed initial and QA rework stages are mutually exclusive');
+
+    assert.equal(copyReviewReport.summary.reviewPending, 2);
+    assert.equal(copyReviewReport.summary.imageReviewPending, 0);
+    for (const item of copyReviewReport.items) assert.ok(item.firstCopyReviewAt,
+      'all four current-state cases have an actual first manual review in the selected date interval');
+    assert.equal(copyReviewReport.items.find(item => item.taskId === assignedCopyRework.taskId).copyStatus, 'RETURNED');
+    assert.equal(copyReviewReport.items.some(item => item.taskId === Number(neverReviewedCopy.id)), false,
+      'first assignment alone still does not date unreviewed tasks into the first-review detail cohort');
+    const reworkByPerson = await readTaskDataReport(db, admin, {
+      ...copyReviewQuery,
+      conditions: [...copyReviewQuery.conditions, { field: 'ANNOTATOR', op: 'EQ', value: annotatorB.userId }],
+    });
+    assert.deepEqual(reworkByPerson.items.map(item => item.taskId), [assignedCopyRework.taskId]);
+    assert.equal(reworkByPerson.summary.copyInitialReviewPending, 0);
+    assert.equal(reworkByPerson.summary.copyReworkPending, 1);
+    assert.equal(reworkByPerson.summary.copyReviewPending, 1);
+    const initialByPerson = await readTaskDataReport(db, admin, {
+      ...copyReviewQuery,
+      conditions: [
+        { field: 'TASK_ID_OR_NAME', op: 'CONTAINS', value: '#' + assignedCopyReview.taskId },
+        { field: 'ANNOTATOR', op: 'EQ', value: annotatorA.userId },
+      ],
+    });
+    assert.deepEqual(initialByPerson.items.map(item => item.taskId), [assignedCopyReview.taskId]);
+    assert.equal(initialByPerson.summary.copyInitialReviewPending, 1);
+    assert.equal(initialByPerson.summary.copyReworkPending, 0);
+    assert.equal(initialByPerson.summary.copyReviewPending, 1);
+    const olderCopyReviewReport = await readTaskDataReport(db, admin, {
+      ...copyReviewQuery,
+      time: { field: 'FIRST_COPY_REVIEW_ACTION', mode: 'ABSOLUTE', from: yesterdayDay, to: yesterdayDay },
+    });
+    assert.deepEqual(olderCopyReviewReport.items.map(item => item.taskId), [olderCopyReview.taskId]);
+    assert.equal(olderCopyReviewReport.summary.copyReviewPending, 1);
+    assert.equal(olderCopyReviewReport.summary.copyInitialReviewPending, 0);
+    assert.equal(olderCopyReviewReport.summary.copyReworkPending, 1);
+    assert.equal(olderCopyReviewReport.items[0].firstCopyReviewAt, yesterdayAt.toISOString(),
+      'current pending COPY review continues to use its lifecycle first review date rather than assignment date');
+
+    const compatibleReworks = [];
+    for (const origin of ['QA_RETURN', 'FINAL_REWORK', 'SECOND_ASSIGNMENT', 'DISCARD_RESTORE']) {
+      const fixture = await createTask('返修兼容口径回归 已首审 ' + origin, false);
+      await db.query(`UPDATE tasks SET state='COPY_REVIEW_PENDING',current_stage='COPY_REVIEW_PENDING',
+        mandatory_copy_qc=true,mandatory_copy_qc_origin=$2 WHERE id=$1`, [fixture.taskId, origin]);
+      compatibleReworks.push(fixture);
+    }
+    const flagOnlyReworks = [];
+    for (const [rework, origin] of [[true, null], [false, 'QA_RETURN'], [false, 'FINAL_REWORK']]) {
+      const fixture = await createUnreviewedTask('返修兼容口径回归 从未审核 ' + (origin ?? 'V2'), 'COPY_REVIEW_PENDING');
+      await db.query(`UPDATE tasks SET copy_qa_rework_pending=$2,
+        mandatory_copy_qc=$3,mandatory_copy_qc_origin=$4 WHERE id=$1`,
+      [fixture.id, rework, origin !== null, origin]);
+      flagOnlyReworks.push(fixture);
+    }
+    const compatibilityQuery = {
+      time: { field: 'FIRST_COPY_REVIEW_ACTION', mode: 'ABSOLUTE', from: todayDay, to: todayDay },
+      conditions: [{ field: 'TASK_ID_OR_NAME', op: 'CONTAINS', value: '返修兼容口径回归' }],
+    };
+    const compatibleReport = await readTaskDataReport(db, admin, compatibilityQuery);
+    assert.equal(compatibleReport.total, 4);
+    assert.deepEqual(new Set(compatibleReport.items.map(item => item.taskId)),
+      new Set(compatibleReworks.map(fixture => fixture.taskId)));
+    assert.equal(compatibleReport.summary.copyReviewPending, 4);
+    assert.equal(compatibleReport.summary.copyReworkPending, 1,
+      'legacy QA_RETURN is COPY QA rework; FINAL_REWORK, second assignment and restore alone are not');
+    assert.equal(compatibleReport.summary.copyInitialReviewPending, 3,
+      'FINAL_REWORK, completed second assignment and ordinary restore belong to a current non-QA-return review round');
+
+    const createdCompatibility = await readTaskDataReport(db, admin, {
+      ...compatibilityQuery,
+      time: { field: 'CREATED_AT', mode: 'ABSOLUTE', from: todayDay, to: todayDay },
+    });
+    assert.equal(createdCompatibility.total, 7);
+    assert.equal(createdCompatibility.summary.copyReviewPending, 7);
+    assert.equal(createdCompatibility.summary.copyReworkPending, 1,
+      'even when another supported time dimension includes them, return flags without first COPY review are insufficient');
+    assert.equal(createdCompatibility.summary.copyInitialReviewPending, 4,
+      'active QA return flags do not overlap initial review, including before a first review exists');
+
+    for (const fixture of flagOnlyReworks) assert.equal(createdCompatibility.items.find(
+      item => item.taskId === Number(fixture.id)).firstCopyReviewAt, null);
+
     await assert.rejects(readTaskDataReport(db, { ...admin, role: 'USER' }, query),
       /仅管理员/u);
   } finally {

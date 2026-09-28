@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { Boxes, ChevronDown, ChevronRight, PackageCheck, PackageOpen, RefreshCw, Search, Settings2, Trash2, Truck, X } from 'lucide-react';
+import { Boxes, ChevronDown, ChevronRight, FileClock, FileSearch, ImageUp, Images, RefreshCw, ScanSearch, Search, Settings2, Trash2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { apiRequest } from '../../components/api-client';
@@ -48,8 +48,10 @@ type TaskRow = {
   deliveredAt: string | null; dataQuality?: Record<string, unknown>;
 };
 type ReportResponse = {
+  poolOverview?: { copyReviewPending: number; copyReworkPending: number; secondAssignmentPending: number; copyQaPending: number; imageGenerating: number; imageReviewPending: number; imageQaPending: number; deliveryTotal: number };
   overview?: { unpacked: number; packed: number; delivered: number };
-  summary: { total: number; reviewPending: number; copyReviewPending: number; imageReviewPending: number; qaPending: number; copyQaPending: number; imageQaPending: number; byState: Record<string, number>; copyQaPassed: number; copyQaFirstPassed: number; imageQaPassed: number; discarded: number; packingDelivery: number };
+  activityOverview?: { copyReview: number; copyRework: number; copyQa: number; imageReview: number; imageQa: number; imageQaPassed: number };
+  summary: { total: number; reviewPending: number; copyReviewPending: number; copyInitialReviewPending: number; copyReworkPending: number; imageReviewPending: number; qaPending: number; copyQaPending: number; imageQaPending: number; byState: Record<string, number>; copyQaPassed: number; copyQaFirstPassed: number; imageQaPassed: number; discarded: number; packingDelivery: number };
   items: TaskRow[]; total: number; page: number; pageSize: number; asOf: string;
   dataQuality?: { legacyAssignmentCount?: number; missingFirstManualAssignmentCount?: number };
 };
@@ -68,21 +70,23 @@ const STATE_LABELS = Object.fromEntries(STATE_OPTIONS);
 const HIDDEN_FILTER_STATES = new Set(['COPY_QUEUED', 'COPY_RUNNING', 'COPY_FAILED', 'IMAGE_FAILED']);
 const FILTER_STATE_OPTIONS = STATE_OPTIONS.filter(([value]) => !HIDDEN_FILTER_STATES.has(value));
 const FILTER_STATES = new Set<string>(FILTER_STATE_OPTIONS.map(([value]) => value));
-const METRIC_STORAGE_KEY = 'task-data-report:visible-metrics:v1';
+const METRIC_STORAGE_KEY = 'task-data-report:visible-metrics:v3';
+const PREVIOUS_METRIC_STORAGE_KEY = 'task-data-report:visible-metrics:v2';
 const METRIC_OPTIONS = [
-  { id: 'total', label: '任务总数' },
-  { id: 'copyReviewPending', label: '文案待审核数量' },
-  { id: 'imageReviewPending', label: '图片待审核数量' },
-  { id: 'copyQaPending', label: '文案待质检数量' },
-  { id: 'imageQaPending', label: '图片待质检数量' },
-  { id: 'imageQueued', label: '待生图数量' },
-  { id: 'copyQaPassed', label: '文案质检通过数量' },
-  { id: 'imageQaPassed', label: '图片质检通过数量' },
-  { id: 'discarded', label: '废弃数量' },
-  { id: 'packingDelivery', label: '打包交付数量' },
+  { id: 'effectiveTotal', label: '有效任务数' },
+  { id: 'copyInitialReviewPending', label: '文案待审核' },
+  { id: 'copyReviewPending', label: '文案待返修' },
+  { id: 'copyQaPending', label: '文案待质检' },
+  { id: 'imageGenerating', label: '待生图及生图中' },
+  { id: 'imageRetryPending', label: '图片生成失败待重试' },
+  { id: 'imageReviewPending', label: '图片待审核' },
+  { id: 'imageQaPending', label: '图片待质检' },
+  { id: 'packingDelivery', label: '打包交付' },
 ] as const;
+
 type MetricId = (typeof METRIC_OPTIONS)[number]['id'];
-const DEFAULT_METRIC_IDS: MetricId[] = ['total', 'copyQaPassed', 'discarded', 'packingDelivery'];
+const DEFAULT_METRIC_IDS: MetricId[] = METRIC_OPTIONS.map(option => option.id);
+const ADDED_METRIC_IDS: MetricId[] = ['copyInitialReviewPending', 'imageRetryPending'];
 
 const EMPTY_CONFIG: QueryConfig = {
   time: { field: 'FIRST_COPY_REVIEW_ACTION', mode: 'ABSOLUTE', ...relativeRange(1) },
@@ -189,7 +193,7 @@ function taskStatusText(row: TaskRow) {
   if (row.deliveredAt) return '已交付';
   if (row.state === 'REVIEWED') return '待打包';
   if (row.state === 'COPY_REVIEW_PENDING') return row.copyStatus === 'RETURNED' ? '文案待审核（返修）' : '文案待审核';
-  if (row.state === 'PENDING_SECOND_ASSIGNMENT') return '文案待审核（返修）';
+  if (row.state === 'PENDING_SECOND_ASSIGNMENT') return '待二次分配';
   if (row.state === 'COPY_QC_PENDING') return '待文案质检';
   if (row.state === 'IMAGE_RUNNING' || row.state === 'IMAGE_QUEUED') return '生图中';
   if (row.state === 'MANUAL_ARCHIVE') return '待图片审核';
@@ -198,18 +202,43 @@ function taskStatusText(row: TaskRow) {
   return STATE_LABELS[row.state] ?? row.state;
 }
 
-function OverviewCards({ overview }: { overview: ReportResponse['overview'] }) {
-  const total = overview && [overview.unpacked, overview.packed, overview.delivered].every(Number.isFinite)
+function PoolOverviewCards({ overview }: { overview: ReportResponse['poolOverview'] }) {
+  const cards = [
+    { label: '文案待审核', count: overview?.copyReviewPending, Icon: FileClock },
+    { label: '文案待返修', count: overview?.copyReworkPending, Icon: RefreshCw },
+    { label: '待二次分配', count: overview?.secondAssignmentPending, Icon: RefreshCw },
+    { label: '文案待质检', count: overview?.copyQaPending, Icon: FileSearch },
+    { label: '待生图及生图中', count: overview?.imageGenerating, Icon: Images },
+    { label: '图片待审核', count: overview?.imageReviewPending, Icon: ImageUp },
+    { label: '图片待质检', count: overview?.imageQaPending, Icon: ScanSearch },
+  ];
+  return <div className={styles.poolSummary}>
+    {cards.map(({ label, count, Icon }) => <div key={label} className={styles.overviewCard}>
+      <div className={styles.overviewLabel}><span className={styles.overviewIcon}><Icon size={19} aria-hidden="true" /></span><span>{label}</span></div>
+      <strong>{count == null ? '—' : count.toLocaleString('zh-CN')}</strong>
+    </div>)}
+  </div>;
+}
+
+function OverviewCards({ overview, activity }: {
+  overview: ReportResponse['overview']; activity: ReportResponse['activityOverview'];
+}) {
+  const deliveryTotal = overview && [overview.unpacked, overview.packed, overview.delivered].every(Number.isFinite)
     ? overview.unpacked + overview.packed + overview.delivered : undefined;
   const cards = [
-    { label: '新增交付数', hint: '未打包、已打包、已交付合计', count: total, Icon: Boxes },
-    { label: '新增未打包', hint: '按进入交付池时间统计', count: overview?.unpacked, Icon: PackageOpen },
-    { label: '新增已打包', hint: '按打包时间统计，尚未交付', count: overview?.packed, Icon: PackageCheck },
-    { label: '新增已交付', hint: '按交付时间统计', count: overview?.delivered, Icon: Truck },
+    { label: '新增文案首次审核', hint: '按首次文案审核时间统计', count: activity?.copyReview, Icon: FileClock },
+    { label: '新增文案返修', hint: '按返修提交时间统计', count: activity?.copyRework, Icon: RefreshCw },
+    { label: '新增文案质检', hint: '按文案质检时间统计', count: activity?.copyQa, Icon: FileSearch, hidden: true },
+    { label: '新增图片审核', hint: '按图片审核时间统计', count: activity?.imageReview, Icon: ImageUp },
+    { label: '新增图片质检', hint: '按图片质检时间统计', count: activity?.imageQa, Icon: ScanSearch,
+      passed: activity?.imageQaPassed, hidden: true },
+    { label: '新增交付数', hint: '未打包、已打包、已交付合计', count: deliveryTotal, Icon: Boxes },
   ];
   return <div className={styles.overview}>
-    {cards.map(({ label, hint, count, Icon }) => <div key={label} className={styles.overviewCard}>
-      <div className={styles.overviewLabel}><span className={styles.overviewIcon}><Icon size={19} aria-hidden="true" /></span><div className={styles.overviewText}><span>{label}</span><small>{hint}</small></div></div>
+    {cards.filter(card => !card.hidden).map(({ label, hint, count, Icon, passed }) => <div key={label} className={styles.overviewCard}>
+      <div className={styles.overviewLabel}><span className={styles.overviewIcon}><Icon size={19} aria-hidden="true" /></span><div className={styles.overviewText}><span>{label}</span><small>{hint}</small>
+        {label === '新增图片质检' && <small>图片质检通过 {passed == null ? '—' : passed.toLocaleString('zh-CN')}</small>}
+      </div></div>
       <strong>{count == null ? '—' : count.toLocaleString('zh-CN')}</strong>
     </div>)}
   </div>;
@@ -217,23 +246,34 @@ function OverviewCards({ overview }: { overview: ReportResponse['overview'] }) {
 
 function MetricCards({ summary, visibleIds }: { summary: ReportResponse['summary']; visibleIds: MetricId[] }) {
   const counts: Record<MetricId, number> = {
-    total: summary.total,
-    copyReviewPending: summary.copyReviewPending,
-    imageReviewPending: summary.imageReviewPending,
+    effectiveTotal: summary.total - summary.discarded,
+    copyInitialReviewPending: summary.copyInitialReviewPending,
+    copyReviewPending: summary.copyReworkPending,
     copyQaPending: summary.copyQaPending,
+    imageGenerating: (summary.byState.IMAGE_QUEUED ?? 0) + (summary.byState.IMAGE_RUNNING ?? 0),
+    imageRetryPending: summary.byState.IMAGE_FAILED ?? 0,
+    imageReviewPending: summary.imageReviewPending,
     imageQaPending: summary.imageQaPending,
-    imageQueued: summary.byState.IMAGE_QUEUED ?? 0,
-    copyQaPassed: summary.copyQaPassed,
-    imageQaPassed: summary.imageQaPassed,
-    discarded: summary.discarded,
     packingDelivery: summary.packingDelivery,
   };
   return <div className={styles.summary}>
     {METRIC_OPTIONS.filter(option => visibleIds.includes(option.id)).map(option =>
       <div key={option.id} className={styles.summaryCard}>
-        <span>{option.label}</span><strong>{counts[option.id].toLocaleString('zh-CN')}</strong>
-        {option.id === 'copyQaPassed' && <small>一次质检通过 {summary.copyQaFirstPassed.toLocaleString('zh-CN')}</small>}
+        <span>{option.label}</span><strong>{counts[option.id] == null ? '—' : counts[option.id].toLocaleString('zh-CN')}</strong>
+        {option.id === 'effectiveTotal' && <small>只记录文案审核过一次的数据</small>}
       </div>)}
+  </div>;
+}
+
+function SecondaryMetricCards({ summary }: { summary: ReportResponse['summary'] }) {
+  return <div className={styles.secondaryMetrics}>
+    <div className={styles.summaryCard}>
+      <span>文案质检通过</span><strong>{summary.copyQaPassed.toLocaleString('zh-CN')}</strong>
+      <small>一次质检通过 {summary.copyQaFirstPassed.toLocaleString('zh-CN')}</small>
+    </div>
+    <div className={styles.summaryCard}>
+      <span>废弃</span><strong>{summary.discarded.toLocaleString('zh-CN')}</strong>
+    </div>
   </div>;
 }
 
@@ -279,6 +319,7 @@ export function TaskDataReport() {
   const [visibleMetricIds, setVisibleMetricIds] = useState<MetricId[]>(DEFAULT_METRIC_IDS);
   const [draftMetricIds, setDraftMetricIds] = useState<MetricId[]>(DEFAULT_METRIC_IDS);
   const [metricSettingsOpen, setMetricSettingsOpen] = useState(false);
+  const [secondaryMetricsOpen, setSecondaryMetricsOpen] = useState(false);
   const [metricStorageError, setMetricStorageError] = useState('');
   const [schemeOpen, setSchemeOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
@@ -288,12 +329,20 @@ export function TaskDataReport() {
 
   useEffect(() => {
     try {
-      const stored = window.localStorage.getItem(METRIC_STORAGE_KEY);
+      const current = window.localStorage.getItem(METRIC_STORAGE_KEY);
+      const stored = current ?? window.localStorage.getItem(PREVIOUS_METRIC_STORAGE_KEY);
       if (stored === null) return;
       const parsed: unknown = JSON.parse(stored);
-      if (Array.isArray(parsed)) {
-        setVisibleMetricIds(METRIC_OPTIONS.filter(option => parsed.includes(option.id)).map(option => option.id));
-      }
+      if (!Array.isArray(parsed)) return;
+      const selected = METRIC_OPTIONS.filter(option => parsed.includes(option.id)).map(option => option.id);
+      if (!selected.length && parsed.length) return;
+      const migrating = current === null;
+      const next = migrating && parsed.length
+        ? METRIC_OPTIONS.filter(option => selected.includes(option.id) || ADDED_METRIC_IDS.includes(option.id))
+          .map(option => option.id)
+        : selected;
+      setVisibleMetricIds(next);
+      if (migrating) window.localStorage.setItem(METRIC_STORAGE_KEY, JSON.stringify(next));
     } catch { /* Invalid or unavailable browser storage keeps the default selection. */ }
   }, []);
 
@@ -431,12 +480,19 @@ export function TaskDataReport() {
 
   return <div className={styles.page}>
     <header className={styles.header}>
-      <div><span className={styles.kicker}>报表统计 / 任务数据统计</span><h1>任务数据统计</h1>
-        <p>以任务为单位查看分配、标注、审核、质检与交付。每个任务只占一行。</p></div>
+      <div><span className={styles.kicker}>报表统计 / 任务数据统计</span><h1>任务数据统计</h1></div>
       <div className={styles.headerActions}>
         <Button variant="outline" size="sm" type="button" disabled={loading || !ready} onClick={() => setRefresh(value => value + 1)}><RefreshCw size={15} aria-hidden="true" />刷新数据</Button>
       </div>
     </header>
+
+    <section className={styles.poolSection} aria-labelledby="task-pool-overview-title">
+      <div className={styles.overviewToolbar}>
+        <h2 id="task-pool-overview-title">任务池状态概览</h2>
+        <p>截至 {timeText(report?.asOf)} · 不受查询条件影响</p>
+      </div>
+      <PoolOverviewCards overview={report?.poolOverview} />
+    </section>
 
     {schemeOpen && <div className={styles.schemeBackdrop} onClick={() => setSchemeOpen(false)}>
       <section className={`${styles.scheme} panel`} role="dialog" aria-modal="true" aria-label="查询方案设置" onClick={event => event.stopPropagation()}>
@@ -457,7 +513,8 @@ export function TaskDataReport() {
       {schemeMessage && <p className={styles.schemeMessage} role="status">{schemeMessage}</p>}
     </section></div>}
 
-    <form className={`${styles.filters} panel`} onSubmit={apply}>
+    <form className={`${styles.filters} panel`} onSubmit={apply} aria-labelledby="task-report-filter-title">
+      <h2 id="task-report-filter-title" className={styles.filterTitle}>筛选条件</h2>
       <div className={styles.primaryFilters}>
         <label>时间区间<div className={styles.dateRange}>
           <input type="date" aria-label="开始日期" value={draft.time.from} onChange={event => updateTime({ ...draft.time, from: event.target.value })} />
@@ -503,23 +560,36 @@ export function TaskDataReport() {
 
     {error && <div role="alert" className={styles.errorBox}>{error}</div>}
     {exportError && <div role="alert" className={styles.errorBox}>{exportError}</div>}
-    {report && <><section className={styles.overviewSection} aria-labelledby="task-delivery-overview-title">
-      <div className={styles.overviewToolbar}>
-        <h2 id="task-delivery-overview-title">任务交付概览</h2>
-        <p>仅受时间区间和标注人影响</p>
-      </div>
-      <OverviewCards overview={report.overview} />
-    </section>
-    <section className={styles.summarySection} aria-label="任务数量详情">
-      <div className={styles.summaryToolbar}>
-        <h2>任务数量详情</h2>
-        <Button variant="outline" size="sm" type="button" onClick={() => {
-          setDraftMetricIds(visibleMetricIds);
-          setMetricStorageError('');
-          setMetricSettingsOpen(true);
-        }}><Settings2 size={15} aria-hidden="true" />展示设置</Button>
-      </div>
-      <MetricCards summary={report.summary} visibleIds={visibleMetricIds} />
+    {report && <><section className={styles.statisticsPanel} aria-label="查询统计">
+      <section className={styles.overviewSection} aria-labelledby="task-overview-title">
+        <div className={styles.overviewToolbar}>
+          <h2 id="task-overview-title">标注作业概览</h2>
+          <p>仅受时间区间和标注人影响</p>
+        </div>
+        <OverviewCards overview={report.overview} activity={report.activityOverview} />
+      </section>
+      <section className={styles.summarySection} aria-label="任务数量详情">
+        <div className={styles.summaryToolbar}>
+          <h2>任务数量详情</h2>
+          <Button variant="outline" size="sm" type="button" onClick={() => {
+            setDraftMetricIds(visibleMetricIds);
+            setMetricStorageError('');
+            setMetricSettingsOpen(true);
+          }}><Settings2 size={15} aria-hidden="true" />展示设置</Button>
+        </div>
+        <MetricCards summary={report.summary} visibleIds={visibleMetricIds} />
+        <div className={styles.secondaryMetricActions}>
+          <Button variant="ghost" size="sm" type="button" className={styles.secondaryMetricToggle}
+            aria-expanded={secondaryMetricsOpen} aria-controls="task-secondary-metrics"
+            onClick={() => setSecondaryMetricsOpen(value => !value)}>
+            <ChevronDown size={15} aria-hidden="true" className={styles.secondaryMetricChevron} />
+            {secondaryMetricsOpen ? '收起二级统计' : '展开二级统计'}
+          </Button>
+        </div>
+        <div id="task-secondary-metrics" hidden={!secondaryMetricsOpen}>
+          <SecondaryMetricCards summary={report.summary} />
+        </div>
+      </section>
     </section>
     <section className={`${styles.results} panel`} aria-label="任务数据明细">
       <div className={styles.resultHead}><div><h2>任务明细</h2><p>共 {report.total.toLocaleString('zh-CN')} 条任务 · 第 {report.page} / {totalPages} 页 · 北京时间 · 更新于 {timeText(report.asOf)}</p></div>
@@ -535,7 +605,7 @@ export function TaskDataReport() {
     <Dialog open={metricSettingsOpen} onOpenChange={setMetricSettingsOpen}>
       <DialogContent className={styles.metricDialog} overlayClassName={styles.metricOverlay}>
         <DialogTitle className={styles.metricDialogTitle}>选择显示的数量标签</DialogTitle>
-        <DialogDescription className={styles.metricDialogDescription}>勾选后保存，设置仅保存在当前浏览器。</DialogDescription>
+        <DialogDescription className={styles.metricDialogDescription}>主标签默认全部显示，勾选后保存，设置仅保存在当前浏览器。</DialogDescription>
         <div className={styles.metricChoices}>
           {METRIC_OPTIONS.map(option => <label key={option.id} className={styles.metricChoice}>
             <input type="checkbox" checked={draftMetricIds.includes(option.id)}
