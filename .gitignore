@@ -1,5 +1,6 @@
 node_modules/
 data/
+/reports/
 
 debug.log
 output/
