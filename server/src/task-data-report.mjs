@@ -584,11 +584,17 @@ export async function readTaskDataReport(pool, actor, input = {}, { now = new Da
         count(*) FILTER(WHERE state='REVIEWED' OR
           (current_copy_revision_id IS NOT NULL
             AND copy_qc_released_revision_id=current_copy_revision_id))::integer AS copy_qa_passed,
+        -- Completed unsampled releases pass QA too; any earlier task return
+        -- still prevents a reworked or reassigned version from passing once.
         count(*) FILTER(WHERE current_copy_revision_id IS NOT NULL AND EXISTS(
-          SELECT 1 FROM copy_qa_batch_members_v2 m WHERE m.task_id=filtered.id
-            AND m.copy_revision_id=filtered.current_copy_revision_id AND m.status='PASSED'
-          UNION ALL SELECT 1 FROM copy_sampling_items i WHERE i.task_id=filtered.id
-            AND i.copy_revision_id=filtered.current_copy_revision_id AND i.status='PASSED'
+          SELECT 1 FROM copy_qa_batch_members_v2 m JOIN copy_qa_batches_v2 b ON b.id=m.batch_id
+          WHERE m.task_id=filtered.id AND m.copy_revision_id=filtered.current_copy_revision_id
+            AND (m.status='PASSED' OR NOT m.selected AND m.status='RELEASED'
+              AND b.status='COMPLETED' AND b.completed_at IS NOT NULL)
+          UNION ALL SELECT 1 FROM copy_sampling_items i JOIN copy_sampling_freezes f ON f.id=i.freeze_id
+          WHERE i.task_id=filtered.id AND i.copy_revision_id=filtered.current_copy_revision_id
+            AND (i.status='PASSED' OR NOT i.selected AND i.status='RELEASED'
+              AND f.status IN ('RELEASED','RELEASED_WITH_EXCEPTIONS'))
         ) AND NOT EXISTS(SELECT 1 FROM copy_qa_return_events_v2 e WHERE e.task_id=filtered.id)
           AND NOT EXISTS(SELECT 1 FROM copy_sampling_items i WHERE i.task_id=filtered.id AND i.status='RETURNED')
           AND NOT EXISTS(SELECT 1 FROM copy_sampling_items i JOIN copy_sampling_events e
