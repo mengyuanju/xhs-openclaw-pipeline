@@ -95,13 +95,46 @@ function fakeClient({submissions=[],assignments=[],discards=[],quality=()=>[]}={
   assert.equal(db.calls.some(call=>call.sql===ANNOTATION_FIRST_COPY_SQL),false);
 });
 
- test('pending, administrative direct release, unsampled, and absent records have distinct explanations',async()=>{
+ test('pending, administrative direct release, unsampled but unreleased, and absent records have distinct explanations',async()=>{
   const submissions=[1,2,3,4].map(taskId=>({...submission(100+taskId,20,11),task_id:taskId}));
   const reasons=['PENDING','ADMIN_DIRECT','NOT_SELECTED','NO_RECORD'];
   const db=fakeClient({submissions,quality:cohort=>cohort.map((row,index)=>({...row,outcome:null,reason:reasons[index]}))});
   const result=await readAnnotationAssignmentReport(db,report(submissions.map(periodWork)));
   assert.deepEqual(result.firstCopyVerdicts.map(row=>row.reason),reasons);
   assert.ok(result.firstCopyVerdicts.every(row=>row.submitted&&row.outcome===null));
+});
+
+ test('first-copy verdicts carry batch-release passes while retaining unreleased and failed outcomes',async()=>{
+  // The PostgreSQL regression verifies how these verdicts are produced. This checks
+  // that the unchanged report contract carries every result to its exact first cycle.
+  const cases=[
+    {label:'人工质检通过',outcome:'PASS',reason:null},
+    {label:'未抽中且RELEASED',outcome:'PASS',reason:null},
+    {label:'有批次放行事实',outcome:'PASS',reason:null},
+    {label:'未抽中尚未放行',outcome:null,reason:'NOT_SELECTED'},
+    {label:'抽中待检',outcome:null,reason:'PENDING'},
+    {label:'批次整体驳回BATCH_AFFECTED',outcome:'RETURN',reason:null},
+    {label:'管理员直接放行',outcome:null,reason:'ADMIN_DIRECT'},
+  ];
+  const submissions=cases.map((row,index)=>({...submission(401+index,20,11),task_id:index+1}));
+  const db=fakeClient({submissions,quality:cohort=>{
+    assert.deepEqual(cohort.map(row=>row.approval_id),submissions.map(row=>row.data.approvalId));
+    assert.ok(cohort.every(row=>row.account_id===11&&row.submitted_at===at(20)));
+    return cohort.map((row,index)=>({...row,outcome:cases[index].outcome,reason:cases[index].reason}));
+  }});
+  const result=await readAnnotationAssignmentReport(db,report(submissions.map(periodWork)));
+  assert.equal(result.firstCopyVerdicts.length,cases.length);
+  for(let index=0;index<cases.length;index++) {
+    const verdict=result.firstCopyVerdicts[index],expected=cases[index];
+    assert.equal(verdict.taskId,index+1,expected.label);
+    assert.equal(verdict.accountId,11,expected.label);
+    assert.equal(verdict.submitted,true,expected.label);
+    assert.equal(verdict.outcome,expected.outcome,expected.label);
+    assert.equal(verdict.reason,expected.reason??undefined,expected.label);
+  }
+  assert.equal(new Set(result.firstCopyVerdicts.map(row=>row.cycleKey)).size,cases.length);
+  assert.equal(db.calls.find(call=>call.sql===ANNOTATION_FIRST_COPY_SQL).params[1],at(28),
+    'release and QA verdicts are bounded by the same report asOf');
 });
 
  test('copy first QA SQL binds exact approval identities and excludes dispositions and self/direct review',()=>{

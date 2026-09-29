@@ -1,27 +1,37 @@
 const LIMIT=50_000;
 
 const DISCARDS_SQL=`WITH discards AS (
-  SELECT 'copy-review:'||assessment.id AS event_key,assessment.task_id,
+  WITH discard_assessments AS (
+    SELECT DISTINCT ON(task_id,assessment_id) * FROM (
+      SELECT task_id,id AS assessment_id,stage,created_at,reviewer_username,copy_revision_id,
+        0 AS source_order,NULL::bigint AS case_id
+      FROM human_quality_assessments WHERE action='DISCARD'
+      UNION ALL
+      SELECT task_id,assessment_id,stage,created_at,reviewer_username,NULL::bigint,1,case_id
+      FROM task_reassignment_assessment_records WHERE action='DISCARD'
+    ) history ORDER BY task_id,assessment_id,source_order,case_id
+  )
+  SELECT 'copy-review:'||assessment.assessment_id AS event_key,assessment.task_id,
     actor.id AS account_id,assessment.reviewer_username AS username,
     'COPY'::text AS stage,assessment.created_at AS occurred_at,
     (revision.revision_origin IN ('QA_RETURN','FINAL_REWORK')
       OR COALESCE(revision.copy_rework_satisfied,false)) AS rework
-  FROM human_quality_assessments assessment
-  JOIN app_users actor ON actor.username=assessment.reviewer_username
-  JOIN copy_revisions revision ON revision.id=assessment.copy_revision_id
-  WHERE assessment.stage='COPY' AND assessment.action='DISCARD'
+  FROM discard_assessments assessment
+  JOIN app_users actor ON actor.username=assessment.reviewer_username AND actor.created_at<=assessment.created_at
+  LEFT JOIN copy_revisions revision ON revision.id=assessment.copy_revision_id
+  WHERE assessment.stage='COPY'
     AND assessment.created_at>=$1 AND assessment.created_at<$2 AND assessment.created_at<=$3
   UNION ALL
-  SELECT 'image-review:'||assessment.id,assessment.task_id,
+  SELECT 'image-review:'||assessment.assessment_id,assessment.task_id,
     actor.id,assessment.reviewer_username,'IMAGE',assessment.created_at,
     (EXISTS(SELECT 1 FROM human_quality_assessments previous
       WHERE previous.task_id=assessment.task_id AND previous.stage='IMAGE'
-        AND (previous.created_at,previous.id)<(assessment.created_at,assessment.id))
+        AND (previous.created_at,previous.id)<(assessment.created_at,assessment.assessment_id))
       OR EXISTS(SELECT 1 FROM image_approval_events previous
         WHERE previous.task_id=assessment.task_id AND previous.submitted_at<assessment.created_at))
-  FROM human_quality_assessments assessment
-  JOIN app_users actor ON actor.username=assessment.reviewer_username
-  WHERE assessment.stage='IMAGE' AND assessment.action='DISCARD'
+  FROM discard_assessments assessment
+  JOIN app_users actor ON actor.username=assessment.reviewer_username AND actor.created_at<=assessment.created_at
+  WHERE assessment.stage='IMAGE'
     AND assessment.created_at>=$1 AND assessment.created_at<$2 AND assessment.created_at<=$3
   UNION ALL
   SELECT 'copy-return:'||disposition.id,disposition.task_id,

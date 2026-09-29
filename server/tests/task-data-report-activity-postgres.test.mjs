@@ -19,7 +19,7 @@ const difference = (after, before) => Object.fromEntries(
   Object.keys(ZERO).map(key => [key, after[key] - before[key]]),
 );
 
-test('activity overview counts lifecycle first reviews and historical operations independently of task state', {
+test('activity overview counts personal handoff work and historical operations independently of task state', {
   skip: process.env.RUN_POSTGRES_E2E !== '1', timeout: 180_000,
 }, async t => {
   const database = await startTemporaryPostgres18();
@@ -112,11 +112,20 @@ test('activity overview counts lifecycle first reviews and historical operations
       return fixture;
     }
     async function reassign(fixture, target, occurredAt) {
-      await db.query(`UPDATE tasks SET assigned_to_user_id=$2,assignment_source='MANUAL',assigned_at=$3
-        WHERE id=$1`, [fixture.taskId, target.username, occurredAt]);
+      const previousUsername = fixture.owner?.username ?? null;
+      const targetUsername = target?.username ?? null;
+      await db.query(`UPDATE tasks SET assigned_to_user_id=$2,
+        assignment_source=CASE WHEN $2::varchar IS NOT NULL THEN 'MANUAL' END,
+        assigned_at=CASE WHEN $2::varchar IS NOT NULL THEN $3::timestamptz END
+        WHERE id=$1`, [fixture.taskId, targetUsername, occurredAt]);
+      // The real trigger closes the old record at the DB clock; fixtures use historical handoff times.
+      await db.query(`UPDATE task_assignment_records SET ended_at=GREATEST(assigned_at,$2::timestamptz)
+        WHERE id=(SELECT id FROM task_assignment_records WHERE task_id=$1 AND ended_at IS NOT NULL
+          ORDER BY id DESC LIMIT 1)`, [fixture.taskId, occurredAt]);
       await db.query(`INSERT INTO task_assignment_events(task_id,actor_username,previous_assignee_user_id,
         assignee_user_id,source,created_at) VALUES($1,$2,$3,$4,'MANUAL',$5)`,
-      [fixture.taskId, admin.username, fixture.owner.username, target.username, occurredAt]);
+      [fixture.taskId, admin.username, previousUsername, targetUsername, occurredAt]);
+      fixture.owner = target;
     }
     async function archive(fixture, { deleteLive = true } = {}) {
       const caseId = Number((await db.query(`INSERT INTO task_reassignment_cases(task_id,stage,
@@ -210,7 +219,7 @@ test('activity overview counts lifecycle first reviews and historical operations
         status !== 'RELEASED', status, status === 'RELEASED' ? null : admin.userId, occurredAt])).rows[0].id);
     }
 
-    await t.test('first COPY review is selected across lifetime before date or annotator filters', async () => {
+    await t.test('personal first COPY work follows valid submissions and deduplicated direct discards', async () => {
       const initial = await activity();
       const approved = await task('首次通过且评分与审批事件同时存在');
       const session = randomUUID();
@@ -222,25 +231,34 @@ test('activity overview counts lifecycle first reviews and historical operations
       await human(discarded, 'COPY', 'DISCARD', at(DAY, '09:00:00'));
       await db.query("UPDATE tasks SET state='CANCELLED',cancelled_from_state='COPY_REVIEW_PENDING' WHERE id=$1",
         [discarded.taskId]);
-      const retried = await task('首次重试记录在二次分配归档中');
+      await archive(discarded, { deleteLive: false });
+      const retried = await task('仅重试即使归档也不构成有效首次作业');
       await human(retried, 'COPY', 'RETRY', at(DAY, '10:00:00'));
       await archive(retried);
       assert.equal(Number((await db.query('SELECT count(*) FROM human_quality_assessments WHERE task_id=$1',
         [retried.taskId])).rows[0].count), 0, 'the actual submission FK cascade removed live review records');
       await copyApproval(retried, at(AFTER));
-      const older = await task('首次审核在范围之前，改派后再次通过不能当新审核');
-      await human(older, 'COPY', 'RETRY', at(BEFORE));
+      const older = await task('前人首次在范围之前，新接手提交计本人的首次');
+      await copyApproval(older, at(BEFORE, '09:00:00'));
+      const oldRevisionId = older.copyRevisionId;
       await reassign(older, b, at(DAY, '06:00:00'));
-      await copyApproval(older, at(DAY, '11:00:00'), { actor: b });
+      await revision(older, { origin: 'SECOND_ASSIGNMENT_RESET', parentId: oldRevisionId });
+      await copyApproval(older, at(DAY, '11:00:00'));
       const saveOnly = await task('仅存草稿不构成首次审核');
       await human(saveOnly, 'COPY', 'SAVE', at(DAY, '07:00:00'));
       const bypass = await task('管理员免人工审核不冒充首次人工审核');
       await copyApproval(bypass, at(DAY, '13:00:00'), { mode: 'ADMIN_BYPASS', actor: admin });
       assert.deepEqual(difference(await activity(), initial), { ...ZERO, copyReview: 3 });
       await reassign(approved, b, at(AFTER));
-      assert.equal((await activity(DAY, [annotator(a)])).copyReview, 3);
-      assert.equal((await activity(DAY, [annotator(b)])).copyReview, 0,
-        'later reassignment or subsequent approval does not transfer the first review owner');
+      assert.equal((await activity(DAY, [annotator(a)])).copyReview, 2,
+        'completed submissions and actor discards count, while SAVE and RETRY-only records do not');
+      assert.equal((await activity(DAY, [annotator(b)])).copyReview, 1,
+        'the new owner first submission starts their personal first without taking the old owner work');
+      await db.query('DELETE FROM human_quality_review_submissions WHERE task_id=$1', [discarded.taskId]);
+      assert.deepEqual(difference(await activity(), initial), { ...ZERO, copyReview: 3 },
+        'archiving and subsequently clearing the live direct-discard record preserves one operation');
+      assert.equal((await activity(AFTER, [annotator(a)])).copyReview, 1,
+        'an earlier RETRY-only record does not consume the later first valid submission');
     });
 
     await t.test('COPY rework counts every completed resubmission on its submission day', async () => {
@@ -446,7 +464,9 @@ test('activity overview counts lifecycle first reviews and historical operations
         ['开始之前', at(BEFORE, '23:59:59.999')], ['结束之后', at(AFTER, '00:00:00')],
       ]) {
         const fixture = await task('边界人工审核 ' + label);
-        await human(fixture, 'COPY', 'APPROVE', occurredAt);
+        const session = randomUUID();
+        const assessmentId = await human(fixture, 'COPY', 'APPROVE', occurredAt, { session });
+        await copyApproval(fixture, occurredAt, { session, assessmentId });
       }
       const fake = await task('testRun每类操作都排除', { testRun: true });
       await revision(fake, { rework: true });
@@ -472,6 +492,68 @@ test('activity overview counts lifecycle first reviews and historical operations
       assert.equal(filtered.total, 0);
       assert.deepEqual(filtered.activityOverview, current.activityOverview);
       assert.ok(current.activityOverview.imageQaPassed <= current.activityOverview.imageQa);
+    });
+
+    await t.test('secondary assignment and a later return to the same person split first and rework once per handoff', async () => {
+      const initial = await activity();
+      const initialA = await activity(DAY, [annotator(a)]);
+      const initialB = await activity(DAY, [annotator(b)]);
+      const initialBeforeA = await activity(BEFORE, [annotator(a)]);
+      const initialBeforeB = await activity(BEFORE, [annotator(b)]);
+      const fixture = await task('甲旧提交、乙二次分配后首次与后续、甲接回');
+      const session = randomUUID();
+      const assessmentId = await human(fixture, 'COPY', 'APPROVE', at(BEFORE, '08:00:00'), { session });
+      await copyApproval(fixture, at(BEFORE, '08:00:00'), { session, assessmentId });
+      const oldRevisionId = fixture.copyRevisionId;
+      await archive(fixture);
+      assert.equal(Number((await db.query('SELECT count(*) FROM human_quality_assessments WHERE task_id=$1',
+        [fixture.taskId])).rows[0].count), 0);
+      await db.query(`UPDATE tasks SET state='PENDING_SECOND_ASSIGNMENT',current_stage='PENDING_SECOND_ASSIGNMENT',
+        copy_qa_rework_pending=false,mandatory_copy_qc=true,mandatory_copy_qc_origin='SECOND_ASSIGNMENT'
+        WHERE id=$1`, [fixture.taskId]);
+      await reassign(fixture, null, at(BEFORE, '18:00:00'));
+      const resetId = await revision(fixture, { origin: 'SECOND_ASSIGNMENT_RESET', parentId: oldRevisionId });
+      await db.query(`UPDATE tasks SET state='COPY_REVIEW_PENDING',current_stage='COPY_REVIEW_PENDING',
+        copy_qa_cycle=copy_qa_cycle+1 WHERE id=$1`, [fixture.taskId]);
+      await reassign(fixture, b, at(DAY, '06:00:00'));
+      const firstBId = await revision(fixture, { origin: 'COPY_EDIT', parentId: resetId, rework: true });
+      await copyApproval(fixture, at(DAY, '08:00:00'));
+      const laterBId = await revision(fixture, { origin: 'COPY_EDIT', parentId: firstBId, rework: false });
+      await copyApproval(fixture, at(DAY, '10:00:00'));
+      await reassign(fixture, a, at(DAY, '12:00:00'));
+      await revision(fixture, { origin: 'COPY_EDIT', parentId: laterBId, rework: true });
+      await copyApproval(fixture, at(DAY, '14:00:00'));
+
+      const current = await activity();
+      assert.deepEqual(difference(current, initial), { ...ZERO, copyReview: 2, copyRework: 1 },
+        'the first workflow rework is only personal first, and the later unflagged submit is only personal rework');
+      assert.equal(current.copyReview - initial.copyReview + current.copyRework - initial.copyRework, 3,
+        'three valid period submissions occupy exactly one first or rework metric each');
+      assert.deepEqual(difference(await activity(DAY, [annotator(a)]), initialA), { ...ZERO, copyReview: 1 });
+      assert.deepEqual(difference(await activity(DAY, [annotator(b)]), initialB),
+        { ...ZERO, copyReview: 1, copyRework: 1 });
+      assert.deepEqual(difference(await activity(BEFORE, [annotator(a)]), initialBeforeA),
+        { ...ZERO, copyReview: 1 }, 'the old first remains on its original operation day despite reset and archives');
+      assert.deepEqual(difference(await activity(BEFORE, [annotator(b)]), initialBeforeB), ZERO,
+        'filtering the new owner does not pull the previous owner first into that owner period');
+    });
+
+    await t.test('COPY first work belongs to the actual MANUAL submitter rather than historical or current task owners', async () => {
+      const initial = await activity();
+      const initialAdmin = await activity(DAY, [annotator(admin)]);
+      const initialA = await activity(DAY, [annotator(a)]);
+      const initialB = await activity(DAY, [annotator(b)]);
+      const fixture = await task('负责人为甲、实际人工提交为管理员、查询时改派乙');
+      await copyApproval(fixture, at(DAY, '15:00:00'), { actor: admin, mode: 'MANUAL' });
+      await reassign(fixture, b, at(AFTER, '09:00:00'));
+
+      assert.deepEqual(difference(await activity(), initial), { ...ZERO, copyReview: 1 });
+      assert.deepEqual(difference(await activity(DAY, [annotator(admin)]), initialAdmin),
+        { ...ZERO, copyReview: 1 }, 'MANUAL actor identity is authoritative even while the historical owner is someone else');
+      assert.deepEqual(difference(await activity(DAY, [annotator(a)]), initialA), ZERO,
+        'the historical assignee cannot acquire another account submission');
+      assert.deepEqual(difference(await activity(DAY, [annotator(b)]), initialB), ZERO,
+        'the current assignee cannot acquire an earlier submission');
     });
   } finally {
     await repository.close();
