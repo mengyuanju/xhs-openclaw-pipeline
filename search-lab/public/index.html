@@ -4,17 +4,17 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light">
-    <title>联网搜索对照实验室</title>
-    <meta name="description" content="用同一个 Query 并排比较不同联网搜索服务商的摘要、来源和响应时间。">
+    <title>搜索与文案对照实验室</title>
+    <meta name="description" content="用同一个 Query 比较联网搜索资料，并使用当前系统的提示词、生成与审核流程查看最终文案。">
     <link rel="stylesheet" href="./styles.css">
     <script src="./app.js" defer></script>
   </head>
   <body>
     <header class="site-header">
       <div class="header-inner">
-        <div class="brand" aria-label="联网搜索对照实验室">
+        <div class="brand" aria-label="搜索与文案对照实验室">
           <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
-          <span class="brand-name">搜索对照<span class="brand-name-muted"> / 实验室</span></span>
+          <span class="brand-name">搜索 · 文案<span class="brand-name-muted"> / 实验室</span></span>
         </div>
         <span class="environment-badge"><span class="live-dot" aria-hidden="true"></span>独立测试环境</span>
       </div>
@@ -24,13 +24,13 @@
       <section class="hero" aria-labelledby="page-title">
         <div class="hero-content">
           <span class="eyebrow hero-eyebrow">SEARCH LAB <span class="eyebrow-line"></span> 01</span>
-          <h1 id="page-title">同一个问题，<br><em>看见不同的搜索答案。</em></h1>
-          <p>使用相同的 Query 调用多家服务商，直接对照搜索摘要、公开来源与耗时。</p>
+          <h1 id="page-title">从一条搜索，<br><em>看到最终文案的差别。</em></h1>
+          <p>并排比较各家的资料，再用同一个生成模型运行当前系统的文案提示词与审核流程。</p>
         </div>
         <div class="hero-facts" aria-label="对照方式">
-          <div><span>01</span><strong>统一输入</strong><small>同一个 Query</small></div>
-          <div><span>02</span><strong>并排阅读</strong><small>摘要与来源</small></div>
-          <div><span>03</span><strong>逐项核对</strong><small>耗时与错误</small></div>
+          <div><span>01</span><strong>对照搜索</strong><small>摘要与来源</small></div>
+          <div><span>02</span><strong>统一生成</strong><small>复用系统提示词</small></div>
+          <div><span>03</span><strong>阅读成稿</strong><small>审核与修复</small></div>
         </div>
       </section>
 
@@ -77,16 +77,63 @@
         </form>
       </section>
 
-      <section class="results-section" aria-labelledby="results-title">
-        <div class="section-heading results-heading">
+      <section class="setup-panel copy-settings-panel" aria-labelledby="copy-settings-title">
+        <div class="section-heading">
           <div>
-            <span class="eyebrow">02 / COMPARE</span>
-            <h2 id="results-title">搜索结果对照</h2>
-            <p id="result-subtitle">运行后，这里会按服务商并排展示搜索结果。</p>
+            <span class="eyebrow">02 / WRITE</span>
+            <h2 id="copy-settings-title">统一文案生成设置</h2>
+            <p>每家搜索结果使用相同的生成模型和系统提示词，便于观察资料对最终文案的影响。</p>
           </div>
           <span class="section-index" aria-hidden="true">02</span>
         </div>
+        <div id="copy-configuration" class="copy-configuration" aria-live="polite">
+          <p class="configuration-loading"><span class="spinner" aria-hidden="true"></span>正在读取当前系统生成配置…</p>
+        </div>
+        <div id="copy-config-error" class="load-error" hidden>
+          <p id="copy-config-message"></p>
+          <button id="retry-copy-config" type="button" class="button button-subtle">重新读取生成配置</button>
+        </div>
+        <div class="copy-input-grid">
+          <label class="field-wrap" for="copy-category"><span class="input-label">内容分类 <span class="optional-label">选填</span></span><input id="copy-category" class="control-input" type="text" maxlength="100" autocomplete="off" placeholder="例如：农产品、生活知识"></label>
+          <label class="field-wrap" for="copy-audience"><span class="input-label">目标人群 <span class="optional-label">选填</span></span><input id="copy-audience" class="control-input" type="text" maxlength="200" autocomplete="off" placeholder="例如：本地消费者、水果采购者"></label>
+          <label class="field-wrap" for="copy-image-count"><span class="input-label">配图文字页数</span><select id="copy-image-count" class="control-input"><option value="auto">按当前系统自动规划</option><option value="3">3 页</option><option value="4">4 页</option><option value="5">5 页</option></select></label>
+        </div>
+        <div class="copy-requirements">
+          <label for="copy-requirements" class="input-label">补充文案要求 <span class="optional-label">选填，各家共用</span></label>
+          <textarea id="copy-requirements" rows="2" maxlength="2000" placeholder="例如：面向当地消费者，重点解释品种特点与选购方法。留空则按当前系统默认要求生成。"></textarea>
+        </div>
+        <div class="copy-review-options">
+          <label><input id="copy-text-review" type="checkbox" checked><span>生成后自动审核文案</span></label>
+          <label><input id="copy-auto-revise" type="checkbox" checked><span>审核拒绝后自动修订一次</span></label>
+          <p>当前生产系统在生成后由人工质检；这里可自动预审并查看修订效果，关闭后按原生成流程查看文案。</p>
+        </div>
+        <div class="copy-settings-footer">
+          <p id="copy-system-description" class="copy-note">点击结果卡中的生成按钮后才会调用文案模型；搜索完成不会自动生成。</p>
+          <button id="refresh-copy-config" type="button" class="button button-subtle button-compact">重新读取系统配置</button>
+          <details id="system-prompts" class="prompt-details" hidden>
+            <summary>查看当前系统提示词与版本</summary>
+            <div id="system-prompt-content" class="prompt-content"></div>
+          </details>
+        </div>
+      </section>
+
+      <section class="results-section" aria-labelledby="results-title">
+        <div class="section-heading results-heading">
+          <div>
+            <span class="eyebrow">03 / COMPARE</span>
+            <h2 id="results-title">搜索资料与最终文案</h2>
+            <p id="result-subtitle">运行后，这里会按服务商并排展示搜索结果。</p>
+          </div>
+          <span class="section-index" aria-hidden="true">03</span>
+        </div>
         <div id="result-stats" class="result-stats" hidden></div>
+        <div id="copy-batch-toolbar" class="copy-batch-toolbar" hidden>
+          <div>
+            <strong>让搜索资料进入完整文案流程</strong>
+            <p id="copy-batch-description">选择某一张结果卡生成，也可以为所有成功结果生成文案。</p>
+          </div>
+          <button id="generate-all-button" type="button" class="button button-primary" disabled>为所有成功结果生成</button>
+        </div>
         <div id="results" class="results-grid" aria-live="polite">
           <div class="empty-state">
             <div class="empty-icon" aria-hidden="true"><span></span><span></span><span></span></div>
@@ -97,6 +144,6 @@
       </section>
     </main>
 
-    <footer class="site-footer"><span>SEARCH LAB</span><p>结果仅用于对照测试。请打开来源链接核查时效性与准确性。</p></footer>
+    <footer class="site-footer"><span>SEARCH + COPY LAB</span><p>搜索与生成分别由按钮触发。请结合公开来源、审核结论检查最终文案。</p></footer>
   </body>
 </html>

@@ -4,11 +4,11 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import sharp from 'sharp';
 import { effectiveModelApiConfig, validatedCopyGenerationThinking, validatedModelRef } from './model-api-config.mjs';
 import { traceModelCall } from './model-call-trace.mjs';
 import { codexErrorCode, codexFailure, parseCodexOutput } from './codex-protocol.mjs';
 import { runCodexImageProcess } from './codex-app-server.mjs';
+import { prepareCodexImageInputs } from './codex-image-inputs.mjs';
 import { checkCodexLogin, codexChildEnvironment, resolveCodexExecutable, runCodexProcess } from './codex-process.mjs';
 import { codexConcurrencyConfig, codexRuntimePath, createCodexRuntime } from './codex-runtime.mjs';
 import { withWebSearchProvider } from './web-search-service.mjs';
@@ -44,27 +44,6 @@ function validSearchResult(item) {
     const url = new URL(item.url);
     return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password;
   } catch { return false; }
-}
-
-async function prepareImages(inputPaths, directory, { maximum = 5, preview = true } = {}) {
-  if (!Array.isArray(inputPaths) || inputPaths.length < 1 || inputPaths.length > maximum) throw new RangeError(`requires 1-${maximum} input images`);
-  const results = await Promise.allSettled(inputPaths.map(async (path, index) => {
-    if (typeof path !== 'string' || !path || path.length > 1000) throw new TypeError('input image path is invalid');
-    const target = join(directory, `input-${index + 1}.${preview ? 'jpg' : 'png'}`);
-    let pipeline = sharp(path, { failOn: 'error', limitInputPixels: 40_000_000 }).rotate();
-    if (preview) pipeline = pipeline.resize({ width: 900, height: 1200, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 90, chromaSubsampling: '4:4:4' });
-    else pipeline = pipeline.png();
-    await pipeline.toFile(target);
-    return target;
-  }));
-  const failure = results.find((result) => result.status === 'rejected');
-  if (failure) {
-    // Wait for every conversion before cleanup, including those finishing after a rejection.
-    await Promise.all(inputPaths.map((_, index) => rm(join(directory,
-      `input-${index + 1}.${preview ? 'jpg' : 'png'}`), { force: true }).catch(() => {})));
-    throw failure.reason;
-  }
-  return results.map((result) => result.value);
 }
 
 async function verifiedImage(parsed, { directory, generatedRoot, outputPath, startedAt }) {
@@ -112,12 +91,14 @@ export function createCodexClient({
         }
         const schema = search ? SEARCH_SCHEMA : structuredText ? outputSchema : TEXT_SCHEMA;
         await writeFile(schemaPath, JSON.stringify(schema), 'utf8');
-        const images = inputPaths ? await prepareImages(inputPaths, directory, { maximum: image ? 10 : 5, preview: !image }) : [];
+        const prepared = inputPaths ? await prepareCodexImageInputs(inputPaths, directory, { preview: !image }) : { paths: [], diagnostics: [] };
+        const images = prepared.paths;
         attachments = images;
         const instructions = image
           ? internalPrompt('INTERNAL_CODEX_IMAGE_EXECUTION', { slot1: (operation === 'IMAGE_EDIT'
             ? internalPrompt('INTERNAL_CODEX_EDIT_ATTACHMENT')
             : internalPrompt('INTERNAL_CODEX_IMAGE_ATTACHMENT')), slot2: (GENERATION_IMAGE_SIZE), slot3: (DELIVERY_IMAGE_WIDTH), slot4: (DELIVERY_IMAGE_HEIGHT) })
+            + (images.length ? '\n' + internalPrompt('INTERNAL_CODEX_IMAGE_PATHS', { slot1: JSON.stringify(images) }) : '')
           : search
             ? internalPrompt('INTERNAL_CODEX_SEARCH_EXECUTION')
             : internalPrompt('INTERNAL_CODEX_TEXT_EXECUTION', { slot1: (structuredText ? internalPrompt('INTERNAL_CODEX_STRUCTURED_OUTPUT') : internalPrompt('INTERNAL_CODEX_RAW_TEXT_OUTPUT')) });
@@ -137,14 +118,15 @@ export function createCodexClient({
             model: resolvedModel, requestedModel: routing.primaryModel, effectiveModel: resolvedModel,
             fallbackUsed: routing.fallbackUsed, fallbackReason: routing.fallbackUsed ? 'CODEX_MODEL_AT_CAPACITY' : null,
             ...(image ? { driverModel: resolvedModel } : {}),
-            thinking: effort, inputCount: images.length, runId, queueWaitMs },
+            thinking: effort, inputCount: images.length, inputImages: prepared.diagnostics, runId, queueWaitMs },
         }, async (capture) => {
         const result = await runnerForCall(command(), args, { input: prompt, cwd: directory,
           env: codexChildEnvironment(environment, image ? (config.imageProxyUrl || config.modelProxyUrl) : config.modelProxyUrl),
           timeoutMs, signal, onSpawn });
         // Preserve bounded transport evidence if parsing fails; never log the child environment.
-        capture.response({ exitCode: result.status, errorCode: result.error?.code ?? null,
-          stdout: String(result.rawStdout ?? result.stdout ?? '').slice(-64000), stderr: String(result.stderr ?? '').slice(-8000) });
+        const transport = { exitCode: result.status, errorCode: result.error?.code ?? null,
+          stdout: String(result.rawStdout ?? result.stdout ?? '').slice(-64000), stderr: String(result.stderr ?? '').slice(-8000) };
+        capture.response(transport);
         signal?.throwIfAborted();
         if (result.error?.name === 'AbortError') throw result.error;
         if (result.error || result.status !== 0) {
@@ -163,7 +145,9 @@ export function createCodexClient({
             result.error?.code?.startsWith('CODEX_') ? result.error.code : 'CODEX_EXEC_FAILED');
         }
         const parsed = parseCodexOutput(result.stdout, { requireText: !image });
-        capture.response({ ...parsed, images: parsed.images, usage: parsed.usage });
+        // Put native diagnostics first so bounded trace storage cannot discard
+        // them when an untrusted final message is unusually long.
+        capture.response({ ...(image ? { transport } : {}), ...parsed });
         const execution = { runtime: image ? 'codex-app-server' : 'codex-exec', sessionId: parsed.threadId,
           runId, usage: parsed.usage, queueWaitMs, reconnectCount: parsed.reconnectCount,
           recoveredTransientCount: parsed.recoveredTransientCount,

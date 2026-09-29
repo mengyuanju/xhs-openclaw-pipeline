@@ -45,7 +45,7 @@
     "executor": "node --env-file-if-exists=.env src/executor/cli.mjs",
     "xhs:login": "node --env-file-if-exists=.env src/executor/xhs-search-cli.mjs --login",
     "xhs:search": "node --env-file-if-exists=.env src/executor/xhs-search-cli.mjs",
-    "search:lab": "node search-lab/server.mjs",
+    "search:lab": "node --env-file-if-exists=.env --env-file-if-exists=.env.local search-lab/server.mjs",
     "executor:deepseek-sim": "node --env-file-if-exists=.env src/executor/deepseek-simulator-cli.mjs",
     "worker": "node src/cli.mjs worker",
     "worker:drain": "node src/cli.mjs drain",

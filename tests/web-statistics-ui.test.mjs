@@ -48,12 +48,13 @@ test('personal workbench exposes completion dates, stage totals, current states 
   assert.match(styles, /\.personal-completion-task-list/u);
 });
 
-test('personal statistics keeps today activity and current jobs in separate tabs', async () => {
-  const [workbench, controls, dashboard, activity, page] = await Promise.all([
+test('personal statistics keeps today overview above dated activity and current jobs tabs', async () => {
+  const [workbench, controls, dashboard, activity, page, today] = await Promise.all([
     source('app/workbench/creation-workbench.tsx'), source('app/workbench/personal-controls.tsx'),
     source('app/workbench/personal-statistics/personal-statistics-dashboard.tsx'),
     source('app/workbench/personal-statistics/personal-activity-dialog.tsx'),
     source('app/workbench/personal-statistics/page.tsx'),
+    source('app/workbench/personal-statistics/personal-today-overview.tsx'),
   ]);
   assert.match(page, /readServerSession/u);
   assert.match(workbench, /personal-workspace\/tasks/u);
@@ -67,8 +68,18 @@ test('personal statistics keeps today activity and current jobs in separate tabs
   assert.match(dashboard, /section: 'jobs'/u);
   assert.match(dashboard, /value="personal">个人数据/u);
   assert.match(dashboard, /value="jobs">作业数据/u);
-  assert.match(dashboard, /文案首次提交/u);
-  assert.match(dashboard, /图片返修初审提交/u);
+  assert.match(dashboard, /首次文案审核/u);
+  assert.match(dashboard, /activityMetric\('首次提交'/u);
+  assert.match(dashboard, /首次文案审核 = 首次提交 \+ 废弃数/u);
+  assert.match(dashboard, /<DatePicker/u);
+  assert.doesNotMatch(dashboard, /type="date"/u);
+  assert.match(dashboard, /value: 'yesterday', label: '昨天'/u);
+  assert.doesNotMatch(dashboard, /近 30 天/u);
+  assert.match(dashboard, /<PersonalTodayOverview/u);
+  for (const label of ['今日可交付', '今日文案质检通过', '今日图片质检通过']) {
+    assert.ok(today.includes(label), `today overview exposes ${label}`);
+  }
+  assert.match(dashboard, /图片返修提交/u);
   assert.match(dashboard, /今日全部提交/u);
   assert.match(dashboard, /一次通过率/u);
   assert.match(dashboard, /整体通过率/u);

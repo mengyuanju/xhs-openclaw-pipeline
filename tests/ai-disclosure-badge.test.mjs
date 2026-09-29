@@ -3,6 +3,7 @@ import test from 'node:test';
 import sharp from 'sharp';
 
 import {
+  AI_DISCLOSURE_DEFAULT_COLOR,
   AI_DISCLOSURE_FALLBACK_COLOR,
   aiDisclosureBadgeSvg,
   createAiDisclosureStyle,
@@ -128,7 +129,8 @@ test('solid badge chooses black or white text using WCAG luminance contrast', ()
 });
 
 test('solid badge fills the pill while both variants preserve all outside pixels', async () => {
-  const badgeInput = { text: '该人物形象由AI生成', visualStyle: { disclosureColor: '#111827' } };
+  const badgeInput = { text: '该人物形象由AI生成', badgeColor: AI_DISCLOSURE_DEFAULT_COLOR,
+    visualStyle: { disclosureColor: '#68744A' } };
   const outline = createAiDisclosureStyle(badgeInput);
   const solid = createAiDisclosureStyle({ ...badgeInput, variant: 'solid-pill' });
   assert.deepEqual({ x: solid.x, y: solid.y, width: solid.width, height: solid.height },

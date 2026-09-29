@@ -359,7 +359,7 @@ test('user deletion blocks unfinished assignments and safely detaches terminal h
         const source = String(sql);
         calls.push({ sql: source, values });
         if (source.includes('SELECT * FROM app_users WHERE id')) return { rows: [user] };
-        if (source.includes('SELECT id, state FROM tasks')) return { rows: assignedTasks };
+        if (source.includes('SELECT id, state, task_kind FROM tasks')) return { rows: assignedTasks };
         if (source.includes('UPDATE tasks')) return { rows: [] };
         if (source.includes('DELETE FROM app_users')) return { rows: [user] };
         return { rows: [] };
@@ -487,7 +487,7 @@ test('user updates and deletions share one roster lock before reading an account
         if (source.includes('UPDATE app_users')) return { rows: [{
           id: 2, username: 'alice', display_name: 'Alice 2', role: 'USER', status: 'ACTIVE', version: 2,
         }] };
-        if (source.includes('SELECT id, state FROM tasks')) return { rows: [] };
+        if (source.includes('SELECT id, state, task_kind FROM tasks')) return { rows: [] };
         if (source.includes('DELETE FROM app_users')) return { rows: [{
           id: 2, username: 'alice', display_name: 'Alice', role: 'USER', status: 'ACTIVE', version: 1,
         }] };

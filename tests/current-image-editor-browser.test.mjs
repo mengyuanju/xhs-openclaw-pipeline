@@ -103,12 +103,21 @@ test('image editor browser: prompt-localized edit, multi-page product replacemen
     assert.equal(await page.getByRole('combobox',{name:'程序标识样式',exact:true}).count(),0,'model disclosure has no programmatic style selector');
     await page.getByRole('button',{name:'程序叠加（SVG + Sharp）',exact:true}).click();
     const badgeStyle=page.getByRole('combobox',{name:'程序标识样式',exact:true});
-    assert.equal(await badgeStyle.textContent(),'描边徽章');
-    assert.equal(await livePreview.locator('svg rect').getAttribute('fill'),'none');
-    assert.equal(await page.getByRole('radio',{name:'自动配色',exact:true}).isChecked(),true);
-    assert.equal(await page.getByLabel('程序标识颜色值',{exact:true}).count(),0);
-    await page.getByRole('radio',{name:'自定义颜色',exact:true}).check();
+    assert.equal(await badgeStyle.textContent(),'实心徽章');
+    assert.equal(await livePreview.locator('svg rect').getAttribute('fill'),'#111827');
+    assert.equal(await livePreview.locator('svg text').getAttribute('fill'),'#FFFFFF');
+    assert.equal(await page.getByRole('radio',{name:'自定义颜色',exact:true}).isChecked(),true);
     const badgeColorInput=page.getByLabel('程序标识颜色值',{exact:true});
+    assert.equal(await badgeColorInput.inputValue(),'#111827');
+    const defaultColorScreenshot=resolve('.codex_artifacts/disclosure-selection');await mkdir(defaultColorScreenshot,{recursive:true});
+    await page.screenshot({path:join(defaultColorScreenshot,'task-editor-default-solid-dark-color.png'),animations:'disabled'});
+    await page.getByRole('button',{name:'保存草稿',exact:true}).click();
+    await page.getByRole('status').filter({hasText:'草稿已保存'}).waitFor();
+    assert.equal(submitted.overlay.badgeVariant,'solid-pill','new editor explicitly saves its solid default');
+    assert.equal(submitted.overlay.badgeColor,'#111827','new editor explicitly saves its fixed dark color');
+    submitted=null;
+    await badgeStyle.click();await page.getByRole('option',{name:'描边徽章',exact:true}).click();
+    assert.equal(await livePreview.locator('svg rect').getAttribute('fill'),'none');
     const colorModes=page.getByRole('radiogroup',{name:'程序标识配色',exact:true});
     for(const radio of await colorModes.getByRole('radio').all()) {
       const bounds=await radio.boundingBox();assert.ok(bounds.width<=20&&bounds.height<=20,'color modes retain compact radio controls');

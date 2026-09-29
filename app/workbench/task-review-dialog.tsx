@@ -996,8 +996,9 @@ export function TaskReviewDialog({
     || detail?.mandatoryCopyQc
     || ['QA_RETURN', 'FINAL_REWORK'].includes(revision?.revisionOrigin ?? '')
     || ['QA_RETURN', 'FINAL_REWORK'].includes(revision?.reworkOrigin ?? ''));
+  // Image exhaustion starts a new rework round from the current approved version.
   const reworkBaseline = isCopyRework && detail && revision
-    ? findCopyReworkBaseline(detail.copyRevisions, revision.id) : null;
+    ? (isImageRetryRework ? revision : findCopyReworkBaseline(detail.copyRevisions, revision.id)) : null;
   const isCopyOnlyFinalRework = (reworkBaseline?.revisionOrigin ?? revision?.reworkOrigin) === 'FINAL_REWORK'
     && (reworkBaseline?.reworkTarget ?? revision?.reworkTarget) === 'COPY';
   const savedCopyRatings = detail ? copyRatingsFromDetail(detail) : { current: undefined };

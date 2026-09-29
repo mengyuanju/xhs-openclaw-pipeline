@@ -49,7 +49,7 @@ PREVIEW_API_KEY=仅含preview:create权限的接口密钥
 npm --prefix server run programmatic-worker:production
 ```
 
-中心通过 PostgreSQL `NOTIFY` 唤醒外置 worker，扫描补救遗漏通知。共享目录需使用与中心资产绝对路径兼容的相同路径，程序进程需安装 Sharp 和中文字体并有图片目录读写权限。程序描边为默认，可选择实心徽章；颜色规则、配置和故障处理见 [程序生成 AI 标识](../docs/programmatic-image-disclosure.md)。
+中心通过 PostgreSQL `NOTIFY` 唤醒外置 worker，扫描补救遗漏通知。共享目录需使用与中心资产绝对路径兼容的相同路径，程序进程需安装 Sharp 和中文字体并有图片目录读写权限。两个编辑器新建程序标识默认实心徽章、`#111827` 深色与白字，实际请求明确携带 `solid-pill` 与该颜色；描边、自动配色和自定义取色仍可选择。历史请求、旧客户端省略字段及自动生产图片继续沿用原有样式。颜色规则、配置和故障处理见 [程序生成 AI 标识](../docs/programmatic-image-disclosure.md)。
 
 旧 `QUEUED` 程序请求由中心接管，已远端 `RUNNING` 的请求继续原执行；程序租约过期进入 `FAILED`，由用户人工重试，不提示模型计费。此次更新需要重启中心服务和 Web；外置模式另重启程序 worker，无需执行机更新、重启或新增数据库迁移。
 

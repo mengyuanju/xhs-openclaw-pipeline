@@ -9,6 +9,9 @@ import { readInspectionRounds } from './quality-rounds.mjs';
 import { qaMetricRows, summarizeQa, uniqueTaskCount } from '../../src/quality-review-statistics.mjs';
 import { buildPersonalQaActivity, personalQaMetricRows } from '../../src/personal-qa-statistics.mjs';
 import { readPersonalQaCoverage } from './personal-qa-coverage.mjs';
+import { readAnnotationDiscardFacts } from './annotation-discard-facts.mjs';
+import { deliveryLedgerQuery } from './delivery-ledger.mjs';
+import { summarizeAnnotationOverall } from '../../src/operator-performance.mjs';
 
 const MAX_FACTS = 50_000;
 const iso = value => value instanceof Date ? value.toISOString() : value ?? null;
@@ -143,7 +146,7 @@ export const PERSONAL_QA_EVENTS_SQL = `SELECT e.*,
 async function readPersonalSubmissions(client, actor, range) {
   const rows=(await client.query(PERSONAL_SUBMISSIONS_SQL,[actor.userId,
     new Date(range.startMs).toISOString(),new Date(range.endMs).toISOString()])).rows;
-  if(rows.length>MAX_FACTS)throw new RangeError('今日提交记录超出统计上限');
+  if(rows.length>MAX_FACTS)throw new RangeError('提交记录超出统计上限，请缩小日期范围');
   return rows.map(row=>({id:row.id,taskId:Number(row.task_id),kind:'COMPLETE',stage:row.stage,
     at:iso(row.at),firstSubmission:row.first_submission===true,rework:row.rework===true}));
 }
@@ -151,10 +154,17 @@ async function readPersonalSubmissions(client, actor, range) {
 async function readPersonalQaEvents(client, actor, range) {
   const rows=(await client.query(PERSONAL_QA_EVENTS_SQL,[actor.userId,
     new Date(range.startMs).toISOString(),new Date(range.endMs).toISOString()])).rows;
-  if(rows.length>MAX_FACTS)throw new RangeError('今日质检记录超出统计上限');
+  if(rows.length>MAX_FACTS)throw new RangeError('质检记录超出统计上限，请缩小日期范围');
   return rows.map(row=>({...row.data,id:row.event_key,taskId:row.task_id==null?null:Number(row.task_id),
     accountId:Number(row.account_id),stage:row.stage,kind:row.kind,at:iso(row.occurred_at),
     sampleKind:row.effective_sample_kind??row.data?.sampleKind??null}));
+}
+
+async function readPersonalAnnotationDiscards(client, actor, range, now = Date.now()) {
+  const facts=await readAnnotationDiscardFacts(client,{start:new Date(range.startMs).toISOString(),
+    end:new Date(range.endMs).toISOString(),asOf:new Date(now).toISOString(),accountId:actor.userId,stage:'COPY'});
+  return facts.filter(row=>row.accountId===actor.userId && row.stage==='COPY' && !row.exclusion)
+    .map(row=>({...row,outcome:'DISCARD'}));
 }
 
 const BATCH_SQL = `SELECT b.id AS batch_id,
@@ -170,13 +180,33 @@ const BATCH_SQL = `SELECT b.id AS batch_id,
       AND $2::varchar<>'' AND $3::varchar IN ('ADMIN','USER','REVIEWER')
     ORDER BY b.created_at DESC,i.id DESC LIMIT ${MAX_FACTS + 1}`;
 
+async function readPersonalOverview(client, actor, now) {
+  const range = normalizeRange({ period: 'today' }, now);
+  // This is a personal aggregate for every role, including admins and reviewers.
+  // Reuse the CURRENT delivery pool's permissions, version and quality gate;
+  // a privileged role must never turn this card into a global delivery count.
+  const deliveryQuery = deliveryLedgerQuery({ view: 'CURRENT', state: 'PENDING' }, { ...actor, role: 'USER' });
+  const ready = Number((await client.query(
+    `SELECT count(DISTINCT task_id)::integer AS ready FROM (${deliveryQuery.sql}) personal_delivery`,
+    deliveryQuery.values,
+  )).rows[0].ready);
+  const facts = await readAccountQualityFacts(client, { start: new Date(range.startMs).toISOString(),
+    end: new Date(range.endMs).toISOString(), accountId: actor.userId });
+  return { section: 'overview', updatedAt: new Date(now).toISOString(), timezone: 'Asia/Shanghai',
+    range: { from: range.from, to: range.to }, delivery: { ready,
+      href: ['ADMIN', 'USER'].includes(actor.role)
+        ? `/delivery-pool?dl_view=CURRENT&dl_state=PENDING&dl_assigneeId=${actor.userId}` : null },
+    passed: Object.fromEntries(['COPY', 'IMAGE'].map(stage => [stage,
+      summarizeAnnotationOverall(facts.filter(row => row.accountId === actor.userId && row.stage === stage)).passed])),
+  };
+}
+
 export async function readPersonalWorkspace(pool, actor, input, { report = false, blindSql, loadTasks } = {}) {
   if (!Number.isSafeInteger(actor.userId) || actor.userId <= 0) throw new ControlPlaneAuthenticationError();
   const now = Date.now();
   const section=report ? input?.section??'' : '';
-  if(section && !['personal','jobs'].includes(section))throw new TypeError('个人数据板块无效');
-  const filters = normalizePersonalFilters(section==='personal'
-    ? {...input,period:'today',from:undefined,to:undefined} : input, now);
+  if(section && !['overview','personal','jobs'].includes(section))throw new TypeError('个人数据板块无效');
+  const filters = normalizePersonalFilters(section === 'overview' ? {} : input, now);
   if (filters.createdFrom || filters.createdTo) {
     const date = filters.createdFrom || filters.createdTo;
     normalizeRange({ period:'custom',from:filters.createdFrom||date,to:filters.createdTo||date });
@@ -184,13 +214,18 @@ export async function readPersonalWorkspace(pool, actor, input, { report = false
   const client = await pool.connect();
   try {
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    if (section === 'overview') {
+      const output = await readPersonalOverview(client, actor, now);
+      await client.query('COMMIT'); return output;
+    }
     if(section==='personal') {
       const submissions=await readPersonalSubmissions(client,actor,filters.range);
       const qualityFacts=await readAccountQualityFacts(client,{start:new Date(filters.range.startMs).toISOString(),
         end:new Date(filters.range.endMs).toISOString(),accountId:actor.userId});
       const qaFacts=await readPersonalQaEvents(client,actor,filters.range);
       const coverageFacts=await readPersonalQaCoverage(client,actor,filters.range);
-      const output=summarizePersonalToday(submissions,qualityFacts,qaFacts,filters.range,now,coverageFacts);
+      const discardFacts=await readPersonalAnnotationDiscards(client,actor,filters.range,now);
+      const output=summarizePersonalToday(submissions,qualityFacts,qaFacts,filters.range,now,coverageFacts,discardFacts);
       await client.query('COMMIT');return output;
     }
     if(section==='jobs') {
@@ -284,10 +319,11 @@ export async function readPersonalQualityActivity(pool,actor,input={}) {
   const allowed=new Set(['period','from','to','metric','stage','sampleSet','page','pageSize']);
   if(Object.keys(input).some(key=>!allowed.has(key)) || Object.values(input).some(Array.isArray)) throw new TypeError('质检历史筛选无效');
   const metric=input.metric || 'qa';
-  const receiptMetrics=new Set(['submitAll','submitFirst','submitRework','annotationOverall','qaFirst','qaPassed','qaReturned','qaRecheck',
+  const receiptMetrics=new Set(['submitAll','submitFirst','submitRework','copyFirstReview','annotationDiscarded','annotationOverall','qaFirst','qaPassed','qaReturned','qaRecheck',
     'qaActual','qaCoverage','qaBatchReturned','qaBatchReleased','qaDiscarded','qaEscalated']);
   if(!['contributed','qaAll','qa','qaRecheck','qaBatch','qaSpecial','qaPending','qaBlocked',...receiptMetrics].includes(metric)
     || input.stage && !['COPY','IMAGE'].includes(input.stage)
+    || ['copyFirstReview','annotationDiscarded'].includes(metric) && input.stage && input.stage!=='COPY'
     || input.sampleSet && !['all','first','passed','failed'].includes(input.sampleSet)
     || input.sampleSet==='first' && metric!=='annotationOverall') throw new TypeError('质检指标无效');
   const filters=normalizePersonalFilters(input),client=await pool.connect();
@@ -296,7 +332,14 @@ export async function readPersonalQualityActivity(pool,actor,input={}) {
     await client.query("SET LOCAL statement_timeout='15s'");
     if(receiptMetrics.has(metric)) {
       let rows,coverageIncomplete=false;
-      if(metric.startsWith('submit')) {
+      if(metric==='copyFirstReview' || metric==='annotationDiscarded') {
+        rows=await readPersonalAnnotationDiscards(client,actor,filters.range);
+        if(metric==='copyFirstReview') {
+          const submissions=await readPersonalSubmissions(client,actor,filters.range);
+          rows.push(...submissions.filter(row=>row.stage==='COPY' && row.firstSubmission && !row.rework)
+            .map(row=>({...row,kind:'SUBMIT',submissionType:'FIRST'})));
+        }
+      } else if(metric.startsWith('submit')) {
         const submissions=await readPersonalSubmissions(client,actor,filters.range);
         rows=submissions.filter(row=>(!filters.stage||row.stage===filters.stage) &&
           (metric==='submitAll' || (metric==='submitFirst' ? row.firstSubmission && !row.rework : row.rework)))

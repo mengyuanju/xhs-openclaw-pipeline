@@ -2,6 +2,7 @@ import { internalPrompt } from './prompt-runtime.mjs';
 import { businessPrompt, promptPolicy, promptRuntimeSnapshot, hasPublishedPrompt, withPromptRuntime } from './prompt-runtime.mjs';
 import { performance } from 'node:perf_hooks';
 import { buildCopyKnowledgeReferencePrompt, matchCopyKnowledge } from './copy-knowledge-match.mjs';
+import { visibleCharacterCount } from './visible-text.mjs';
 
 import {
   describeStageReviewFailure,
@@ -21,6 +22,7 @@ import {
 import {
   attachResearchToTask,
   createResearchSnapshot,
+  normalizeResearchSnapshot,
   requiresAuthoritativeResearch,
   researchSourceUrls,
 } from './research.mjs';
@@ -127,6 +129,15 @@ function isBodyRepairFailure(error) {
   return BODY_REPAIR_FAILURE.test(String(error?.message ?? error));
 }
 
+function bodyRepairLengthBudget(body) {
+  if (typeof body !== 'string') return null;
+  const currentLength = visibleCharacterCount(normalizeProseLineBreaks(body).trim());
+  const { copyRepairTargetMin: targetMin, copyRepairTargetMax: targetMax } = promptPolicy();
+  return { currentLength, targetMin, targetMax, targetLength: Math.round((targetMin + targetMax) / 2),
+    requiredReduction: Math.max(0, currentLength - targetMax),
+    requiredExpansion: Math.max(0, targetMin - currentLength) };
+}
+
 function buildPostRepairPrompt(task, error, previousOutput, options = {}) {
   const validationError = error instanceof Error ? error.message : String(error);
   const bodyRepair = isBodyRepairFailure(error);
@@ -138,6 +149,8 @@ function buildPostRepairPrompt(task, error, previousOutput, options = {}) {
       : ['TEXT_SYSTEM', 'COPY_IMAGE_PLAN_SYSTEM'].filter(hasPublishedPrompt),
     contract: `沿用本次编辑要求：\n${promptRuntimeSnapshot() || hasPublishedPrompt('TEXT_SYSTEM') ? '' : options.systemPrompt ?? ''}\n${bodyRepair ? internalPrompt('INTERNAL_BODY_REPAIR_OUTPUT') : internalPrompt('INTERNAL_COPY_REPAIR_OUTPUT')}`,
     data: { query: task.query, validationError, previousOutput, receivedLength: receivedLength ? Number(receivedLength) : null,
+      ...(bodyRepair ? { lengthBudget: bodyRepairLengthBudget(options.previousCandidate?.body),
+        repairHistory: options.repairHistory ?? [] } : {}),
       countingRule: '英文字母、数字、标点、空格和换行均逐个计数，英文单词不能按一个字计算',
       completionRule: internalPrompt('INTERNAL_BODY_REPAIR_COMPLETENESS'),
       protectedNumericFacts: bodyRepair
@@ -216,7 +229,9 @@ function buildQualityRevisionPrompt(
 
 function normalizedComparableValue(value) {
   if (typeof value === 'string') {
-    return value.normalize('NFKC').replace(/\s+/gu, '');
+    // Editorial fixes can be punctuation or paragraph-format changes. Only
+    // normalize equivalent Unicode/newline encodings and trailing whitespace.
+    return value.normalize('NFC').replace(/\r\n?/gu, '\n').trimEnd();
   }
   if (Array.isArray(value)) return value.map(normalizedComparableValue);
   if (value && typeof value === 'object') {
@@ -265,9 +280,11 @@ export class CopyGenerationResearchError extends Error {
 }
 
 export class CopyGenerationUnchangedError extends Error {
-  constructor() {
+  constructor(revisionAttempts = []) {
     super('质检版连续两次没有产生实际修改，本次结果未保存，请重新生成');
     this.name = 'CopyGenerationUnchangedError';
+    this.stage = 'REVIEWED_GENERATION';
+    this.revisionAttempts = revisionAttempts;
   }
 }
 
@@ -313,6 +330,7 @@ async function createPostFromPrompt(client, task, basePrompt, options) {
   let lastError;
   let previousOutput = '';
   let previousCandidate = null;
+  const repairHistory = [];
   for (let attempt = 0; attempt < POST_MAX_ATTEMPTS; attempt += 1) {
     const bodyRepair = attempt > 0 && isBodyRepairFailure(lastError);
     if (attempt > 0) {
@@ -331,6 +349,7 @@ async function createPostFromPrompt(client, task, basePrompt, options) {
         : `${buildPostRepairPrompt(task, lastError, previousOutput, {
           ...options,
           previousCandidate,
+          repairHistory,
         })}\n\n${buildCopyKnowledgeReferencePrompt(options.knowledgeReference)}`,
       thinking: options.thinking,
       outputSchema: bodyRepair ? bodyRepairOutputSchema() : postOutputSchema(options.imageCount),
@@ -360,6 +379,10 @@ async function createPostFromPrompt(client, task, basePrompt, options) {
       };
     } catch (error) {
       lastError = error;
+      const validationError = String(error?.message ?? error);
+      const receivedLength = validationError.match(/received ([0-9]+)/u)?.[1];
+      repairHistory.push({ attempt: attempt + 1, validationError,
+        ...(receivedLength ? { receivedLength: Number(receivedLength) } : {}) });
       if (previousCandidate) previousOutput = JSON.stringify(previousCandidate);
     }
   }
@@ -372,6 +395,7 @@ export function createLivePost(client, task, options = {}) {
 
 async function createReviewedPost(client, task, originalPost, originalReview, options = {}) {
   const originalFingerprint = revisionFingerprint(originalPost);
+  const revisionAttempts = [];
   for (let attempt = 0; attempt < QUALITY_REVISION_MAX_ATTEMPTS; attempt += 1) {
     const prompt = buildQualityRevisionPrompt(
       task,
@@ -382,8 +406,9 @@ async function createReviewedPost(client, task, originalPost, originalReview, op
     );
     const reviewed = await createPostFromPrompt(client, task, prompt, options);
     if (revisionFingerprint(reviewed.post) !== originalFingerprint) return reviewed;
+    revisionAttempts.push({ attempt: attempt + 1, ...reviewed });
   }
-  throw new CopyGenerationUnchangedError();
+  throw new CopyGenerationUnchangedError(revisionAttempts);
 }
 
 /**
@@ -396,6 +421,7 @@ async function createReviewedPost(client, task, originalPost, originalReview, op
  *   autoReviseOnReject?: boolean,
  *   textReviewEnabled?: boolean,
  *   promptRuntime?: Parameters<typeof withPromptRuntime>[0],
+ *   researchSnapshot?: Record<string, unknown> | null,
  *   now?: () => number,
  *   onStageChange?: (stage: string, details?: Record<string, unknown>) => void | Promise<void>,
  * }} options
@@ -412,6 +438,7 @@ async function generateCopyInContext({
   imageCount = 'auto',
   autoReviseOnReject = false,
   textReviewEnabled = true,
+  researchSnapshot: suppliedResearchSnapshot = null,
   now = () => performance.now(),
   onStageChange = async () => {},
 }) {
@@ -436,6 +463,13 @@ async function generateCopyInContext({
     totalMs: 0,
   };
   const sourceTask = normalizedTask(task);
+  const pinnedResearch = suppliedResearchSnapshot == null
+    ? null : normalizeResearchSnapshot(suppliedResearchSnapshot);
+  if (pinnedResearch && (pinnedResearch.status !== 'COMPLETED'
+    || pinnedResearch.query.replace(/\s+/gu, ' ').trim()
+      !== sourceTask.query.replace(/\s+/gu, ' ').trim())) {
+    throw new TypeError('copy generation research must be completed for the same query');
+  }
   const queryReviewEnabled = promptPolicy().queryReviewEnabled;
   if (queryReviewEnabled) await onStageChange('QUERY_REVIEW');
   const queryReview = queryReviewEnabled ? await measureModelStage(
@@ -465,13 +499,13 @@ async function generateCopyInContext({
 
   let generationTask = sourceTask;
   let researchSnapshot = null;
-  if (typeof client.runWebSearch === 'function') {
+  if (pinnedResearch || typeof client.runWebSearch === 'function') {
     await onStageChange('RESEARCH');
     researchSnapshot = await measureStage(
       timing,
       'researchMs',
       now,
-      () => createResearchSnapshot({
+      () => pinnedResearch ?? createResearchSnapshot({
         client,
         query: sourceTask.query,
         requireAuthoritative: requiresAuthoritativeResearch(sourceTask),
@@ -524,19 +558,49 @@ async function generateCopyInContext({
     if (originalTextReview.decision !== 'PASS' && autoReviseOnReject) {
       revisionAttempted = true;
       await onStageChange('REVIEWED_GENERATION');
-      reviewed = await measureModelStage(
-        timing,
-        'reviewedGenerationMs',
-        'REVIEWED_GENERATION',
-        now,
-        () => createReviewedPost(
-          client,
-          generationTask,
-          original.post,
-          originalTextReview,
-          { systemPrompt, imageCount, allowedSources, knowledgeReference, onStageChange },
-        ),
-      );
+      try {
+        reviewed = await measureModelStage(
+          timing,
+          'reviewedGenerationMs',
+          'REVIEWED_GENERATION',
+          now,
+          () => createReviewedPost(
+            client,
+            generationTask,
+            original.post,
+            originalTextReview,
+            { systemPrompt, imageCount, allowedSources, knowledgeReference, onStageChange },
+          ),
+        );
+      } catch (error) {
+        if (error instanceof CopyGenerationUnchangedError) {
+          const lastRevision = error.revisionAttempts.at(-1) ?? original;
+          timing.totalMs = elapsedMilliseconds(now, startedAt);
+          error.partialResult = {
+            post: original.post,
+            model: original.model,
+            originalPost: original.post,
+            reviewedPost: lastRevision.post,
+            originalModel: original.model,
+            reviewedModel: lastRevision.model,
+            originalThinking: original.thinking,
+            reviewedThinking: lastRevision.thinking,
+            revisionAttempted,
+            revisionFailed: true,
+            revisionAttempts: error.revisionAttempts,
+            researchSnapshot,
+            ...(knowledgeMatch ? { knowledgeMatch } : {}),
+            timing,
+            stageReviews: {
+              query: queryReview,
+              originalText: originalTextReview,
+              reviewedText: null,
+              text: originalTextReview,
+            },
+          };
+        }
+        throw error;
+      }
       await onStageChange('REVIEWED_REVIEW');
       reviewedTextReview = await measureModelStage(
         timing,

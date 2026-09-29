@@ -314,7 +314,7 @@ test('creator and assignee filters can be combined while personal work stays dis
   assert.match(adminFilters, /最近变更日期（起）[\s\S]*最近变更日期（止，含当天）/u);
   assert.match(adminFilters, /TASK_STATE_FILTER_GROUPS\.map/u);
   assert.match(adminFilters, /<SelectLabel>\{group\.label\}<\/SelectLabel>/u);
-  assert.match(assigneeFilter, /label="负责人"[\s\S]{0,180}emptyLabel="全部负责人"/u);
+  assert.match(assigneeFilter, /label="标注人"[\s\S]{0,180}emptyLabel="全部标注人"/u);
   assert.match(workbench, /assignedToUserId: assigneeFilter\?\.username/u);
   assert.match(workbench, /assignedToAccountId: assigneeFilter\?\.id/u);
   assert.match(listState, /assignedToUserId[\s\S]{0,100}assignedToAccountId/u);

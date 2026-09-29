@@ -9,9 +9,11 @@ import styles from './personal-statistics-dashboard.module.css';
 export type ActivitySelection = {
   label: string;
   metric: 'submitAll' | 'submitFirst' | 'submitRework' | 'annotationOverall' | 'qaFirst' | 'qaRecheck' | 'qaPassed' | 'qaReturned'
-    | 'qaActual' | 'qaCoverage' | 'qaBatchReturned' | 'qaBatchReleased' | 'qaDiscarded' | 'qaEscalated';
+    | 'copyFirstReview' | 'annotationDiscarded' | 'qaActual' | 'qaCoverage' | 'qaBatchReturned' | 'qaBatchReleased' | 'qaDiscarded' | 'qaEscalated';
   stage: 'COPY' | 'IMAGE';
   sampleSet?: 'all' | 'first' | 'passed' | 'failed';
+  range: { from: string; to: string };
+  isToday: boolean;
 };
 
 type Receipt = {
@@ -35,7 +37,7 @@ function receiptLabel(item: Receipt) {
   if (item.outcome === 'RETURN') return '退回';
   if (item.outcome === 'ESCALATE') return '升级处理';
   if (item.outcome === 'RELEASE') return '放行';
-  if (item.outcome === 'DISCARD' || item.kind === 'QA_DISCARD') return '废弃';
+  if (item.outcome === 'DISCARD' || item.kind === 'QA_DISCARD' || item.kind === 'ANNOTATION_DISCARD') return '废弃';
   return '质检操作';
 }
 
@@ -47,11 +49,15 @@ function coverageLabel(item: Receipt) {
 }
 
 function activityDescription(selection: ActivitySelection) {
-  if (selection.metric === 'qaCoverage') return '北京时间今天 · 每个质检项或版本只列一条，合并逐条、批量退回与自动放行覆盖。新版本复检另计，覆盖量包含系统联动。';
-  if (selection.metric === 'qaBatchReturned') return '北京时间今天 · 列出本人整批退回影响的质检项或版本，包含已逐条操作的重叠项。';
-  if (selection.metric === 'qaBatchReleased') return '北京时间今天 · 列出本人操作触发的自动放行覆盖，不代表本人逐条检查。';
-  if (selection.metric === 'qaActual') return '北京时间今天 · 按本人逐条通过、退回、废弃或升级的质检项或版本计次，不包含批量影响。新版本复检另计。';
-  return '北京时间今天 · 按本人实际提交或质检记录逐次列出。同一作业可能有多次记录。';
+  const { from, to } = selection.range;
+  const dates = `北京时间 ${from === to ? from : `${from} 至 ${to}`}`;
+  if (selection.metric === 'copyFirstReview') return `${dates} · 首次文案审核 = 首次提交 + 废弃数，逐次列出本人首次提交和文案审核或返修中的废弃记录。`;
+  if (selection.metric === 'annotationDiscarded') return `${dates} · 按本人文案审核或返修中的实际废弃时间计次。`;
+  if (selection.metric === 'qaCoverage') return `${dates} · 每个质检项或版本只列一条，合并逐条、批量退回与自动放行覆盖。新版本复检另计，覆盖量包含系统联动。`;
+  if (selection.metric === 'qaBatchReturned') return `${dates} · 列出本人整批退回影响的质检项或版本，包含已逐条操作的重叠项。`;
+  if (selection.metric === 'qaBatchReleased') return `${dates} · 列出本人操作触发的自动放行覆盖，不代表本人逐条检查。`;
+  if (selection.metric === 'qaActual') return `${dates} · 按本人逐条通过、退回、废弃或升级的质检项或版本计次，不包含批量影响。新版本复检另计。`;
+  return `${dates} · 按本人实际提交或质检记录逐次列出。同一作业可能有多次记录。`;
 }
 
 export function PersonalActivityDialog({ selection, onClose }: {
@@ -70,7 +76,7 @@ export function PersonalActivityDialog({ selection, onClose }: {
     let timedOut = false;
     const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 25_000);
     const query = new URLSearchParams({
-      period: 'today', metric: selection.metric, stage: selection.stage,
+      period: 'custom', from: selection.range.from, to: selection.range.to, metric: selection.metric, stage: selection.stage,
       sampleSet: selection.sampleSet ?? 'all', page: String(page), pageSize: '15',
     });
     setData(null);
@@ -93,7 +99,7 @@ export function PersonalActivityDialog({ selection, onClose }: {
   return <Dialog open onOpenChange={open => { if (!open) onClose(); }}>
     <DialogContent className={styles.activityDialog}>
       <header className={styles.activityHeader}>
-        <span className={styles.activityKicker}>今日操作明细</span>
+        <span className={styles.activityKicker}>{selection.isToday ? '今日操作明细' : '操作明细'}</span>
         <DialogTitle className={styles.activityTitle}>{selection.label}</DialogTitle>
         <DialogDescription className={styles.activityDescription}>{activityDescription(selection)}</DialogDescription>
       </header>
@@ -102,9 +108,9 @@ export function PersonalActivityDialog({ selection, onClose }: {
         {error && <div className="notice error" role="alert">{error} <Button variant="outline" size="sm" onClick={() => setRetry(value => value + 1)}>重试</Button></div>}
         {data && <>
           {data.coverageIncomplete && <p className={styles.coverageNotice} role="status">历史覆盖记录不完整，以下仅列出已确认的影响范围。</p>}
-          <div className={styles.activitySummary}><span>{data.coverageIncomplete ? '已确认记录' : '今日记录'}</span><strong>共 {data.total} 次记录</strong></div>
+          <div className={styles.activitySummary}><span>{data.coverageIncomplete ? '已确认记录' : selection.isToday ? '今日记录' : '所选时间内的记录'}</span><strong>共 {data.total} 次记录</strong></div>
           {data.items.length === 0
-            ? <div className={styles.activityEmpty}><strong>{data.coverageIncomplete ? '暂无可确认的覆盖明细' : `今天暂无${selection.label}记录`}</strong><p>{data.coverageIncomplete ? '部分历史批量范围无法恢复，当前空明细不代表没有处理。' : '产生有效操作后，记录会显示在这里。'}</p></div>
+            ? <div className={styles.activityEmpty}><strong>{data.coverageIncomplete ? '暂无可确认的覆盖明细' : `${selection.isToday ? '今天' : '所选时间内'}暂无${selection.label}记录`}</strong><p>{data.coverageIncomplete ? '部分历史批量范围无法恢复，当前空明细不代表没有处理。' : '产生有效操作后，记录会显示在这里。'}</p></div>
             : <div className={styles.details}>{data.items.map(item => <article key={item.id} className={styles.receipt}>
               <div className={styles.receiptTop}><strong>{item.code}</strong><span className={styles.receiptOutcome}>{receiptLabel(item)}</span></div>
               {coverageLabel(item) && <div className={styles.receiptSources}>{coverageLabel(item)}</div>}

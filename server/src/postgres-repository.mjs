@@ -2544,16 +2544,35 @@ export class PostgresControlPlaneRepository {
         }
       }
       const assignedTasks = await client.query(`
-        SELECT id, state FROM tasks
+        SELECT id, state, task_kind FROM tasks
         WHERE assigned_to_user_id = $1
+          OR id IN (SELECT task_id FROM standalone_image_workspaces WHERE owner_id = $2)
         ORDER BY id
         FOR UPDATE
-      `, [current.username]);
-      const unfinished = assignedTasks.rows.find((task) => !['REVIEWED', 'CANCELLED'].includes(task.state));
+      `, [current.username, userId]);
+      // Standalone uploads stay in MANUAL_ARCHIVE for their entire lifetime.
+      // Their edit requests, rather than the carrier task state, indicate work
+      // still waiting for or using an executor.
+      const unfinished = assignedTasks.rows.find((task) => task.task_kind !== 'STANDALONE_IMAGE_EDIT'
+        && !['REVIEWED', 'CANCELLED'].includes(task.state));
       if (unfinished) {
         throw new ControlPlaneConflictError(
           'USER_HAS_ACTIVE_TASKS',
           '该账号仍有未完成任务，请先将任务转交其他负责人后再删除',
+        );
+      }
+      const activeImageEdits = await client.query(`
+        SELECT edit.id FROM image_edit_requests AS edit
+        JOIN standalone_image_workspaces AS workspace ON workspace.task_id = edit.task_id
+        WHERE workspace.owner_id = $1 AND edit.status IN ('QUEUED', 'RUNNING')
+        ORDER BY edit.task_id, edit.id
+        LIMIT 1
+        FOR UPDATE OF edit
+      `, [userId]);
+      if (activeImageEdits.rows.length > 0) {
+        throw new ControlPlaneConflictError(
+          'USER_HAS_ACTIVE_TASKS',
+          '该账号仍有图片编辑正在生成或等待生成，请先处理这些记录后再删除',
         );
       }
       if (assignedTasks.rows.length > 0) {
@@ -2563,7 +2582,9 @@ export class PostgresControlPlaneRepository {
             assignee_user_id, source, reason
           )
           SELECT assigned_task.id, $2::varchar(50), $1::varchar(50), NULL,
-            'MANUAL', '删除账号时解除已结束任务负责人'
+            'MANUAL', CASE WHEN assigned_task.task_kind = 'STANDALONE_IMAGE_EDIT'
+              THEN '删除账号时解除独立图片编辑负责人'
+              ELSE '删除账号时解除已结束任务负责人' END
           FROM tasks AS assigned_task
           WHERE assigned_task.assigned_to_user_id = $1::varchar(50)
         `, [current.username, actorUsername]);
@@ -4722,7 +4743,9 @@ export class PostgresControlPlaneRepository {
           '生图失败修订不能单独保存正式版本；修改会自动保存为草稿，请完成修改后直接提交强制复检',
         );
       }
-      const reworkBaseline = mandatoryRework ? await copyReworkBaseline(client, taskId, revision.rows[0]) : null;
+      // Image exhaustion starts a new rework round at the copy that failed.
+      const reworkBaseline = imageRetryRework ? revision.rows[0]
+        : mandatoryRework ? await copyReworkBaseline(client, taskId, revision.rows[0]) : null;
       const originalImagePlan = edits ? normalizeCopyReviewImagePlan(
         revision.rows[0].content.imagePlan
           ?? revision.rows[0].content.reviewed?.imagePlan

@@ -327,6 +327,56 @@ describe('standalone copy generation', () => {
     assert.equal(toCopyGenerationResponse(generated).generation.revisionAttempted, true);
   });
 
+  for (const { name, revise, code } of [
+    { name: 'full-width range punctuation in body and image text', code: 'INVALID_RANGE_PUNCTUATION',
+      revise(post) {
+        return JSON.parse(JSON.stringify(post).replaceAll('3～6', '3~6'));
+      } },
+    { name: 'paragraph boundaries', code: 'INVALID_PARAGRAPH_FORMAT',
+      revise(post) { return { ...post, body: post.body.replace('排期。', '排期。\n\n') }; } },
+    { name: 'internal word spacing', code: 'INVALID_WORD_SPACING',
+      revise(post) { return { ...post, body: post.body.replace('API配置', 'API 配置') }; } },
+  ]) {
+    it(`reviews a repair that changes only ${name}`, async () => {
+      const originalPost = { ...createMockPost(3), title: '航空广告周期安排要点',
+        body: paddedCompleteBody('投放期可先按3～6个月排期。API配置完成后，需要看实际投放数据再复盘。', 500) };
+      originalPost.imagePlan[0].headline = '建议周期3～6个月';
+      const revisedPost = revise(originalPost);
+      let generationCalls = 0;
+      let reviewCalls = 0;
+      const stages = [];
+      const generated = await generateCopy({
+        client: {
+          async runText() {
+            generationCalls += 1;
+            return { rawText: JSON.stringify(generationCalls === 1 ? originalPost : revisedPost), model: 'fake-model' };
+          },
+          async runReview({ prompt }) {
+            if (prompt.includes('<trusted_business_rules kind="QUERY_REVIEW_SYSTEM">')) {
+              return { rawText: passingReview(), model: 'fake-review-model' };
+            }
+            reviewCalls += 1;
+            return { rawText: reviewCalls === 1 ? JSON.stringify({ schemaVersion: 1, decision: 'REJECT',
+              summary: '需要修复格式', issues: [{ code, severity: 'BLOCKING', message: `修复${name}` }] })
+              : passingReview(), model: 'fake-review-model' };
+          },
+        },
+        task: { query: '航空媒体广告投放周期多久合适？', input: {} },
+        imageCount: 3,
+        autoReviseOnReject: true,
+        onStageChange: stage => { stages.push(stage); },
+      });
+      assert.equal(generationCalls, 2);
+      assert.equal(reviewCalls, 2);
+      assert.ok(stages.includes('REVIEWED_REVIEW'));
+      assert.equal(generated.reviewedPost.body, revisedPost.body);
+      assert.deepEqual(generated.reviewedPost.imagePlan, revisedPost.imagePlan);
+      assert.equal(generated.stageReviews.originalText.decision, 'REJECT');
+      assert.equal(generated.stageReviews.reviewedText.decision, 'PASS');
+      assert.equal(generated.stageReviews.text.decision, 'PASS');
+    });
+  }
+
   it('keeps a rejected first draft for manual review when automatic revision is not selected', async () => {
     const originalPost = createMockPost(3);
     let textGenerationCount = 0;
@@ -433,6 +483,7 @@ describe('standalone copy generation', () => {
     const originalPost = createMockPost(3);
     let textGenerationCount = 0;
     let reviewCount = 0;
+    let time = 0;
     const client = {
       async runReview({ prompt }) {
         reviewCount += 1;
@@ -456,7 +507,7 @@ describe('standalone copy generation', () => {
       },
       async runText() {
         textGenerationCount += 1;
-        return { rawText: JSON.stringify(originalPost), model: 'text-model' };
+        return { rawText: JSON.stringify(originalPost), model: `text-model-${textGenerationCount}`, thinking: 'low' };
       },
     };
 
@@ -467,12 +518,68 @@ describe('standalone copy generation', () => {
         imageCount: 3,
         systemPrompt: '围绕 {{query}} 生成文案。',
         autoReviseOnReject: true,
+        now: () => { time += 5; return time; },
       }),
-      (error) => error instanceof CopyGenerationUnchangedError
-        && error.message.includes('没有产生实际修改'),
+      (error) => {
+        assert.ok(error instanceof CopyGenerationUnchangedError);
+        assert.match(error.message, /没有产生实际修改/u);
+        assert.equal(error.stage, 'REVIEWED_GENERATION');
+        const partial = error.partialResult;
+        assert.equal(partial.originalPost.body, originalPost.body);
+        assert.equal(partial.post, partial.originalPost);
+        assert.equal(partial.reviewedPost.body, originalPost.body);
+        assert.equal(partial.originalModel, 'text-model-1');
+        assert.equal(partial.reviewedModel, 'text-model-3');
+        assert.equal(partial.originalThinking, 'low');
+        assert.equal(partial.reviewedThinking, 'low');
+        assert.equal(partial.revisionAttempted, true);
+        assert.equal(partial.revisionFailed, true);
+        assert.equal(partial.revisionAttempts.length, 2);
+        assert.deepEqual(partial.revisionAttempts.map(attempt => attempt.attempt), [1, 2]);
+        assert.deepEqual(partial.revisionAttempts.map(attempt => attempt.model), ['text-model-2', 'text-model-3']);
+        assert.ok(partial.revisionAttempts.every(attempt => attempt.post.body === originalPost.body));
+        assert.equal(partial.researchSnapshot.status, 'COMPLETED');
+        assert.equal(partial.researchSnapshot.query, '租房桌面怎么低成本整理？');
+        assert.ok(partial.timing.reviewedGenerationMs > 0);
+        assert.equal(partial.timing.reviewedReviewMs, 0);
+        assert.ok(partial.timing.totalMs > partial.timing.reviewedGenerationMs);
+        assert.equal(partial.stageReviews.originalText.decision, 'REJECT');
+        assert.equal(partial.stageReviews.text.decision, 'REJECT');
+        assert.equal(partial.stageReviews.reviewedText, null);
+        assert.equal(toCopyGenerationResponse(partial).reviewed.review.decision, 'REJECT');
+        return true;
+      },
     );
     assert.equal(textGenerationCount, 3);
     assert.equal(reviewCount, 1);
+  });
+
+  it('does not accept Unicode or newline encoding differences as a quality repair', async () => {
+    const originalPost = { ...createMockPost(3), body: paddedCompleteBody('Café店铺投放安排。\n需要先核对公开资料。', 500) };
+    const equivalentPost = { ...originalPost,
+      body: `${originalPost.body.normalize('NFD').replaceAll('\n', '\r\n')}\n ` };
+    let generationCalls = 0;
+    let reviewCalls = 0;
+    await assert.rejects(generateCopy({
+      client: {
+        async runText() {
+          generationCalls += 1;
+          return { rawText: JSON.stringify(generationCalls === 1 ? originalPost : equivalentPost), model: 'fake-model' };
+        },
+        async runReview({ prompt }) {
+          if (prompt.includes('<trusted_business_rules kind="QUERY_REVIEW_SYSTEM">')) {
+            return { rawText: passingReview(), model: 'fake-review-model' };
+          }
+          reviewCalls += 1;
+          return { rawText: rejectingReview(), model: 'fake-review-model' };
+        },
+      },
+      task: { query: '航空媒体广告投放周期多久合适？', input: {} },
+      imageCount: 3,
+      autoReviseOnReject: true,
+    }), CopyGenerationUnchangedError);
+    assert.equal(generationCalls, 3);
+    assert.equal(reviewCalls, 1);
   });
 
   it('returns an actionable contract failure after repeated rule violations', async () => {
@@ -687,6 +794,52 @@ describe('standalone copy generation', () => {
     assert.ok(prompts[2].includes(draft.imagePlan[1].headline));
     assert.equal(generated.post.body.length, 500);
     assert.deepEqual(generated.post.imagePlan, validImages);
+  });
+
+  it('gives the second body repair a measured reduction budget and failed-attempt history', async () => {
+    const draft = { ...createMockPost(3), body: completeBody('文', 714) };
+    const unrelatedMutations = {
+      title: '不应覆盖原标题',
+      tags: ['#不应覆盖原标签'],
+      imagePlan: [],
+      sources: ['https://example.com/unapproved'],
+    };
+    const responses = [
+      draft,
+      { ...unrelatedMutations, body: completeBody('文', 603) },
+      { ...unrelatedMutations, body: completeBody('文', 500) },
+    ];
+    const prompts = [];
+    const schemas = [];
+    const generated = await createLivePost({
+      async runText({ prompt, outputSchema }) {
+        prompts.push(prompt);
+        schemas.push(outputSchema);
+        return { model: 'fake-model', rawText: JSON.stringify(responses[prompts.length - 1]) };
+      },
+    }, { query: '租房桌面低成本整理' }, { imageCount: 3 });
+
+    assert.equal(prompts.length, 3);
+    assert.deepEqual(schemas[1].required, ['body']);
+    assert.deepEqual(schemas[2].required, ['body']);
+    const secondRepair = repairDataFromPrompt(prompts[2]);
+    for (const [field, expected] of Object.entries({
+      currentLength: 603,
+      targetMin: 480,
+      targetMax: 520,
+      targetLength: 500,
+      requiredReduction: 83,
+      requiredExpansion: 0,
+    })) assert.equal(secondRepair.lengthBudget[field], expected, field);
+    assert.deepEqual(secondRepair.repairHistory, [
+      { attempt: 1, receivedLength: 714,
+        validationError: 'body must contain between 400 and 600 characters; received 714' },
+      { attempt: 2, receivedLength: 603,
+        validationError: 'body must contain between 400 and 600 characters; received 603' },
+    ]);
+    assert.deepEqual(secondRepair.allowedFields, ['body']);
+    assert.equal(JSON.parse(secondRepair.previousOutput).body, responses[1].body);
+    assert.deepEqual(generated.post, { ...draft, body: responses[2].body });
   });
 
   it('stops after two targeted body repairs and reports the final invalid length', async () => {

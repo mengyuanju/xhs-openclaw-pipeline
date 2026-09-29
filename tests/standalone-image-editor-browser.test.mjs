@@ -85,13 +85,17 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
     assert.equal(await page.getByRole('combobox',{name:'程序标识样式',exact:true}).count(),0);
     await page.getByRole('button',{name:'程序叠加（SVG + Sharp）',exact:true}).click();
     const badgeStyle=page.getByRole('combobox',{name:'程序标识样式',exact:true});
-    assert.equal(await badgeStyle.textContent(),'描边徽章');
-    assert.equal(await page.getByRole('radio',{name:'自动配色',exact:true}).isChecked(),true);
+    assert.equal(await badgeStyle.textContent(),'实心徽章');
+    assert.equal(await page.getByRole('radio',{name:'自定义颜色',exact:true}).isChecked(),true);
+    assert.equal(await page.locator('[data-disclosure-preview] rect').getAttribute('fill'),'#111827');
+    assert.equal(await page.locator('[data-disclosure-preview] text').getAttribute('fill'),'#FFFFFF');
     for(const radio of await page.getByRole('radiogroup',{name:'程序标识配色',exact:true}).getByRole('radio').all()) {
       const bounds=await radio.boundingBox();assert.ok(bounds.width<=20&&bounds.height<=20,'standalone color modes retain compact radio controls');
     }
     await page.getByRole('radio',{name:'自定义颜色',exact:true}).check();
     const badgeColorInput=page.getByLabel('程序标识颜色值',{exact:true});
+    assert.equal(await badgeColorInput.inputValue(),'#111827');
+    await badgeStyle.click();await page.getByRole('option',{name:'描边徽章',exact:true}).click();
     assert.equal(await page.getByRole('button',{name:'屏幕取色',exact:true}).count(),0,'unsupported browsers retain native picker and HEX inputs');
     await badgeColorInput.fill('#bad');
     await page.getByRole('alert').filter({hasText:'请输入有效的颜色值'}).waitFor();
@@ -104,6 +108,7 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
     await badgeStyle.click();await page.getByRole('option',{name:'实心徽章',exact:true}).click();
     assert.equal(await page.locator('[data-disclosure-preview] rect').getAttribute('fill'),'#F1E2D3');
     assert.equal(await page.locator('[data-disclosure-preview] text').getAttribute('fill'),'#000000');
+    await badgeColorInput.fill('#111827');
     await page.getByLabel('人工生成标识文字',{exact:true}).fill('AI生成');
     failSubmission=true;
     await page.getByRole('button',{name:'保存并提交生图',exact:true}).click();
@@ -117,7 +122,7 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
     assert.equal(await list.getByText('中心程序处理',{exact:true}).count(),1);
     assert.equal(submitted.operation,'SVG_DISCLOSURE');assert.equal(submitted.draft,false);
     assert.equal(submitted.overlay.badgeVariant,'solid-pill');
-    assert.equal(submitted.overlay.badgeColor,'#F1E2D3');
+    assert.equal(submitted.overlay.badgeColor,'#111827','new editor explicitly submits the fixed dark solid default');
     assert.equal(submissionCount,2,'one failed attempt and one successful submission');
     edits[0].status='RUNNING';
     await list.getByRole('button',{name:'刷新',exact:true}).click();
@@ -131,7 +136,7 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
     assert.equal(await badgeStyle.textContent(),'实心徽章','saved solid style is restored');
     assert.equal(await badgeStyle.isDisabled(),true);
     assert.equal(await page.getByRole('radio',{name:'自定义颜色',exact:true}).isChecked(),true,'saved custom mode is restored');
-    assert.equal(await badgeColorInput.inputValue(),'#F1E2D3','saved custom color is restored');
+    assert.equal(await badgeColorInput.inputValue(),'#111827','saved custom color is restored');
     assert.equal(await badgeColorInput.isDisabled(),true);
     assert.equal(await page.getByRole('button',{name:'保存并提交生图',exact:true}).isDisabled(),true);
     assert.equal(await page.getByRole('link',{name:/下载/u}).count(),0);
@@ -199,8 +204,9 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
     await page.getByLabel('上传待编辑图片',{exact:true}).setInputFiles([{name:'one.png',mimeType:'image/png',buffer:png},{name:'two.png',mimeType:'image/png',buffer:png},{name:'three.png',mimeType:'image/png',buffer:png}]);
     await page.getByRole('region',{name:'图片编辑组件'}).waitFor();
     await page.getByRole('button',{name:'程序叠加（SVG + Sharp）',exact:true}).click();
-    assert.equal(await badgeStyle.textContent(),'描边徽章','new uploads retain the outline default');
-    assert.equal(await page.getByRole('radio',{name:'自动配色',exact:true}).isChecked(),true,'new uploads retain automatic colors');
+    assert.equal(await badgeStyle.textContent(),'实心徽章','new uploads use the solid default');
+    assert.equal(await page.getByRole('radio',{name:'自定义颜色',exact:true}).isChecked(),true,'new uploads use the fixed dark color');
+    assert.equal(await badgeColorInput.inputValue(),'#111827');
     await page.getByRole('radio',{name:'自定义颜色',exact:true}).check();
     await badgeColorInput.fill('#234567');
     await badgeStyle.click();await page.getByRole('option',{name:'实心徽章',exact:true}).click();

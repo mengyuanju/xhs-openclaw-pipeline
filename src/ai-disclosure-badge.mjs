@@ -8,6 +8,7 @@ const DISCLOSURE_TEXT = /^[\p{L}\p{N}_-]{1,12}$/u;
 const FONT_STACK = "'Microsoft YaHei','Noto Sans CJK SC','PingFang SC',sans-serif";
 
 export const AI_DISCLOSURE_FALLBACK_COLOR = '#68744A';
+export const AI_DISCLOSURE_DEFAULT_COLOR = '#111827';
 export const AI_DISCLOSURE_BADGE_VERSION = 1;
 
 function escapeXml(value) {

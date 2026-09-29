@@ -600,6 +600,18 @@ export const INTERNAL_PROMPT_CATALOG = Object.freeze([
     ]
   },
   {
+    "kind": "INTERNAL_CODEX_IMAGE_PATHS",
+    "label": "Codex 图片文件传输协议",
+    "group": "模型执行协议",
+    "description": "按附件顺序传递已验证的本地图片路径，禁止手工复制 Base64 和历史附件替代。",
+    "usage": "有图片附件的原生生成或编辑调用必须使用显式 referenced_image_paths。",
+    "editable": false,
+    "layer": "CONTRACT",
+    "defaultPath": "prompts/internal/codex_image_paths.md",
+    "callSites": ["src/codex.mjs#executeOnce"],
+    "variables": [{ "name": "slot1", "description": "规范化临时图片绝对路径的有序 JSON 数组" }]
+  },
+  {
     "kind": "INTERNAL_CODEX_EDIT_ATTACHMENT",
     "label": "Codex 编辑附件协议",
     "group": "模型执行协议",

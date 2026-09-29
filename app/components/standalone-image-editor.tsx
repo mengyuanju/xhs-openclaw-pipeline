@@ -12,7 +12,7 @@ import { createRequestId } from './request-id';
 import { useBackgroundTasks } from './background-tasks';
 import { isBackgroundTaskRunning } from './background-task-store';
 import { ImageDisclosureColorControl, DISCLOSURE_COLOR_ERROR, normalizeDisclosureBadgeColor, type DisclosureColorMode } from './image-disclosure-color-control';
-import { AI_DISCLOSURE_FALLBACK_COLOR, resolveAiDisclosureTextColor } from '../../src/ai-disclosure-badge.mjs';
+import { AI_DISCLOSURE_DEFAULT_COLOR, AI_DISCLOSURE_FALLBACK_COLOR, resolveAiDisclosureTextColor } from '../../src/ai-disclosure-badge.mjs';
 import { localEditAlternatives } from '../../src/local-edit-alternatives.mjs';
 import {
   DEFAULT_DISCLOSURE_TEXT,
@@ -172,9 +172,9 @@ export function StandaloneImageEditor({taskId,runId,copyRevisionId,asset,assets,
   const [selectedDisclosurePages,setSelectedDisclosurePages]=useState<number[]>([page]);
   const [textPreviewPage,setTextPreviewPage]=useState(page);
   const [disclosureMethod,setDisclosureMethod]=useState<DisclosureMethod>('MODEL');
-  const [disclosureBadgeVariant,setDisclosureBadgeVariant]=useState<DisclosureBadgeVariant>('outline-pill');
-  const [disclosureColorMode,setDisclosureColorMode]=useState<DisclosureColorMode>('AUTO');
-  const [disclosureBadgeColor,setDisclosureBadgeColor]=useState(AI_DISCLOSURE_FALLBACK_COLOR);
+  const [disclosureBadgeVariant,setDisclosureBadgeVariant]=useState<DisclosureBadgeVariant>('solid-pill');
+  const [disclosureColorMode,setDisclosureColorMode]=useState<DisclosureColorMode>('CUSTOM');
+  const [disclosureBadgeColor,setDisclosureBadgeColor]=useState(AI_DISCLOSURE_DEFAULT_COLOR);
   const [activeBatchId,setActiveBatchId]=useState('');
   const [recentDisclosureTexts,setRecentDisclosureTexts]=useState<string[]>([]);
   const [instruction,setInstruction]=useState('');
@@ -260,7 +260,7 @@ export function StandaloneImageEditor({taskId,runId,copyRevisionId,asset,assets,
       setDisclosureBadgeVariant(previous.config.overlay?.badgeVariant==='solid-pill'?'solid-pill':'outline-pill');
       const restoredBadgeColor=previous.operation==='SVG_DISCLOSURE'?normalizeDisclosureBadgeColor(previous.config.overlay?.badgeColor):null;
       setDisclosureColorMode(restoredBadgeColor?'CUSTOM':'AUTO');
-      setDisclosureBadgeColor(restoredBadgeColor??AI_DISCLOSURE_FALLBACK_COLOR);
+      setDisclosureBadgeColor(restoredBadgeColor??AI_DISCLOSURE_DEFAULT_COLOR);
       setText(previous.config.overlay?.text??DEFAULT_DISCLOSURE_TEXT);
       const previousPages=previous.config.batchId
         ?items.filter(item=>isDisclosureOperation(item.operation)&&item.config.batchId===previous.config.batchId).map(item=>item.target_page)
@@ -316,7 +316,7 @@ export function StandaloneImageEditor({taskId,runId,copyRevisionId,asset,assets,
   const normalizedBadgeColor=normalizeDisclosureBadgeColor(disclosureBadgeColor);
   const customBadgeColor=disclosureMethod==='SVG'&&disclosureColorMode==='CUSTOM';
   const disclosureColorValid=!customBadgeColor||normalizedBadgeColor!==null;
-  const previewBadgeColor=customBadgeColor&&normalizedBadgeColor?normalizedBadgeColor:AI_DISCLOSURE_FALLBACK_COLOR;
+  const previewBadgeColor=customBadgeColor?(normalizedBadgeColor??AI_DISCLOSURE_DEFAULT_COLOR):AI_DISCLOSURE_FALLBACK_COLOR;
   const previewBadgeTextColor=disclosureBadgeVariant==='solid-pill'?resolveAiDisclosureTextColor(previewBadgeColor).textColor:previewBadgeColor;
   const disclosureOverlay={text:text.trim(),textType:'AI_DISCLOSURE',size:32,margin:32,opacity:1,color:'#ffffff',background:'#111827',position:'bottom-right',disclosureType:'AI_GENERATED',...(disclosureMethod==='SVG'?{badgeVariant:disclosureBadgeVariant,...(customBadgeColor&&normalizedBadgeColor?{badgeColor:normalizedBadgeColor}:{})}:{})};
   const base=()=>({requestId:createRequestId(),sourceImageRunId:runId,sourceAssetId:asset.id,copyRevisionId,sha256:asset.sha256,targetPage:page});
@@ -736,7 +736,7 @@ export function StandaloneImageEditor({taskId,runId,copyRevisionId,asset,assets,
                 {!readOnly&&pendingBatchAccept&&<form className={styles.reasonEditor} onSubmit={event=>{event.preventDefault();void acceptDisclosureBatch();}}><label>采用已选标识的原因<Input aria-label="已选标识采用原因" value={reason} maxLength={1000} autoFocus onChange={e=>setReason(e.target.value)}/></label><div className={styles.quickReasons}>{quickReasons.slice(0,2).map(item=><Button variant="outline" size="sm" type="button" key={item} onClick={()=>setReason(item)}>{item}</Button>)}</div><div className={styles.reasonActions}><Button variant="outline" type="button" onClick={()=>{setPendingBatchAccept(false);setReason('');}}>取消</Button><Button type="submit" disabled={readOnly||busy}>确认采用</Button></div></form>}
               </section>}
               {tab==='ENTITY'&&!!entityBatchId&&entityBatchEdits.length>0&&<section className={styles.batchStatus} aria-label="批量产品替换状态"><div><h3>最近批量产品替换</h3><p>{entityBatchComplete?`共 ${entityBatchSize} 张，每张图内的全部产品会一次完成。`:`已创建 ${entityBatchEdits.length} / ${entityBatchSize||'未知'} 张请求，批次不完整。`}</p></div><div className={styles.batchCounts}>{Object.entries(entityBatchCounts).map(([status,count])=><span key={status}>{labels[status]??status} {count}</span>)}</div><Button disabled={readOnly||busy||!entityBatchReady||entityBatchAccepted} onClick={()=>{setReason('');setPendingHistoryAction(null);setPendingBatchAccept(true);}}>{entityBatchAccepted?'批量替换已采用':entityBatchReady?'一次采用全部替换':'等待全部预览就绪'}</Button>{!readOnly&&pendingBatchAccept&&<form className={styles.reasonEditor} onSubmit={event=>{event.preventDefault();void acceptEntityBatch();}}><label>采用批量替换的原因<Input aria-label="批量替换采用原因" value={reason} maxLength={1000} autoFocus onChange={e=>setReason(e.target.value)}/></label><div className={styles.quickReasons}>{quickReasons.slice(0,2).map(item=><Button variant="outline" size="sm" type="button" key={item} onClick={()=>setReason(item)}>{item}</Button>)}</div><div className={styles.reasonActions}><Button variant="outline" type="button" onClick={()=>{setPendingBatchAccept(false);setReason('');}}>取消</Button><Button type="submit" disabled={readOnly||busy}>确认采用</Button></div></form>}</section>}
-              <div className={styles.historyHeading}><strong>当前页编辑记录</strong><span>失败详情默认收起</span></div>
+              <div className={styles.historyHeading}><strong>当前页编辑记录</strong><span>提醒与失败详情默认收起</span></div>
               {pageEdits.length?<ul className={styles.history} aria-label="图片修改记录">{pageEdits.map(e=>{
                 const suggestion=localSuggestion(e);
                 const alternatives=localEditAlternatives(e);
@@ -753,7 +753,7 @@ export function StandaloneImageEditor({taskId,runId,copyRevisionId,asset,assets,
                     {selectedAlternative&&<blockquote aria-label="所选修改描述">{selectedAlternative.instruction}</blockquote>}
                     <span>{suggestion?'选择方案后点击下方“采用建议并修改”，结果仍需确认。':'选择方案后将直接生成修改预览，再进行结果验收。'}</span>
                   </section>}
-                  {preflightWarnings.length>0&&<section className={styles.preflightWarningCard} aria-label="执行前提醒"><strong>执行前提醒（未阻止生成）</strong><ul>{preflightWarnings.map((warning,index)=><li key={index}>{warning}</li>)}</ul><span>系统已继续调用图片模型，是否采用仍以生成后的验收结果为准。</span></section>}
+                  {preflightWarnings.length>0&&<details className={styles.preflightWarningCard} aria-label="执行前提醒"><summary>执行前提醒（未阻止生成） · {preflightWarnings.length} 项</summary><ul>{preflightWarnings.map((warning,index)=><li key={index}>{warning}</li>)}</ul><span>系统已继续调用图片模型，是否采用仍以生成后的验收结果为准。</span></details>}
                   {rejectedPreview&&<section className={styles.rejectedResultCard} aria-label="自动验收未通过的结果"><strong>图片已生成，但没有完整完成任务</strong><p>{failedPreviewReason(e)}</p>{e.operation==='SVG_DISCLOSURE'?<span>请检查标识样式、文字或位置，调整后重试程序处理；重试不调用模型。</span>:repairRecommendation?<><span>系统可以上一张失败图为起点，仅处理以下未完成部分：</span><blockquote>{repairRecommendation.repairInstruction}</blockquote><span>定向修复会再次调用图片模型并产生费用，只有确认后才会执行；修复结果仍由你决定是否采用。</span></>:<span>这是一张可查看的失败预览。当前问题不适合安全局部补救，你可以仍然采用，也可以调整说明后从原图重试；重试可能再次产生模型费用。</span>}</section>}
                   {e.error&&<details><summary>查看失败原因</summary><p role="alert">{e.error}</p></details>}
                   <div className={styles.historyActions}>{e.operation==='AI_LOCAL'&&<Button variant="outline" size="sm" disabled={readOnly} onClick={()=>reuseInstruction(e)}>复用说明并修改</Button>}{e.result&&<><Button size="sm" onClick={()=>{setComparisonId(e.id);setPreviewMode('COMPARE');setMobileView('PREVIEW');}}>在左侧对比</Button><a href={path(`/v1/assets/${e.result.asset_id}`)} target="_blank" rel="noreferrer">打开结果</a></>}{historyActions(e).map(action=><Button key={action} size="sm" variant={action==='cancel'?'outline':undefined} className={action==='cancel'?styles.deleteAction:undefined} disabled={readOnly||busy||action==='apply-suggestion'&&!selectedAlternative} onClick={()=>{setReason(action==='apply-suggestion'&&selectedAlternative?`采用「${selectedAlternative.title}」方案`:'');setHistoryCostConfirmed(false);setPendingBatchAccept(false);setPendingHistoryAction({editId:e.id,action});}}>{historyActionLabel(e,action)}</Button>)}</div>

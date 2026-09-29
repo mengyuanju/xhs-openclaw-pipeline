@@ -18,7 +18,7 @@ test('rejection threshold is based on original sampled count',()=>{
   assert.equal(rejectionTriggerCount(4,10000),4);
 });
 
-for(const origin of ['SECOND_ASSIGNMENT','FINAL_REWORK']){
+for(const origin of ['SECOND_ASSIGNMENT','FINAL_REWORK','IMAGE_RETRY_REVIEW']){
 for(const enabled of [false,true]){
   test(`${origin} creates a full-inspection batch when ordinary sampling is ${enabled?'on':'off'}`,async()=>{
     const queries=[];

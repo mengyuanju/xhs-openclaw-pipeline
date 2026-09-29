@@ -69,6 +69,8 @@ export const providerCatalogue = Object.freeze([
     id: 'doubao', label: '火山引擎豆包搜索', kind: 'search-results', needsKey: true,
     description: '豆包搜索 Global 版独立搜索 API；需要联网搜索控制台创建的按量后付费 Key。',
     documentationUrl: 'https://www.volcengine.com/docs/87772/2548026',
+    fields: [{ name: 'icpHostOnly', type: 'boolean', defaultValue: true,
+      label: '仅国内ICP备案网站', description: '国内网站也可能包含国外内容。' }],
   },
   {
     id: 'kimi', label: 'Kimi 联网搜索 Basic', kind: 'search-results', needsKey: true,
@@ -110,7 +112,9 @@ function modelAnswerPrompt(query) {
   });
 }
 
-async function postJson(url, key, body, { fetchImpl = fetch, label = '搜索服务' } = {}) {
+async function postJson(url, key, body, {
+  fetchImpl = fetch, label = '搜索服务', errorFromResponse,
+} = {}) {
   let response;
   try {
     response = await fetchImpl(url, {
@@ -121,7 +125,7 @@ async function postJson(url, key, body, { fetchImpl = fetch, label = '搜索服�
   } catch {
     throw new Error(`${label} 网络请求失败或超时`);
   }
-  if (!response.ok) throw new Error(`${label} HTTP ${response.status}`);
+  if (!response.ok && !errorFromResponse) throw new Error(`${label} HTTP ${response.status}`);
   let raw;
   try {
     const reader = response.body?.getReader();
@@ -142,8 +146,53 @@ async function postJson(url, key, body, { fetchImpl = fetch, label = '搜索服�
   } catch {
     throw new Error(`${label} 响应读取失败或过大`);
   }
-  try { return JSON.parse(raw); }
-  catch { throw new Error(`${label} 返回了无效 JSON`); }
+  let payload;
+  try { payload = JSON.parse(raw); }
+  catch {
+    throw new Error(response.ok ? `${label} 返回了无效 JSON` : `${label} HTTP ${response.status}`);
+  }
+  const providerError = errorFromResponse?.(payload, response.status);
+  if (providerError) throw providerError;
+  if (!response.ok) throw new Error(`${label} HTTP ${response.status}`);
+  return payload;
+}
+
+const TENCENT_ERROR_HINTS = Object.freeze({
+  UnauthorizedOperation: '请核对 WSA 控制台创建的服务 API Key，云账号 SecretId/SecretKey 不适用于此接口',
+  AuthFailure: '鉴权失败，请核对 WSA 服务 API Key 是否有效',
+  ResourceNotFound: '请联系主账号开通联网搜索 WSA 服务',
+  ResourceUnavailable: 'WSA 服务资源不可用，请检查账号是否欠费及服务状态',
+  RequestLimitExceeded: '请求频率超过限制，请稍后重试',
+  InvalidParameter: '请求参数被拒绝，请核对搜索词及已开通的服务版本',
+  InternalError: '腾讯服务内部错误，可凭 RequestId 联系腾讯云排查',
+});
+
+function safeDiagnostic(value, key, limit = 400) {
+  if (typeof value !== 'string') return '';
+  let text = value;
+  if (key) text = text.replaceAll(key, '[REDACTED_API_KEY]');
+  return plainText(text)
+    .replace(/\bsk-[a-zA-Z0-9_-]{12,}\b/gu, '[REDACTED_API_KEY]')
+    .replace(/\bBearer\s+[a-zA-Z0-9._~+/=-]{12,}/giu, 'Bearer [REDACTED_TOKEN]')
+    .replace(/[\u0000-\u001f\u007f]/gu, ' ')
+    .replace(/\s+/gu, ' ').trim().slice(0, limit);
+}
+
+function tencentRequestId(payload, key) {
+  const requestId = safeDiagnostic(payload?.Response?.RequestId, key, 128);
+  return /^[A-Za-z0-9-]{1,128}$/u.test(requestId) ? `RequestId: ${requestId}` : '';
+}
+
+function tencentResponseError(payload, key, httpStatus) {
+  const error = payload?.Response?.Error;
+  if (!error) return null;
+  const code = safeDiagnostic(error.Code, key, 100) || 'UNKNOWN_ERROR';
+  const message = safeDiagnostic(error.Message, key);
+  const hint = TENCENT_ERROR_HINTS[code.split('.')[0]];
+  return new Error([
+    `腾讯云 WSA 搜索失败（${code}${httpStatus >= 400 ? `，HTTP ${httpStatus}` : ''}）`,
+    message, hint, tencentRequestId(payload, key),
+  ].filter(Boolean).join('；'));
 }
 
 async function runAlibabaIqs({ key, query, limit, fetchImpl }) {
@@ -233,16 +282,25 @@ async function runQianfan({ key, query, limit, fetchImpl }) {
 }
 
 async function runTencentWsa({ key, query, limit, fetchImpl }) {
+  // Omit Mode: its default is natural search, and the lite edition does not
+  // support explicitly supplying this parameter.
   const payload = await postJson('https://api.wsa.cloud.tencent.com/SearchPro', key,
-    { Query: query, Mode: 0 }, { fetchImpl, label: '腾讯云 WSA' });
-  if (payload.Response?.Error) throw new Error('腾讯云 WSA 搜索失败');
+    { Query: query }, { fetchImpl, label: '腾讯云 WSA',
+      errorFromResponse: (body, status) => tencentResponseError(body, key, status),
+    });
   const pages = payload.Response?.Pages ?? [];
+  if (!Array.isArray(pages)) throw new Error('腾讯云 WSA 返回的 Pages 格式不正确');
   const sources = pages.slice(0, limit).map((item) => {
     try {
       const page = typeof item === 'string' ? JSON.parse(item) : item;
-      return source(page.title, page.url, page.passage, page.site);
+      return source(page.title, page.url, page.passage || page.content, page.site);
     } catch { return null; }
   }).filter(Boolean);
+  if (!sources.length) {
+    throw new Error(['腾讯云 WSA 未返回搜索来源',
+      safeDiagnostic(payload.Response?.Msg, key), tencentRequestId(payload, key),
+    ].filter(Boolean).join('；'));
+  }
   return resultFromSources('tencent-wsa', sources);
 }
 
@@ -255,9 +313,12 @@ async function runXinghuo({ key, query, limit, fetchImpl }) {
     .slice(0, limit).map((item) => source(item.name, item.url, item.summary, '')));
 }
 
-async function runDoubao({ key, query, limit, fetchImpl }) {
+async function runDoubao({ key, query, limit, options, fetchImpl }) {
+  const icpHostOnly = options.icpHostOnly === undefined ? true : options.icpHostOnly;
+  if (typeof icpHostOnly !== 'boolean') throw new TypeError('豆包搜索来源限制必须为布尔值');
   const payload = await postJson('https://open.feedcoopapi.com/search_api/global_search', key, {
     SearchType: 'web', Query: query, DocCount: limit, MaxSnippetLength: 1000,
+    Filter: { IcpHostOnly: icpHostOnly },
   }, { fetchImpl, label: '豆包搜索' });
   if (payload.Result?.ErrorCode !== 0) throw new Error('豆包搜索失败');
   return resultFromSources('doubao', (payload.Result?.Documents ?? []).slice(0, limit).map((item) => {
@@ -299,7 +360,7 @@ export async function runProviderSearch(input) {
     case 'qianfan': return runQianfan({ key, query, limit, fetchImpl });
     case 'xinghuo': return runXinghuo({ key, query, limit, fetchImpl });
     case 'tencent-wsa': return runTencentWsa({ key, query, limit, fetchImpl });
-    case 'doubao': return runDoubao({ key, query, limit, fetchImpl });
+    case 'doubao': return runDoubao({ key, query, limit, options, fetchImpl });
     case 'kimi': return runKimi({ key, query, limit, fetchImpl });
     case 'minimax': return runMiniMax({ key, query, limit, options, fetchImpl });
     default: throw new TypeError('未知搜索服务商');

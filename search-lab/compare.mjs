@@ -40,6 +40,13 @@ function normalizedSelection(value, catalogue) {
   const fields = provider.fields ?? [];
   for (const field of fields) {
     const input = suppliedOptions[field.name];
+    if (field.type === 'boolean') {
+      if (input !== undefined && typeof input !== 'boolean') {
+        throw new TypeError(`${provider.label} ${field.label}不正确`);
+      }
+      options[field.name] = input ?? (field.defaultValue === true);
+      continue;
+    }
     const normalized = typeof input === 'string' ? input.trim() : '';
     if ((field.required && !normalized) || normalized.length > 256
       || (normalized && field.pattern && !(new RegExp(field.pattern, 'u')).test(normalized))) {
