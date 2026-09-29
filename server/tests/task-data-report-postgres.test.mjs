@@ -175,7 +175,8 @@ test('task data report dates tasks by first review, discard or bypass and keeps 
     assert.equal(report.total, 2);
     assert.equal(report.summary.copyQaReleased, 2);
     assert.equal(report.summary.copyQaPassed, 2);
-    assert.equal(report.summary.copyQaFirstPassed, 1);
+    assert.equal(report.summary.copyQaFirstPassed, 2,
+      'first-time human PASS and completed unsampled RELEASED both count once');
     assert.equal(report.summary.imageQaPassed, 2);
     assert.equal(report.summary.reviewPending, 0);
     assert.equal(report.summary.copyReviewPending, 0);
@@ -586,6 +587,109 @@ test('task data report dates tasks by first review, discard or bypass and keeps 
 
     for (const fixture of flagOnlyReworks) assert.equal(createdCompatibility.items.find(
       item => item.taskId === Number(fixture.id)).firstCopyReviewAt, null);
+
+    async function copyQaReleaseMember(fixture, status, selected, batchStatus) {
+      const batchId = Number((await db.query(`INSERT INTO copy_qa_batches_v2(mode,
+        full_inspection,blind_review_enabled,sampling_rate_bps,return_threshold_bps,return_trigger_count,
+        member_count,sample_count,status,created_by_account_id,completed_at)
+        VALUES('MIXED_MANUAL',false,false,5000,5000,1,1,$1,$2::text,$3,
+          CASE WHEN $2::text='INSPECTING' THEN NULL ELSE now() END) RETURNING id`,
+      [selected ? 1 : 0, batchStatus, admin.userId])).rows[0].id);
+      const memberId = Number((await db.query(`INSERT INTO copy_qa_batch_members_v2(batch_id,
+        task_id,copy_revision_id,approval_event_id,approver_account_id,quality_cycle,content_sha256,
+        selected,status,reviewed_by_account_id,decided_at)
+        VALUES($1,$2,$3,$4,$5,0,$6,$7,$8,$9,
+          CASE WHEN $9::bigint IS NULL THEN NULL ELSE now() END) RETURNING id`,
+      [batchId, fixture.taskId, fixture.revisionId, fixture.approvalId, annotatorA.userId,
+        'a'.repeat(64), selected, status, selected ? qaA.userId : null])).rows[0].id);
+      return { ...fixture, batchId, memberId };
+    }
+
+    async function legacyCopyQaReleaseItem(fixture, freezeVersion, status, freezeStatus) {
+      const freezeId = Number((await db.query(`INSERT INTO copy_sampling_freezes(public_id,
+        production_batch_id,freeze_version,policy_version,rate_bps,seed,algorithm_version,
+        blind_review_enabled,population_count,sample_count,snapshot_sha256,frozen_by_account_id,
+        frozen_by_username,request_id,request_fingerprint,status,resolved_at)
+        VALUES($1,$2,$3,1,0,'fixture','test',false,1,0,$4,$5,$6,$7,$4,$8::varchar,
+          CASE WHEN $8::varchar='INSPECTING' THEN NULL ELSE now() END) RETURNING id`,
+      [randomUUID(), productionBatch.id, freezeVersion, 'a'.repeat(64), admin.userId,
+        admin.username, randomUUID(), freezeStatus])).rows[0].id);
+      const itemId = Number((await db.query(`INSERT INTO copy_sampling_items(public_id,
+        freeze_id,task_id,approval_event_id,copy_revision_id,content_sha256,final_approver_account_id,
+        final_approver_username,rank_hash,selected,status)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$6,false,$9) RETURNING id`,
+      [randomUUID(), freezeId, fixture.taskId, fixture.approvalId, fixture.revisionId,
+        'a'.repeat(64), annotatorA.userId, annotatorA.username, status])).rows[0].id);
+      return { ...fixture, freezeId, itemId };
+    }
+
+    const returnedFirst = await copyQaReleaseMember(
+      await createTask('一次通过放行回归 首次退回后返修放行', true, qaA.userId),
+      'RETURNED', true, 'AUTO_RETURNED');
+    await db.query(`INSERT INTO copy_qa_return_events_v2(task_id,quality_cycle,member_id,kind)
+      VALUES($1,0,$2,'DIRECT')`, [returnedFirst.taskId, returnedFirst.memberId]);
+    const reworkRevisionId = Number((await db.query(`INSERT INTO copy_revisions(task_id,
+      revision,content,parent_revision_id,revision_origin,approved_at,approval_mode)
+      VALUES($1,2,'{}',$2,'QA_RETURN',now(),'MANUAL') RETURNING id`,
+    [returnedFirst.taskId, returnedFirst.revisionId])).rows[0].id);
+    const reworkApprovalId = Number((await db.query(`INSERT INTO copy_approval_events(task_id,
+      copy_revision_id,approval_mode,approved_by_account_id,approved_by_username,content_sha256)
+      VALUES($1,$2,'MANUAL',$3,$4,$5) RETURNING id`,
+    [returnedFirst.taskId, reworkRevisionId, annotatorA.userId, annotatorA.username, 'a'.repeat(64)])).rows[0].id);
+    await copyQaReleaseMember({ ...returnedFirst, revisionId: reworkRevisionId, approvalId: reworkApprovalId },
+      'RELEASED', false, 'COMPLETED');
+    await db.query(`UPDATE tasks SET current_copy_revision_id=$2,copy_qc_released_revision_id=$2,
+      state='IMAGE_QUEUED',current_stage='IMAGE_QUEUED' WHERE id=$1`,
+    [returnedFirst.taskId, reworkRevisionId]);
+    const heldV2 = await copyQaReleaseMember(await createTask('一次通过放行回归 未完成V2批次', false),
+      'NOT_SELECTED', false, 'INSPECTING');
+    const legacyReleased = await legacyCopyQaReleaseItem(
+      await createTask('一次通过放行回归 历史未抽中已放行', false),
+      1, 'RELEASED', 'RELEASED_WITH_EXCEPTIONS');
+    await db.query(`UPDATE tasks SET copy_qc_released_revision_id=$2,
+      state='IMAGE_QUEUED',current_stage='IMAGE_QUEUED' WHERE id=$1`,
+    [legacyReleased.taskId, legacyReleased.revisionId]);
+    const heldLegacy = await legacyCopyQaReleaseItem(
+      await createTask('一次通过放行回归 历史未抽中尚未放行', false),
+      2, 'NOT_SELECTED', 'INSPECTING');
+    const firstReleaseQuery = {
+      time: { field: 'FIRST_COPY_REVIEW_ACTION', mode: 'ABSOLUTE', from: todayDay, to: todayDay },
+      conditions: [{ field: 'TASK_ID_OR_NAME', op: 'CONTAINS', value: '一次通过放行回归' }],
+    };
+    let firstReleaseReport = await readTaskDataReport(db, admin, firstReleaseQuery);
+    assert.equal(firstReleaseReport.total, 4);
+    assert.equal(firstReleaseReport.summary.copyQaPassed, 2);
+    assert.equal(firstReleaseReport.summary.copyQaFirstPassed, 1,
+      'completed legacy release counts, while returned rework and unfinished batches do not');
+    const returnedReleaseReport = await readTaskDataReport(db, admin, {
+      ...firstReleaseQuery, conditions: [{ field: 'TASK_ID', op: 'EQ', value: returnedFirst.taskId }],
+    });
+    assert.equal(returnedReleaseReport.summary.copyQaPassed, 1);
+    assert.equal(returnedReleaseReport.summary.copyQaFirstPassed, 0,
+      'later QA_RETURN version release cannot undo a lifecycle QA return');
+
+    await db.query("UPDATE copy_qa_batch_members_v2 SET status='RELEASED' WHERE id=$1", [heldV2.memberId]);
+    firstReleaseReport = await readTaskDataReport(db, admin, firstReleaseQuery);
+    assert.equal(firstReleaseReport.summary.copyQaFirstPassed, 1,
+      'RELEASED member status alone does not pass an unfinished V2 batch');
+    await db.query("UPDATE copy_qa_batches_v2 SET status='COMPLETED',completed_at=now() WHERE id=$1", [heldV2.batchId]);
+    await db.query(`UPDATE tasks SET copy_qc_released_revision_id=$2,
+      state='IMAGE_QUEUED',current_stage='IMAGE_QUEUED' WHERE id=$1`, [heldV2.taskId, heldV2.revisionId]);
+    firstReleaseReport = await readTaskDataReport(db, admin, firstReleaseQuery);
+    assert.equal(firstReleaseReport.summary.copyQaPassed, 3);
+    assert.equal(firstReleaseReport.summary.copyQaFirstPassed, 2);
+
+    await db.query("UPDATE copy_sampling_items SET status='RELEASED',updated_at=now() WHERE id=$1", [heldLegacy.itemId]);
+    firstReleaseReport = await readTaskDataReport(db, admin, firstReleaseQuery);
+    assert.equal(firstReleaseReport.summary.copyQaFirstPassed, 2,
+      'RELEASED legacy item alone does not pass an unfinished freeze');
+    await db.query("UPDATE copy_sampling_freezes SET status='RELEASED',resolved_at=now() WHERE id=$1", [heldLegacy.freezeId]);
+    await db.query(`UPDATE tasks SET copy_qc_released_revision_id=$2,
+      state='IMAGE_QUEUED',current_stage='IMAGE_QUEUED' WHERE id=$1`, [heldLegacy.taskId, heldLegacy.revisionId]);
+    firstReleaseReport = await readTaskDataReport(db, admin, firstReleaseQuery);
+    assert.equal(firstReleaseReport.summary.copyQaPassed, 4);
+    assert.equal(firstReleaseReport.summary.copyQaFirstPassed, 3,
+      'initial releases count only after completion, and returned rework stays excluded');
 
     await assert.rejects(readTaskDataReport(db, { ...admin, role: 'USER' }, query),
       /仅管理员/u);
