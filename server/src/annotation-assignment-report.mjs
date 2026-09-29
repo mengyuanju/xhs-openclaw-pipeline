@@ -1,5 +1,6 @@
 import { annotateAssignmentCycles, firstCopyAssignmentCohort, isAnnotationWork } from '../../src/annotation-assignment-cycles.mjs';
 import { readAnnotationDiscardFacts } from './annotation-discard-facts.mjs';
+import { ANNOTATION_COPY_RELEASES_SQL } from './annotation-copy-batch-release-facts.mjs';
 
 const LIMIT=50_000,MERGED_LIMIT=200_000;
 const iso=value=>value instanceof Date?value.toISOString():value;
@@ -33,7 +34,7 @@ export const ANNOTATION_ASSIGNMENTS_SQL=`/* annotation-assignment:assignments */
 
 // Each cohort row names the exact first approval in one person's handoff cycle.
 // Later revisions, old owners and a former cycle of the same person cannot
-// supply its result. Batch returns are effective failed submissions too.
+// supply its result. Batch returns fail; completed policy releases pass.
 export const ANNOTATION_FIRST_COPY_SQL=`/* annotation-assignment:first-copy */
   WITH cohort AS (
     SELECT * FROM jsonb_to_recordset($1::jsonb) AS item(
@@ -78,7 +79,9 @@ export const ANNOTATION_FIRST_COPY_SQL=`/* annotation-assignment:first-copy */
     ) sample
   ) sampling ON true
   LEFT JOIN LATERAL (
-    SELECT verdict.action FROM account_quality_events verdict
+    SELECT outcome.action FROM (
+    SELECT verdict.action,verdict.occurred_at,0 AS source_order,verdict.sequence_id
+    FROM account_quality_events verdict
     WHERE verdict.task_id=cohort.task_id AND verdict.stage='COPY'
       AND verdict.account_id=cohort.account_id AND verdict.establishes_sample
       AND verdict.action IN ('PASS','RETURN','DISCARD')
@@ -103,7 +106,10 @@ export const ANNOTATION_FIRST_COPY_SQL=`/* annotation-assignment:first-copy */
         OR verdict.data->>'approvalId' IS NULL AND verdict.data->>'samplingItemId' IS NULL
           AND verdict.data->>'copyRevisionId'=COALESCE(approval.copy_revision_id,cohort.copy_revision_id)::text
       )
-    ORDER BY verdict.occurred_at,verdict.sequence_id LIMIT 1
+    UNION ALL
+    ${ANNOTATION_COPY_RELEASES_SQL}
+    ) outcome WHERE NOT direct.present
+    ORDER BY outcome.occurred_at,outcome.source_order,outcome.sequence_id LIMIT 1
   ) quality ON true
   ORDER BY cohort.task_id,cohort.cycle_key LIMIT 50001`;
 
@@ -112,29 +118,37 @@ function complete(rows,message) {
   return rows;
 }
 
-export async function readAnnotationAssignmentReport(client,report) {
-  const taskIds=[...new Set(report.rows.filter(isAnnotationWork).map(row=>row.taskId))];
-  if(!taskIds.length) return {report,firstCopyVerdicts:[]};
-  const submissions=complete((await client.query(ANNOTATION_SUBMISSIONS_SQL,[taskIds,report.asOf])).rows,
+// Both annotation reports classify complete work history with the same handoffs.
+export async function readAnnotationAssignmentWork(client,{taskIds,asOf,rowCount=0}) {
+  if(!taskIds.length) return {work:[],factCount:0};
+  const submissions=complete((await client.query(ANNOTATION_SUBMISSIONS_SQL,[taskIds,asOf])).rows,
     '接手统计涉及超过 50,000 次历史提交，请缩小日期或选择人员').map(row=>({
       ...row.data,id:row.event_key,taskId:Number(row.task_id),accountId:id(row.account_id),stage:row.stage,
       kind:'SUBMIT',at:iso(row.occurred_at),sequence:Number(row.sequence_id),
       approvalId:id(row.data?.approvalId),copyRevisionId:id(row.data?.copyRevisionId),
     }));
   const discards=await readAnnotationDiscardFacts(client,{
-    start:'0001-01-01T00:00:00Z',end:new Date(Date.parse(report.asOf)+1).toISOString(),
-    asOf:report.asOf,taskIds,
+    start:'0001-01-01T00:00:00Z',end:new Date(Date.parse(asOf)+1).toISOString(),
+    asOf,taskIds,
   });
-  const assignments=complete((await client.query(ANNOTATION_ASSIGNMENTS_SQL,[taskIds,report.asOf])).rows,
+  const assignments=complete((await client.query(ANNOTATION_ASSIGNMENTS_SQL,[taskIds,asOf])).rows,
     '接手统计涉及超过 50,000 条历史分配记录，请缩小日期或选择人员').map(row=>({
       id:row.id,order:Number(row.ordering),kind:row.kind,taskId:Number(row.task_id),
       accountId:id(row.account_id),username:row.username,at:iso(row.occurred_at),
       previousAccountId:id(row.previous_account_id),previousUsername:row.previous_username,
       endedAt:iso(row.ended_at),baseline:row.baseline===true,
     }));
-  if(report.rows.length+submissions.length+discards.length+assignments.length>MERGED_LIMIT)
+  const factCount=submissions.length+discards.length+assignments.length;
+  if(rowCount+factCount>MERGED_LIMIT)
     throw new RangeError('接手统计合并事实超过 200,000 条，请缩小日期或选择人员');
-  const work=annotateAssignmentCycles([...submissions,...discards],assignments);
+  return {work:annotateAssignmentCycles([...submissions,...discards],assignments),factCount};
+}
+
+export async function readAnnotationAssignmentReport(client,report) {
+  const taskIds=[...new Set(report.rows.filter(isAnnotationWork).map(row=>row.taskId))];
+  if(!taskIds.length) return {report,firstCopyVerdicts:[]};
+  const {work,factCount}=await readAnnotationAssignmentWork(client,{taskIds,asOf:report.asOf,
+    rowCount:report.rows.length});
   const byId=new Map(work.map(row=>[row.id,row]));
   const annotationReport={...report,rows:report.rows.map(row=>{
     const annotated=byId.get(row.id);
@@ -147,7 +161,7 @@ export async function readAnnotationAssignmentReport(client,report) {
     JSON.stringify(submitted.map(row=>({cycle_key:row.cycleKey,task_id:row.taskId,account_id:row.accountId,
       approval_id:row.approvalId,copy_revision_id:row.copyRevisionId,submitted_at:row.submittedAt}))),report.asOf,
   ])).rows,'接手统计涉及超过 50,000 个首次质检轮次，请缩小日期或选择人员'):[];
-  if(report.rows.length+submissions.length+discards.length+assignments.length+results.length>MERGED_LIMIT)
+  if(report.rows.length+factCount+results.length>MERGED_LIMIT)
     throw new RangeError('接手统计合并事实超过 200,000 条，请缩小日期或选择人员');
   const byCycle=new Map(results.map(row=>[row.cycle_key,row]));
   const firstCopyVerdicts=cohort.map(row=>{

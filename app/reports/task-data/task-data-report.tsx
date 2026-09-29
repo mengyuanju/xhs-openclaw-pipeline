@@ -229,7 +229,7 @@ function OverviewCards({ overview, activity }: {
   const deliveryTotal = overview && [overview.unpacked, overview.packed, overview.delivered].every(Number.isFinite)
     ? overview.unpacked + overview.packed + overview.delivered : undefined;
   const cards = [
-    { label: '文案首次审核', hint: '按首次文案审核时间统计', count: activity?.copyReview, Icon: FileClock },
+    { label: '文案首次审核', hint: '按每次接手后的首次审核时间统计', count: activity?.copyReview, Icon: FileClock },
     { label: '文案返修', hint: '按返修提交时间统计', count: activity?.copyRework, Icon: RefreshCw },
     { label: '新增文案质检', hint: '按文案质检时间统计', count: activity?.copyQa, Icon: FileSearch, hidden: true },
     { label: '图片审核', hint: '按图片审核时间统计', count: activity?.imageReview, Icon: ImageUp },

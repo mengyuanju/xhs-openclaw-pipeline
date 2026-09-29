@@ -96,14 +96,14 @@ export function AnnotationJobReport({initialFilters}:{initialFilters?:{from:stri
         <th scope="col">标注人</th><th scope="col">总作业</th><th scope="col">首次文案审核</th><th scope="col">文案一次通过率</th><th scope="col">文案返修</th><th scope="col">首次图片审核</th><th scope="col">图片返修</th><th scope="col">废弃任务数量</th>
       </tr></thead><tbody>{visiblePeople.map(person=><tr key={person.accountId}>
         <td><strong>{person.displayName}</strong><small>@{person.username}</small>{person.totalJobs===0&&<small>本期无作业 · 仅质检记录</small>}</td><td>{number(person.totalJobs)}</td><td>{number(person.copyReview)}</td>
-        <td>{person.copyDecided?(person.copyFirstPassRate*100).toFixed(2)+'%':'—'}<small title="按所选日期内首次文案作业对应的个人接手轮次统计，追踪该轮首次提交截至报表时点的结果；分母包含有效首检的通过、打回及质检废弃结论，绑定该首次提交的有效整批打回也计为未通过。">{number(person.copyFirstPassed)} / {number(person.copyDecided)} 有效首检轮次</small></td>
+        <td>{person.copyDecided?(person.copyFirstPassRate*100).toFixed(2)+'%':'—'}<small title="按所选日期内首次文案作业对应的个人接手轮次统计，追踪该轮首次提交截至报表时点的结果；人工首检通过和未抽中后的批次放行均计为通过，打回和质检废弃计为未通过，尚待质检或放行的轮次不计入分母。">{number(person.copyFirstPassed)} / {number(person.copyDecided)} 有效首检轮次</small></td>
         <td>{number(person.copyRework)}<small>涉及 {number(person.copyReworkTasks)} 个任务</small></td><td>{number(person.imageFirstReview)}</td><td>{number(person.imageRework)}</td><td title="本人在所选日期内所有文案、图片阶段的废弃任务去重统计，包含首次审核及返修阶段。">{number(person.discarded)}</td>
       </tr>)}{!visiblePeople.length&&<tr><td colSpan={8} className={styles.empty}>{busy?'正在读取…':'所选日期暂无标注作业'}</td></tr>}</tbody></table></div>
       <details className={styles.methods}><summary>统计口径</summary>
         <p>作业人数只统计所选日期内有有效审核提交或本人废弃操作的标注人，主列表默认只显示这些标注人。仅有质检结论、没有本期作业的标注人可通过列表上方的按钮展开查看。总作业 = 首次文案审核 + 文案返修 + 首次图片审核 + 图片返修；每次有效提交或废弃操作计一次作业。废弃任务数量按本人在所选日期内执行的废弃操作涉及的任务去重，质检员后续废弃不会转记给原标注人，也不会在总作业之外再加一次。</p>
         <p>首次审核按个人接手口径计算：每次分配或改派产生一轮接手，该人员在本轮文案或图片阶段的第一次有效提交或本人直接废弃计为该阶段首次审核，后续作业计返修。接手时任务原本处于返修阶段，也计为本人的首次审核。同一任务再次改派给同一账号，可累计多个首次审核。操作按发生日期计入所选区间；首次作业发生在区间之前、本期继续处理的任务只计本期返修。</p>
         <p>首次审核和返修列的主数字是操作量，文案返修列下方“涉及任务”按任务去重。任务数与接手轮次不同，不能相减推算一次通过率。本人首检通过后，也可能因后续图片质检或整批打回再次返修。打回次数统计文案与图片质检对标注人的有效退回判定，同一内容多次打回分别计数。</p>
-        <p>文案一次通过率按所选日期内首次文案作业对应的个人接手轮次统计，追踪该轮首次提交截至报表时点的首检结果：首检通过轮次 / 有有效首检结论的轮次。通过、打回和质检废弃均计入分母；绑定该首次提交的有效整批打回也计为首次未通过。本轮返修后的重复质检不重复计入，其他标注人或本人此前接手轮次的结果不计入本轮。待质检、管理员直接放行、未被抽中质检而正常释放，以及本人直接废弃但未提交质检的轮次，不进入分母。“放行/免检”展示管理员直接放行和未被抽中正常释放的轮次；本期首次废弃后恢复并提交的轮次，即使首次提交发生在所选日期之后，也追踪截至报表时点的首检结论或无首检记录。没有有效首检结论时显示“—”。</p>
+        <p>文案一次通过率按所选日期内首次文案作业对应的个人接手轮次统计，追踪该轮首次提交截至报表时点的首个有效结果：首次通过轮次 / 有有效首检结论的轮次。人工质检通过、未被抽中但已随批次放行均计为通过，同时计入分子和分母；打回、整批打回影响及质检废弃计为未通过，只计入分母。每轮只计一次，本轮返修后的重复质检、其他标注人或本人此前接手轮次的结果不计入本轮。待质检、尚未批次放行、管理员直接放行，以及本人直接废弃但未提交质检的轮次，不进入分母。本期首次废弃后恢复并提交的轮次，即使首次提交发生在所选日期之后，也追踪截至报表时点的首检结论或无首检记录。没有有效首检结论时显示“—”。</p>
       </details>
     </section>
   </div>;

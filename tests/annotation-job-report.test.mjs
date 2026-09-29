@@ -104,6 +104,45 @@ test('first-pass rate follows first copy submissions and ignores rework verdicts
   assert.equal(report.people[0].returned,2);
 });
 
+test('released unsampled first submissions join the numerator and denominator only once per personal cycle',()=>{
+  const events=Array.from({length:13},(_,index)=>fact(`first-${index+1}`,11,
+    index<9?'SUBMIT':'ANNOTATION_DISCARD',{
+      taskId:index+1,annotationCycleKey:`cycle-${index+1}`,annotationFirst:true,
+    }));
+  const filters=normalizePerformanceFilters({period:'custom',from:'2026-09-24',to:'2026-09-24'},now);
+  const verdict=(taskId,outcome,extra={})=>({cycleKey:`cycle-${taskId}`,taskId,accountId:11,
+    submitted:taskId<=9,outcome,...extra});
+  const report=buildAnnotationJobReport(buildPerformanceSnapshot(events,[],[],filters,at),[
+    verdict(1,'PASS'),
+    verdict(2,'PASS',{source:'LEGACY_BATCH_RELEASE'}),
+    verdict(3,'PASS',{source:'COPY_V2_BATCH_RELEASE'}),
+    verdict(4,'PASS',{source:'BATCH_RELEASE_FACT'}),
+    verdict(4,'PASS',{source:'COPY_V2_BATCH_RELEASE'}),
+    verdict(5,'RETURN',{source:'BATCH_AFFECTED'}),
+    verdict(6,'RETURN'),verdict(7,'RETURN'),
+    verdict(8,null,{reason:'PENDING'}),verdict(9,null,{reason:'PENDING'}),
+    ...[10,11,12,13].map(taskId=>verdict(taskId,null)),
+  ]);
+  const person=report.people[0];
+  assert.equal(person.copyReview,13);
+  assert.equal(person.totalJobs,13);
+  assert.equal(person.copyFirstPassed,4);
+  assert.equal(person.copyDecided,7);
+  assert.equal(person.copyFirstPassRate,4/7,
+    'four first passes, including released unsampled work, are divided by seven decided first cycles');
+  assert.equal(person.copyFirstReturned,3,'an affected first batch submission remains a failed verdict');
+  assert.equal(person.copyFirstQaDiscarded,0);
+  assert.equal(person.copyFirstPending,2);
+  assert.equal(person.copyFirstUnjudged,2);
+  assert.equal(person.copyFirstDirectDiscarded,4);
+  assert.equal(person.copyFirstBypassed,0);
+  assert.equal(person.copyFirstUnjudgedOther,0);
+  assert.equal(person.copyFirstPassed+person.copyFirstReturned+person.copyFirstQaDiscarded,
+    person.copyDecided);
+  assert.equal(person.copyDecided+person.copyFirstUnjudged+person.copyFirstDirectDiscarded,
+    person.copyReview,'the thirteen first cycles occupy mutually exclusive categories');
+});
+
 test('image submissions split into first review and rework without changing total jobs',()=>{
   const events=[
     fact('image-first',11,'SUBMIT',{stage:'IMAGE',taskId:10}),
@@ -253,7 +292,7 @@ test('first discard restored and submitted after the period follows its own firs
   assert.equal(person.copyFirstPassRate,1);
 });
 
-test('unjudged personal cycles distinguish pending, bypassed and absent records',()=>{
+test('unjudged personal cycles keep pending, unsampled-unreleased, administrative bypass and absent records out of the denominator',()=>{
   const events=[1,2,3,4,5].map(id=>fact(`first-${id}`,11,id===5?'ANNOTATION_DISCARD':'SUBMIT',{
     taskId:id,annotationCycleKey:`cycle-${id}`,annotationFirst:true,
   }));
