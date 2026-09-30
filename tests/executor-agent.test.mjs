@@ -319,6 +319,28 @@ test('Codex readiness rejects older centers before login or task claiming', asyn
   }), /executionRetryControl/u);
 });
 
+test('executor readiness checks every explicitly enabled search API key before claiming work', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'xhs-search-ready-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let loginChecks = 0;
+  const controlPlane = {
+    health: async () => ({ ok: true, capabilities: { executionRetryControl: true } }),
+    listSettings: async () => [{ key: 'production', value: {
+      modelApi: { webSearchProviderOrder: ['DOUBAO', 'DEEPSEEK'] },
+    } }],
+  };
+  const modelClient = { checkReady() { loginChecks++; } };
+  await assert.rejects(checkExecutorReady({ workRoot: root, controlPlane, modelClient,
+    environment: { DOUBAO_SEARCH_API_KEY: 'test-only-key' },
+  }), /DEEPSEEK_API_KEY/u);
+  assert.equal(loginChecks, 0);
+  const result = await checkExecutorReady({ workRoot: root, controlPlane, modelClient,
+    environment: { DOUBAO_SEARCH_API_KEY: 'test-only-key', DEEPSEEK_API_KEY: 'other-test-only-key' },
+  });
+  assert.equal(result.health.ok, true);
+  assert.equal(loginChecks, 1);
+});
+
 test('executor retries an unreported failure before claiming more work, without rerunning the model', async () => {
   const claim = { task: { id: 11 }, execution: { id: '4c8649a9-8c8f-4708-aeb7-2df0a3171a5a' } };
   const modelError = new Error('OpenClaw web search failed: EBUSY');

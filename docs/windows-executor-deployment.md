@@ -29,6 +29,7 @@ Codex 集成版本至少应包含 `src/agent-client.mjs`、`src/codex.mjs`、`sc
 | 项目源码和依赖 | 必需 | 保留 `package-lock.json`，在目标电脑执行 `npm.cmd ci` |
 | Codex CLI | Codex 集成版本必需 | 此前本机登录和版本预检使用 0.152.1；需在执行机完成 ChatGPT 登录 |
 | DeepSeek Key | 选择 DeepSeek 搜索时必需 | 由每台执行文案任务的电脑本地提供，中心不会下发密钥 |
+| 豆包搜索 Key | 选择豆包搜索时必需 | 每台可能调用豆包的执行机配置 `DOUBAO_SEARCH_API_KEY`；使用可调用 Global Search 的按量 Key |
 | Dots Key | 选择 Dots 文案时必需 | 配置 `XHS_DOTS_API_KEY`，并确认中心的文案提供方设置 |
 | Git | 可选 | 用于获取和更新源码；也可使用可信的源码压缩包 |
 | 本机 Web 后台 | 可选 | 仅需要在新电脑运行操作界面时安装配置，见第 8 节 |
@@ -108,6 +109,8 @@ XHS_COPY_GENERATION_PROVIDER=CODEX
 # 本示例显式选择 DeepSeek 搜索；不是对所有项目版本默认值的声明。
 XHS_WEB_SEARCH_PROVIDER=DEEPSEEK
 DEEPSEEK_API_KEY=替换为本机实际使用的Key
+# 管理员把豆包加入搜索顺序时，在每台对应执行机配置：
+# DOUBAO_SEARCH_API_KEY=替换为本机实际使用的Key
 XHS_DEEPSEEK_SEARCH_MODEL=deepseek-v4-pro
 XHS_DEEPSEEK_SEARCH_TIMEOUT_MS=120000
 ```

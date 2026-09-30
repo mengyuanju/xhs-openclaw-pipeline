@@ -2,6 +2,7 @@ import { generateCopy, toCopyGenerationResponse } from '../copy-generation.mjs';
 import { createDeepSeekResponsesClient } from '../deepseek-responses-client.mjs';
 import { promptRuntimeFromSnapshot } from '../admin/prompt-runtime-service.mjs';
 import { guardExecutionCalls } from './execution-signal.mjs';
+import { DEFAULT_WEB_SEARCH_RESULT_LIMIT } from '../web-search-config.mjs';
 
 const COPY_PROGRESS = Object.freeze({
   QUERY_REVIEW: 5,
@@ -49,6 +50,8 @@ export async function executeDeepSeekCopySimulation({
     copyKnowledge: snapshot.knowledge ?? [],
     systemPrompt: publishedTextPrompt(snapshot),
     imageCount: snapshot.task.requestedImageCount,
+    webSearchResultLimit: snapshot.productionSettings?.production?.value?.modelApi?.webSearchResultLimit
+      ?? DEFAULT_WEB_SEARCH_RESULT_LIMIT,
     autoReviseOnReject: false,
     textReviewEnabled: Boolean(promptRuntimeFromSnapshot(snapshot)?.settings),
     onStageChange: async (stage, details = {}) => controlPlane.updateProgress(execution.id, {

@@ -394,7 +394,8 @@ export async function processNext({
       }
       if (!restoredResearch) {
         await heartbeat();
-        researchSnapshot = await createResearchSnapshot({ client, query: task.query });
+        researchSnapshot = await createResearchSnapshot({ client, query: task.query,
+          limit: effectiveModelApi.webSearchResultLimit });
       }
       await writeAtomic(
         join(outputDir, 'research.json'),

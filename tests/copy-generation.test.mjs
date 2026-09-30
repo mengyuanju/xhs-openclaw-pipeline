@@ -268,6 +268,34 @@ describe('standalone copy generation', () => {
     assert.equal(response.generation.timing.reviewedReviewMs, 0);
   });
 
+  it('uses the configured research source limit in the search call and generation prompt', async () => {
+    const requestedLimits = [];
+    const post = { ...createMockPost(3), sources: [] };
+    let generationPrompt = '';
+    const client = {
+      async runReview() { return { rawText: passingReview(), model: 'review-model' }; },
+      async runWebSearch({ provider, limit }) {
+        requestedLimits.push(limit);
+        return { provider, result: { summary: '检索摘要', results: Array.from({ length: 9 }, (_, index) => ({
+          title: `来源 ${index + 1}`,
+          url: `https://example${index + 1}.com/guide`,
+          snippet: `来源 ${index + 1} 摘要`,
+        })) } };
+      },
+      async runText({ prompt }) {
+        generationPrompt = prompt;
+        return { rawText: JSON.stringify(post), model: 'text-model' };
+      },
+    };
+    const generated = await generateCopy({ client,
+      task: { query: '桌面收纳资料', input: {} }, imageCount: 3,
+      webSearchResultLimit: 8, textReviewEnabled: false });
+    assert.deepEqual(requestedLimits, [8]);
+    assert.equal(generated.researchSnapshot.sources.length, 8);
+    assert.match(generationPrompt, /https:\/\/example8\.com\/guide/u);
+    assert.doesNotMatch(generationPrompt, /https:\/\/example9\.com\/guide/u);
+  });
+
   it('repairs a rejected first draft and reviews only the repaired version', async () => {
     const originalPost = createMockPost(3);
     const revisedPost = {

@@ -2661,10 +2661,12 @@ function installRoutes(
   });
   router.put('/v1/settings/:key', async (ctx) => {
     requestActor(ctx, ['ADMIN']);
+    const body = requireJson(ctx);
     if (ctx.params.key === 'prompt_runtime') {
       const controlPlane = { listPrompts: () => repository.listPrompts(), updateSetting: (key, value) => repository.upsertSetting(key, value) };
-      json(ctx, 200, await savePromptPolicy(requireJson(ctx).value, { controlPlane }));
-    } else json(ctx, 200, await repository.upsertSetting(ctx.params.key, requireJson(ctx).value));
+      json(ctx, 200, await savePromptPolicy(body.value, { controlPlane }));
+    } else json(ctx, 200, await repository.upsertSetting(ctx.params.key, body.value,
+      { expectedVersion: body.expectedVersion }));
   });
   router.get('/v1/prompts', async (ctx) => { requestActor(ctx, ['ADMIN']); json(ctx, 200, await repository.listPrompts()); });
   router.post('/v1/prompts/versions', async (ctx) => {

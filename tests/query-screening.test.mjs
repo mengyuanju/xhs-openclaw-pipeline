@@ -119,21 +119,42 @@ test('the center executor honors the frozen Query switch and completes the copy 
   const frozen = runtime(false);
   const stages = [];
   const snapshot = { task, knowledge: [], prompts: frozen.prompts,
-    productionSettings: { production: { value: {} }, prompt_runtime: { value: frozen.settings } } };
+    productionSettings: { production: { value: { modelApi: { webSearchResultLimit: 8 } } },
+      prompt_runtime: { value: frozen.settings } } };
   const response = await executeCopyClaim({ claim: { execution: { id: 'query-test', snapshot } },
     controlPlane: {
       updateProgress: async (_id, progress) => stages.push(progress.stage),
       completeCopy: async (_id, result) => result,
     }, client: {
       runReview() { assert.fail('the center executor must respect the frozen disabled policy'); },
-      async runWebSearch({ provider }) { return { provider, result: { content: '整理步骤资料',
-        results: [{ title: '整理资料', url: 'https://example.com/reference', snippet: '收纳步骤' }] } }; },
+      async runWebSearch({ provider, limit }) {
+        assert.equal(limit, 8);
+        return { provider, result: { content: '整理步骤资料',
+          results: Array.from({ length: 8 }, (_, index) => ({
+            title: `整理资料 ${index + 1}`, url: `https://example${index + 1}.com/reference`, snippet: '收纳步骤',
+          })) } };
+      },
       async runText() { return { rawText: JSON.stringify(createMockPost(3)), model: 'fake-text' }; },
     } });
   assert.equal(response.generation.reviews.query.skipped, true);
   assert.equal(response.generation.timing.queryReviewMs, 0);
   assert.ok(!stages.includes('QUERY_REVIEW'));
   assert.ok(response.copy.body.length > 0);
+  assert.equal(response.generation.research.sources.length, 8);
+});
+
+test('the center executor rejects a frozen multi-search route when its API key is unavailable', async () => {
+  const frozen = runtime(false);
+  const snapshot = { task, knowledge: [], prompts: frozen.prompts,
+    productionSettings: { production: { value: { modelApi: {
+      webSearchProviderOrder: ['DOUBAO', 'DEEPSEEK'],
+    } } }, prompt_runtime: { value: frozen.settings } } };
+  await assert.rejects(executeCopyClaim({
+    claim: { execution: { id: 'missing-search-key', snapshot } },
+    environment: { DOUBAO_SEARCH_API_KEY: 'test-only-key' },
+    controlPlane: { updateProgress() { assert.fail('must reject before generation'); } },
+    client: { runWebSearch() { assert.fail('must reject before any search call'); } },
+  }), /DEEPSEEK_API_KEY/u);
 });
 
 test('center settings missing the Query switch use the new disabled default in both editor and execution', async () => {

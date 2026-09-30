@@ -79,4 +79,19 @@ describe('model API production settings UI', () => {
     assert.match(section, /恢复环境配置/u);
     assert.doesNotMatch(section, /name="(?:apiKey|accessToken|clientSecret)"/u);
   });
+
+  it('exposes the bounded web-source count in both production settings modes', async () => {
+    const [panel, route, local, central] = await Promise.all([
+      source('app/settings/web-search-settings-panel.tsx'),
+      source('app/api/web-search-settings/route.ts'),
+      source('app/settings/production-settings-form.tsx'),
+      source('app/components/central-data-workbench.tsx'),
+    ]);
+    assert.match(panel, /<label htmlFor="web-search-result-limit">联网搜索来源数<\/label>/u);
+    assert.match(panel, /webSearchResultLimit:\s*event\.target\.value === '' \? null : Number\(event\.target\.value\)/u);
+    assert.match(panel, /invalidResultLimit/u);
+    assert.match(route, /webSearchResultLimit:\s*z\.number\(\)\.int\(\)\.min\(1\)\.max\(10\)\.nullable\(\)\.optional\(\)/u);
+    assert.match(local, /<WebSearchSettingsPanel/u);
+    assert.match(central, /<WebSearchSettingsPanel/u);
+  });
 });

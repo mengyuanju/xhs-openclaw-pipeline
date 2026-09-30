@@ -178,7 +178,11 @@ type CopyRevision = {
     imagePlan?: ImagePlanItem[];
     imageSettings?: ImageSettings;
     reviewed?: { copy?: Copy; imagePlan?: ImagePlanItem[] };
-    generation?: { research?: { sources?: Array<{ title?: string; url: string; siteName?: string }> } };
+    generation?: { research?: {
+      provider?: string | null;
+      attempts?: Array<{ provider?: string; status?: 'COMPLETED' | 'FAILED' }>;
+      sources?: Array<{ title?: string; url: string; siteName?: string; provider?: string }>;
+    } };
   };
   approvedAt: string | null;
   approvalMode?: 'MANUAL' | 'ADMIN_BYPASS' | null;
@@ -408,15 +412,31 @@ function xiaohongshuEmptyMessage(detail: TaskDetail | null) {
   return '当前 Query 尚未建立小红书搜索记录。';
 }
 
+type ReviewResearch = NonNullable<NonNullable<CopyRevision['content']['generation']>['research']>;
+
+function researchProviderLabel(value: string | null | undefined) {
+  if (typeof value !== 'string') return '未记录';
+  const provider = value.trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9-]{0,63}$/u.test(provider)) return '未记录';
+  return ({ doubao: '豆包', deepseek: 'DeepSeek', codex: 'Codex' } as Record<string, string>)[provider] ?? provider;
+}
+
+function researchResultLabel(research?: ReviewResearch) {
+  if (research?.provider) return `最终采用：${researchProviderLabel(research.provider)}`;
+  if ((research?.sources?.length ?? 0) > 0) return '历史任务未记录服务';
+  return research ? '搜索未取得可用来源' : '暂无搜索记录';
+}
+
 function ReviewReferences({
   detail,
-  sources,
+  research,
   xiaohongshuLinks,
 }: {
   detail: TaskDetail;
-  sources: Array<{ title?: string; url: string; siteName?: string }>;
+  research?: ReviewResearch;
   xiaohongshuLinks: TaskDetail['xiaohongshuLinks'];
 }) {
+  const sources = research?.sources ?? [];
   return <>
     <Disclosure className="workbench-review-section workbench-review-reference-disclosure" aria-labelledby="review-xiaohongshu-links-title">
       <h3 id="review-xiaohongshu-links-title" className="sr-only">Query 对应小红书文章</h3>
@@ -439,12 +459,18 @@ function ReviewReferences({
           : <div className="workbench-review-empty">{xiaohongshuEmptyMessage(detail)}</div>}
       </DisclosureContent>
     </Disclosure>
-    {sources.length > 0 && <Disclosure className="workbench-review-section workbench-review-source-disclosure">
-      <DisclosureTrigger>联网资料来源 · {sources.length} 条</DisclosureTrigger>
-      <DisclosureContent><div className="workbench-review-sources">{sources.map((source, index) => <a href={source.url} target="_blank" rel="noreferrer" key={`${source.url}-${index}`}>
-        <b>{source.title || source.siteName || `来源 ${index + 1}`}</b><small>{source.url}</small>
-      </a>)}</div></DisclosureContent>
-    </Disclosure>}
+    <Disclosure className="workbench-review-section workbench-review-source-disclosure">
+      <DisclosureTrigger>联网资料来源 · {sources.length} 条 · {researchResultLabel(research)}</DisclosureTrigger>
+      <DisclosureContent>
+        {research?.attempts && research.attempts.length > 0 && <p className="workbench-review-reference-help">
+          服务尝试：{research.attempts.map((attempt, index) => `${index + 1}. ${researchProviderLabel(attempt.provider)}（${attempt.status === 'COMPLETED' ? '已返回来源' : '失败'}）`).join(' → ')}
+        </p>}
+        {sources.length > 0 ? <div className="workbench-review-sources">{sources.map((source, index) => <a href={source.url} target="_blank" rel="noreferrer" key={`${source.url}-${index}`}>
+          <b>{source.title || source.siteName || `来源 ${index + 1}`}</b>
+          <small>搜索服务：{researchProviderLabel(source.provider ?? research?.provider)} · {source.url}</small>
+        </a>)}</div> : <p className="workbench-review-reference-help">{research ? '这次搜索没有可用的资料来源。' : '当前任务没有可查看的联网搜索记录。'}</p>}
+      </DisclosureContent>
+    </Disclosure>
   </>;
 }
 
@@ -1313,7 +1339,7 @@ export function TaskReviewDialog({
     setDraftSaveError('');
     setDraftSaveConflict(false);
   }
-  const sources = revision?.content.generation?.research?.sources ?? [];
+  const research = revision?.content.generation?.research;
   const xiaohongshuLinks = (detail?.xiaohongshuLinks ?? []).flatMap((link) => {
     const url = safeXiaohongshuUrl(link.url);
     return url ? [{ ...link, url }] : [];
@@ -2486,7 +2512,7 @@ export function TaskReviewDialog({
                   originalScorePresentation={COPY_MACHINE_DRAFT_SCORE_PRESENTATION}
                   showScoreDescriptions={showCopyScoreDescriptions} showReasonOptions={showCopyDeductionReasons} />
               </section>}
-              {!imageWorkMode && !editable && <ReviewReferences detail={detail} sources={sources} xiaohongshuLinks={xiaohongshuLinks} />}
+              {!imageWorkMode && !editable && <ReviewReferences detail={detail} research={research} xiaohongshuLinks={xiaohongshuLinks} />}
             {!imageWorkMode && <VisualPlanSummary value={currentImageRun?.result?.visualPlan?.value} />}
             {!imageWorkMode && currentImageRun?.result?.visualPlan?.warning?.message && !currentImageRun?.result?.simulation?.enabled
               && <p className="notice warning">{currentImageRun.result.visualPlan.warning.message}</p>}
@@ -2545,6 +2571,11 @@ export function TaskReviewDialog({
                 </nav>}
               </div>
               <aside className="workbench-image-review-decision" aria-label={imageWorkMode ? '图片操作与信息' : '图片终审结论'}>
+                {imageWorkMode && <div className="workbench-image-search-provider" aria-label="联网搜索服务">
+                  <strong>联网资料搜索</strong>
+                  <span>{researchResultLabel(research)} · {research?.sources?.length ?? 0} 条来源</span>
+                  {research?.attempts && research.attempts.length > 1 && <small>尝试顺序：{research.attempts.map((attempt) => researchProviderLabel(attempt.provider)).join(' → ')}</small>}
+                </div>}
                 {isImageReviewView ? <div className="workbench-image-manual-note" role="region" aria-label="图片审核备注">
                   {canEditImageManualNote && previousImageManualModificationNote !== null && <div className="workbench-image-manual-note-previous" role="status">
                     <strong>图片版本已更新，旧版未提交的备注已保留</strong>
@@ -2834,7 +2865,7 @@ export function TaskReviewDialog({
                   </article>})}
                 </div>
               </section>
-              {editable && <ReviewReferences detail={detail} sources={sources} xiaohongshuLinks={xiaohongshuLinks} />}
+              {editable && <ReviewReferences detail={detail} research={research} xiaohongshuLinks={xiaohongshuLinks} />}
               {imageSettingsPanel}
               {role === 'ADMIN' && <ModelCallTrace key={detail.id} taskId={detail.id} />}
             </div>}

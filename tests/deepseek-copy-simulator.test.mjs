@@ -79,6 +79,7 @@ test('DeepSeek copy simulation reuses the copy contract and completes into manua
         task: { query: '测试选题', input: {}, requestedImageCount: 'auto' },
         prompts: { TEXT_SYSTEM: { content: '编辑提示词' } },
         knowledge: [],
+        productionSettings: { production: { value: { modelApi: { webSearchResultLimit: 8 } } } },
       },
     },
   };
@@ -88,6 +89,7 @@ test('DeepSeek copy simulation reuses the copy contract and completes into manua
     await options.onStageChange('ORIGINAL_GENERATION');
     assert.equal(options.autoReviseOnReject, false);
     assert.equal(options.textReviewEnabled, false);
+    assert.equal(options.webSearchResultLimit, 8);
     return {
       post,
       model: 'deepseek-v4-pro',

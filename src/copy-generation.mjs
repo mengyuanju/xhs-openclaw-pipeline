@@ -26,6 +26,7 @@ import {
   requiresAuthoritativeResearch,
   researchSourceUrls,
 } from './research.mjs';
+import { DEFAULT_WEB_SEARCH_RESULT_LIMIT } from './web-search-config.mjs';
 
 const POST_MAX_ATTEMPTS = 3;
 const QUALITY_REVISION_MAX_ATTEMPTS = 2;
@@ -422,6 +423,7 @@ async function createReviewedPost(client, task, originalPost, originalReview, op
  *   textReviewEnabled?: boolean,
  *   promptRuntime?: Parameters<typeof withPromptRuntime>[0],
  *   researchSnapshot?: Record<string, unknown> | null,
+ *   webSearchResultLimit?: number | null,
  *   now?: () => number,
  *   onStageChange?: (stage: string, details?: Record<string, unknown>) => void | Promise<void>,
  * }} options
@@ -439,6 +441,7 @@ async function generateCopyInContext({
   autoReviseOnReject = false,
   textReviewEnabled = true,
   researchSnapshot: suppliedResearchSnapshot = null,
+  webSearchResultLimit = null,
   now = () => performance.now(),
   onStageChange = async () => {},
 }) {
@@ -508,6 +511,7 @@ async function generateCopyInContext({
       () => pinnedResearch ?? createResearchSnapshot({
         client,
         query: sourceTask.query,
+        limit: webSearchResultLimit ?? DEFAULT_WEB_SEARCH_RESULT_LIMIT,
         requireAuthoritative: requiresAuthoritativeResearch(sourceTask),
       }),
     );

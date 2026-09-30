@@ -3,11 +3,16 @@ import { DEFAULT_WEB_SEARCH_SETTINGS, normalizeWebSearchSettings, resolveWebSear
 
 function publicRecord(production, { controlPlane, environment = process.env }) {
   const settings = normalizeWebSearchSettings(production.settings.modelApi ?? {});
+  const deepseekKeyConfigured = controlPlane ? null : Boolean(String(environment.DEEPSEEK_API_KEY ?? '').trim());
   return {
     settings,
     scope: controlPlane ? 'central' : 'local',
     effective: controlPlane ? null : resolveWebSearchConfig(environment, settings),
-    apiKeyConfigured: controlPlane ? null : Boolean(environment.DEEPSEEK_API_KEY?.trim()),
+    apiKeyConfigured: deepseekKeyConfigured,
+    providerKeyConfigured: {
+      DEEPSEEK: deepseekKeyConfigured,
+      DOUBAO: controlPlane ? null : Boolean(String(environment.DOUBAO_SEARCH_API_KEY ?? '').trim()),
+    },
     updatedAt: production.updatedAt ?? null,
   };
 }
@@ -20,7 +25,7 @@ async function centralProduction(controlPlane) {
     || (settings.modelApi != null && (typeof settings.modelApi !== 'object' || Array.isArray(settings.modelApi)))) {
     throw new TypeError('中心生产配置格式无效，请先修正生产配置 JSON');
   }
-  return { settings, updatedAt: record?.updatedAt ?? null };
+  return { settings, version: record?.version ?? null, updatedAt: record?.updatedAt ?? null };
 }
 
 export async function readWebSearchSettings(options) {
@@ -34,16 +39,31 @@ export async function updateWebSearchSettings(options, patch) {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)
     || Object.keys(patch).length === 0
     || Object.keys(patch).some((key) => !Object.hasOwn(DEFAULT_WEB_SEARCH_SETTINGS, key))) {
-    throw new TypeError('只允许修改搜索提供方、模型和超时');
+    throw new TypeError('只允许修改搜索提供方、备用顺序、模型、超时、来源条数和豆包范围');
   }
   const normalized = normalizeWebSearchSettings(patch);
+  const current = options.controlPlane
+    ? await centralProduction(options.controlPlane)
+    : options.store.getProductionSettings();
+  const existing = normalizeWebSearchSettings(current.settings.modelApi ?? {});
   const selected = Object.fromEntries(Object.keys(patch).map((key) => [key, normalized[key]]));
+  if (selected.webSearchProviderOrder) {
+    selected.webSearchProvider = selected.webSearchProviderOrder[0];
+  } else if (Object.hasOwn(patch, 'webSearchProvider') && !Object.hasOwn(patch, 'webSearchProviderOrder')
+    && existing.webSearchProviderOrder) {
+    // A legacy single-provider PATCH must still take effect after failover has been configured.
+    selected.webSearchProviderOrder = null;
+  }
   if (!options.controlPlane) {
     const production = options.store.updateProductionSettings({ modelApi: selected });
     return publicRecord(production, options);
   }
-  const current = await centralProduction(options.controlPlane);
-  const value = { ...current.settings, modelApi: { ...current.settings.modelApi, ...selected } };
-  const saved = await options.controlPlane.updateSetting('production', value);
+  const modelApi = { ...(current.settings.modelApi ?? {}), ...selected };
+  // Absent new fields preserve compatibility with older executors until this feature is enabled.
+  if (modelApi.webSearchProviderOrder === null) delete modelApi.webSearchProviderOrder;
+  if (modelApi.doubaoIcpHostOnly === null) delete modelApi.doubaoIcpHostOnly;
+  const value = { ...current.settings, modelApi };
+  const saved = await options.controlPlane.updateSetting('production', value,
+    Number.isSafeInteger(current.version) ? { expectedVersion: current.version } : undefined);
   return publicRecord({ settings: saved.value, updatedAt: saved.updatedAt }, options);
 }

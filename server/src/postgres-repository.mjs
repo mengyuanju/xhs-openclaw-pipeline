@@ -5802,9 +5802,12 @@ export class PostgresControlPlaneRepository {
     });
   }
 
-  async upsertSetting(rawKey, rawValue) {
+  async upsertSetting(rawKey, rawValue, { expectedVersion } = {}) {
     const key = String(rawKey ?? '').trim();
     if (!/^[a-z][a-z0-9._-]{0,99}$/u.test(key)) throw new TypeError('setting key is invalid');
+    if (expectedVersion !== undefined && (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0)) {
+      throw new TypeError('setting expectedVersion is invalid');
+    }
     const jsonValue = normalizeJson(rawValue, 'setting value', 1_000_000);
     const value = key === XIAOHONGSHU_SEARCH_SETTINGS_KEY
       ? normalizeXiaohongshuSearchSettings(jsonValue)
@@ -5823,6 +5826,12 @@ export class PostgresControlPlaneRepository {
       const current = await this.getLayoutCatalog();
       if (current.revision !== layoutCatalogRecord(value).revision) throw new TypeError('请在布局模板库中更新目录，避免覆盖其他编辑');
     }
+    if (expectedVersion > 0) {
+      const existing = await this.pool.query('SELECT version FROM global_settings WHERE key = $1', [key]);
+      if (!existing.rows.length) {
+        throw new ControlPlaneConflictError('VERSION_CONFLICT', '设置已被其他管理员修改，请刷新后重试');
+      }
+    }
     const result = await this.pool.query(`
       INSERT INTO global_settings(key, value) VALUES ($1, $2)
       ON CONFLICT(key) DO UPDATE SET
@@ -5834,8 +5843,12 @@ export class PostgresControlPlaneRepository {
             THEN jsonb_build_object('humanQualityReasons', global_settings.value->'humanQualityReasons') ELSE '{}'::jsonb END
           ELSE excluded.value END,
         version = global_settings.version + 1, updated_at = now()
+      WHERE ${expectedVersion === undefined ? 'true' : 'global_settings.version = $3'}
       RETURNING *
-    `, [key, value]);
+    `, expectedVersion === undefined ? [key, value] : [key, value, expectedVersion]);
+    if (!result.rows[0]) {
+      throw new ControlPlaneConflictError('VERSION_CONFLICT', '设置已被其他管理员修改，请刷新后重试');
+    }
     return {
       key: result.rows[0].key,
       value: result.rows[0].value,

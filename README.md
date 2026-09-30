@@ -110,9 +110,11 @@ npm run executor -- --enable-image-worker
 
 需要并行比较国内搜索服务的实际摘要和来源，可运行独立的[联网搜索 API 对比测试站](search-lab/README.md)：`npm run search:lab`，默认访问 `http://127.0.0.1:3077`。测试站在页面临时接收各产品的 Key，不修改生产搜索配置。
 
-生成引擎固定 `CODEX`。`XHS_COPY_GENERATION_PROVIDER` 支持 `CODEX`、`DOTS`；`XHS_WEB_SEARCH_PROVIDER` 支持 `CODEX`、`DEEPSEEK`，默认 DeepSeek Flash。文案和搜索的切换相互独立。
+生成引擎固定 `CODEX`。`XHS_COPY_GENERATION_PROVIDER` 支持 `CODEX`、`DOTS`；`XHS_WEB_SEARCH_PROVIDER` 支持 `CODEX`、`DEEPSEEK`、`DOUBAO`，默认使用 DeepSeek `deepseek-v4-pro`。文案和搜索的切换相互独立。
 
 生产配置中保存的非空值优先于执行机环境变量，`null` 表示继承环境或默认值。中心配置进入后续执行快照，已领取任务使用原快照。页面搜索面板只修改搜索字段，保留其他生产参数。Key 由实际调用服务的主机提供，不保存到配置 JSON。
+
+“生成与模型 → 联网搜索服务”可设置豆包、DeepSeek、Codex 的启用顺序。显式设置顺序后，请求失败或证据不足会依次尝试备用服务；未设置顺序的旧配置继续只用原有单服务。搜索记录保存每次尝试和最终使用的服务。豆包默认只搜索有 ICP 备案的站点，可在面板中调整。来源数范围 1–10，默认 5；过滤无效、重复来源后，实际条数可能更少。最终文案的来源引用仍按独立的输出规则校验。
 
 ```dotenv
 XHS_AGENT_PROVIDER=CODEX
@@ -121,7 +123,12 @@ XHS_WEB_SEARCH_PROVIDER=DEEPSEEK
 XHS_DEEPSEEK_SEARCH_MODEL=deepseek-v4-pro
 XHS_DEEPSEEK_SEARCH_TIMEOUT_MS=120000
 DEEPSEEK_API_KEY=
+DOUBAO_SEARCH_API_KEY=
 ```
+
+把 Key 配置到**实际执行文案任务的执行机**环境；中心生产配置和任务快照只保存服务顺序及非敏感参数，不保存 Key。豆包使用火山引擎 Global Search 的按量 Key。启用多服务前，每台可能领取文案任务的执行机都需配置**所有已启用 API 服务**的 Key；缺 Key 时执行机会在搜索前拒绝这份任务配置。服务自身报错、超时或证据不足时才会按顺序切换。
+
+**部署顺序：先升级并重启全部执行机，再在管理员页面启用豆包或多服务顺序。** 旧版执行机不认识新配置字段；混用新旧执行机时，不要提前保存新搜索配置。
 
 Dots 使用 `XHS_DOTS_API_KEY`、`XHS_DOTS_BASE_URL`、`XHS_DOTS_MODEL`。Codex 模型和代理变量见 `.env.example`。模型调用使用参数数组、`shell:false`，模型输出和外部 Query 始终作为不可信输入验证。
 

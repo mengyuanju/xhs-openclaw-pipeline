@@ -7,6 +7,7 @@ import { basename, join, relative, resolve } from 'node:path';
 
 import { createCopyGenerationClient } from '../copy-generation-client.mjs';
 import { effectiveModelApiConfig } from '../model-api-config.mjs';
+import { DEFAULT_WEB_SEARCH_RESULT_LIMIT } from '../web-search-config.mjs';
 import { codexErrorCode } from '../codex-protocol.mjs';
 import { codexConcurrencyConfig, codexRuntimePath, createCodexRuntime } from '../codex-runtime.mjs';
 import { generateCopy, toCopyGenerationResponse } from '../copy-generation.mjs';
@@ -89,6 +90,18 @@ function copySource(revision) {
     ...(content.imageSettings ? { imageSettings: content.imageSettings } : {}) };
 }
 
+function assertSearchKeysReady(modelConfig, environment) {
+  // Explicit routing requires each enabled API credential on every executor.
+  // The legacy single-provider path keeps its existing lazy credential check.
+  for (const provider of modelConfig.webSearchProviderOrder ?? []) {
+    const keyName = provider === 'DOUBAO' ? 'DOUBAO_SEARCH_API_KEY'
+      : provider === 'DEEPSEEK' ? 'DEEPSEEK_API_KEY' : null;
+    if (keyName && !String(environment[keyName] ?? '').trim()) {
+      throw new Error(`执行机缺少已启用搜索服务的 ${keyName}，请先配置后再领取任务`);
+    }
+  }
+}
+
 export async function checkExecutorReady({
   controlPlane,
   workRoot,
@@ -101,9 +114,11 @@ export async function checkExecutorReady({
   await access(workRoot, constants.R_OK | constants.W_OK);
   const records = await controlPlane.listSettings?.();
   const modelApi = records?.find((record) => record.key === 'production')?.value?.modelApi ?? {};
-  if (effectiveModelApiConfig(modelApi, environment).agentProvider === 'CODEX' && !health.capabilities?.executionRetryControl) {
+  const modelConfig = effectiveModelApiConfig(modelApi, environment);
+  if (modelConfig.agentProvider === 'CODEX' && !health.capabilities?.executionRetryControl) {
     throw new Error('使用 Codex 前请更新并重启中心服务：缺少 executionRetryControl，无法保证失败后不重复生成');
   }
+  assertSearchKeysReady(modelConfig, environment);
   (modelClient ?? createAgentClient({ modelApi, environment })).checkReady();
   return { health, workRoot };
 }
@@ -127,6 +142,9 @@ export async function executeCopyClaim({ claim, controlPlane, environment = proc
   const { execution } = claim;
   const snapshot = execution.snapshot;
   const settings = productionSettings(snapshot);
+  // The claim snapshot carries the actual saved routing settings; the center's
+  // anonymous readiness response intentionally exposes only a provider subset.
+  assertSearchKeysReady(effectiveModelApiConfig(settings.modelApi ?? {}, environment), environment);
   const modelClient = client ?? createCopyGenerationClient({ modelApi: settings.modelApi ?? {}, environment });
   const generated = await generateCopy({
     client: signal ? guardExecutionCalls(modelClient, signal, { model: true }) : modelClient,
@@ -135,6 +153,7 @@ export async function executeCopyClaim({ claim, controlPlane, environment = proc
     systemPrompt: publishedPrompt(snapshot, 'TEXT_SYSTEM'),
     promptRuntime: promptRuntimeFromSnapshot(snapshot),
     imageCount: snapshot.task.requestedImageCount,
+    webSearchResultLimit: settings.modelApi?.webSearchResultLimit ?? DEFAULT_WEB_SEARCH_RESULT_LIMIT,
     autoReviseOnReject: false,
     textReviewEnabled: false,
     onStageChange: async (stage, details = {}) => controlPlane.updateProgress(execution.id, {

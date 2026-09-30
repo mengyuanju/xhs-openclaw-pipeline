@@ -427,8 +427,8 @@ export function createControlPlaneClient({
       return Buffer.concat(chunks);
     },
     listSettings: () => request('/v1/settings'),
-    updateSetting: (key, value) => request(`/v1/settings/${encodeURIComponent(key)}`, {
-      method: 'PUT', body: { value },
+    updateSetting: (key, value, { expectedVersion } = {}) => request(`/v1/settings/${encodeURIComponent(key)}`, {
+      method: 'PUT', body: { value, ...(expectedVersion === undefined ? {} : { expectedVersion }) },
     }),
     getHumanQualitySettings: () => request('/v1/human-quality-settings'),
     updateHumanQualitySettings: (input) => request('/v1/human-quality-settings', {

@@ -1010,6 +1010,7 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
 .workbench-review-query > span { padding-top: 3px; color: var(--muted); font-size: 9px; white-space: nowrap; }
 .workbench-review-query-text { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; font-weight: 650; line-height: 1.55; }
 .workbench-review-source-disclosure { gap: 0; }
+.workbench-review-source-disclosure > .disclosure-content { display: grid; gap: 10px; padding-top: 8px; }
 .workbench-review-dirty { color: var(--red-dark); font-weight: 600; }
 .workbench-review-section { display: grid; gap: 14px; padding: 18px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface); }
 .workbench-review-section-title { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 10px; }
@@ -1112,6 +1113,9 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
 .workbench-image-review-thumbnail > span { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 4px; padding: 6px 7px; color: var(--muted); font-size: 9px; white-space: nowrap; }
 .workbench-image-review-thumbnail > span strong { color: var(--red-dark); font-size: 10px; font-variant-numeric: tabular-nums; }
 .workbench-image-review-decision { min-width: 0; display: grid; align-content: start; gap: 11px; }
+.workbench-image-search-provider { display: grid; gap: 3px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; background: #faf8f5; }
+.workbench-image-search-provider strong { font-size: 10px; }
+.workbench-image-search-provider span, .workbench-image-search-provider small { color: var(--muted); font-size: 10px; line-height: 1.5; }
 .workbench-image-review-decision .workbench-quality-summary { padding: 13px 14px; background: #fffaf3; }
 .workbench-image-review-decision .workbench-quality-summary[data-attention="true"] { border-color: #e1c797; }
 .workbench-image-review-decision .workbench-quality-summary[data-compact="true"] > p { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }

@@ -392,7 +392,11 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(reviewDialog, /xiaohongshuSearchStatus\?:/u);
   assert.match(reviewDialog, /搜索已完成，但没有找到可展示的小红书文章链接/u);
   assert.match(reviewDialog, /xiaohongshuEmptyMessage\(detail\)/u);
-  assert.match(reviewDialog, /const sources = revision\?\.content\.generation\?\.research\?\.sources \?\? \[\];/u);
+  assert.match(reviewDialog, /const research = revision\?\.content\.generation\?\.research;/u);
+  assert.match(reviewDialog, /<ReviewReferences detail=\{detail\} research=\{research\}/u);
+  assert.match(reviewDialog, /最终采用：\$\{researchProviderLabel\(research\.provider\)\}/u);
+  assert.match(reviewDialog, /imageWorkMode && <div className="workbench-image-search-provider"/u);
+  assert.match(reviewDialog, /research\.attempts\.map/u);
   assert.match(reviewDialog, /review-copy-title/u);
   assert.match(reviewDialog, /review-copy-body/u);
   assert.match(reviewDialog, /review-copy-tags/u);

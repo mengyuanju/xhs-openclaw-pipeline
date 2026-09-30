@@ -58,17 +58,25 @@ export function CentralDataWorkbench() {
     setBusy(true);
     try {
       const latest = await apiRequest<any[]>(endpoint('/v1/settings'));
-      const latestProduction = latest.find(item => item.key === 'production')?.value ?? {};
+      const latestRecord = latest.find(item => item.key === 'production');
+      const latestProduction = latestRecord?.value ?? {};
       value.layoutPresets = latestProduction.layoutPresets ?? [];
       value.imageEditRepairMaxAttempts = imageEditRepairLimit(latestProduction.imageEditRepairMaxAttempts);
+      const draftModelApi = { ...value.modelApi };
+      delete draftModelApi.webSearchProviderOrder;
+      delete draftModelApi.doubaoIcpHostOnly;
+      const currentSearchSettings = Object.fromEntries(Object.entries(
+        normalizeWebSearchSettings(latestProduction.modelApi ?? {}),
+      ).filter(([key, setting]) => !['webSearchProviderOrder', 'doubaoIcpHostOnly'].includes(key) || setting !== null));
       value.modelApi = {
-        ...value.modelApi,
-        ...normalizeWebSearchSettings(latestProduction.modelApi ?? {}),
+        ...draftModelApi,
+        ...currentSearchSettings,
       };
       await apiRequest(endpoint('/v1/settings/production'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ value }),
+        body: JSON.stringify({ value, ...(Number.isSafeInteger(latestRecord?.version)
+          ? { expectedVersion: latestRecord.version } : {}) }),
       });
       setMessage('生产配置已保存到中心服务，新的执行快照会使用该版本。');
       await refresh();
