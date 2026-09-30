@@ -94,9 +94,33 @@
 .filters { position: sticky; top: 56px; z-index: 12; padding: 12px 16px; box-shadow: 0 8px 22px rgba(45,35,28,.06); }
 .filterTitle { margin: 0 0 10px; color: var(--ink); font-size: 14px; font-weight: 700; line-height: 1.45; }
 .primaryFilters { display: grid; grid-template-columns: minmax(300px, 1.5fr) minmax(175px, 1fr) auto auto; align-items: end; gap: 10px; }
-.dateRange { display: flex; align-items: center; gap: 8px; }
-.dateRange input { min-width: 0; }
-.dateRange span { flex: 0 0 auto; color: var(--muted); font-size: 12px; }
+.timeFilter { display: grid; gap: 5px; min-width: 0; color: var(--muted); font-size: 11px; font-weight: 700; }
+.dateRange { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 8px; }
+.dateRange > span { color: var(--muted); font-size: 12px; }
+.dateTimePicker { position: relative; min-width: 0; }
+.dateTimeTrigger { display: flex; align-items: center; justify-content: space-between; gap: 5px; width: 100%; min-height: 36px; padding: 7px 9px; border: 1px solid var(--control-border); border-radius: 8px; color: var(--ink); background: var(--control-bg); cursor: pointer; font-size: 12px; font-variant-numeric: tabular-nums; font-weight: 500; white-space: nowrap; }
+.dateTimeTrigger svg { flex: 0 0 auto; color: var(--muted); }
+.dateTimePopup { position: absolute; top: calc(100% + 6px); left: 0; z-index: 35; display: grid; grid-template-columns: 208px 166px; gap: 10px; width: 410px; max-width: calc(100vw - 32px); max-height: min(440px, 75vh); overflow: auto; padding: 12px; border: 1px solid var(--control-border); border-radius: 10px; color: var(--ink); background: var(--surface); box-shadow: 0 14px 32px rgba(24, 22, 20, .18); }
+.dateTimePickerEnd .dateTimePopup { left: auto; right: 0; }
+.calendarPane, .clockPane { min-width: 0; }
+.calendarToolbar { display: flex; align-items: center; justify-content: space-between; gap: 5px; height: 28px; margin-bottom: 8px; }
+.calendarToolbar strong { font-size: 12px; }
+.calendarToolbar button { display: grid; place-items: center; width: 27px; height: 27px; padding: 0; border: 0; border-radius: 6px; color: var(--ink); background: transparent; cursor: pointer; }
+.calendarToolbar button:hover { background: var(--control-accent-bg); }
+.calendarGrid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 2px; text-align: center; }
+.calendarGrid > span { display: grid; place-items: center; height: 25px; color: var(--muted); font-size: 11px; }
+.calendarDay { display: grid; place-items: center; height: 27px; padding: 0; border: 0; border-radius: 6px; color: var(--ink); background: transparent; cursor: pointer; font-size: 11px; }
+.calendarDay:hover { background: var(--control-accent-bg); }
+.calendarOutside { color: var(--muted); opacity: .55; }
+.calendarSelected, .calendarSelected:hover { color: white; background: var(--red-dark); opacity: 1; }
+.clockPane { display: grid; gap: 8px; align-content: start; }
+.clockColumns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+.clockColumn { display: grid; gap: 4px; min-width: 0; text-align: center; }
+.clockColumn > span { color: var(--muted); font-size: 11px; }
+.page .clockColumn select { width: 100%; height: 190px; min-height: 0; padding: 2px; border-radius: 6px; font-variant-numeric: tabular-nums; text-align: center; }
+.clockColumn option { padding: 4px 2px; }
+.clockDone { min-height: 28px; border: 1px solid var(--control-border); border-radius: 6px; color: var(--ink); background: var(--control-bg); cursor: pointer; font-size: 11px; }
+.clockDone:hover { background: var(--control-accent-bg); }
 .moreButton { display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: 36px; padding: 0 12px; border: 1px solid var(--control-border); border-radius: 8px; color: var(--ink); background: var(--surface); cursor: pointer; white-space: nowrap; }
 .moreButton[aria-expanded="true"] svg { transform: rotate(180deg); }
 .moreFilters { display: grid; gap: 12px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
@@ -128,8 +152,8 @@
 .assignmentTooltip strong { font-weight: 700; }
 .reassignmentBadge:hover .assignmentTooltip, .reassignmentBadge:focus .assignmentTooltip { display: block; }
 .detailRow .timeline { margin: 0; padding: 16px 20px; border-top: 0; }
-@media (max-width: 920px) { .summary { grid-template-columns: repeat(3, minmax(0, 1fr)); } .primaryFilters { grid-template-columns: minmax(0, 1fr) minmax(170px, 1fr); } .moreFilters .peopleGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .filters { top: 48px; } }
-@media (max-width: 600px) { .primaryFilters { grid-template-columns: 1fr 1fr; } .primaryFilters > label:first-child { grid-column: 1 / -1; } .moreFilters .peopleGrid { grid-template-columns: 1fr; } .filters { top: 0; } .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 920px) { .summary { grid-template-columns: repeat(3, minmax(0, 1fr)); } .primaryFilters { grid-template-columns: minmax(0, 1fr) minmax(170px, 1fr); } .primaryFilters .timeFilter { grid-column: 1 / -1; } .moreFilters .peopleGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .filters { top: 48px; } }
+@media (max-width: 600px) { .primaryFilters { grid-template-columns: 1fr 1fr; } .primaryFilters .timeFilter { grid-column: 1 / -1; } .moreFilters .peopleGrid { grid-template-columns: 1fr; } .filters { top: 0; } .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
 .countHighlight { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; padding: 2px 7px; border-radius: 6px; color: var(--red-dark); background: var(--control-accent-bg); font-weight: 750; font-variant-numeric: tabular-nums; }
 @media (max-width: 1400px) { .summary { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
@@ -155,11 +179,17 @@
   border: 1px solid var(--control-accent-border); border-top: 3px solid var(--red);
   border-radius: 14px; background: var(--control-accent-bg);
 }
-.statisticsPanel .summarySection { padding-top: 18px; border-top: 1px solid var(--control-accent-border); }
-.statisticsPanel .overviewToolbar h2, .statisticsPanel .summaryToolbar h2 { color: var(--ink); font-size: 16px; }
+.taskResultsPanel {
+  display: grid; gap: 14px; min-width: 0; padding: 18px;
+  border: 1px solid var(--control-accent-border); border-top: 3px solid var(--red);
+  border-radius: 14px; background: var(--control-accent-bg);
+}
+.taskResultsPanel .results { background: var(--surface); }
+.taskResultsPanel .summaryToolbar h2 { color: var(--ink); font-size: 16px; }
+.statisticsPanel .overviewToolbar h2 { color: var(--ink); font-size: 16px; }
 @media (max-width: 600px) {
   .statisticsPanel { gap: 14px; padding: 14px; }
-  .statisticsPanel .summarySection { padding-top: 14px; }
+  .taskResultsPanel { gap: 12px; padding: 14px; }
 }
 .overviewSection, .summarySection { display: grid; gap: 10px; min-width: 0; }
 .overviewToolbar { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; }
@@ -174,6 +204,23 @@
 .overviewIcon { display: inline-grid; flex: 0 0 auto; place-items: center; width: 36px; height: 36px; border-radius: 10px; color: var(--red-dark); background: var(--control-accent-bg); }
 .overviewCard strong { flex-shrink: 0; color: var(--ink); font-size: 28px; line-height: 1.25; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 @media (max-width: 600px) { .overview { grid-template-columns: minmax(0, 1fr); } .overviewCard { padding: 14px 15px; } .overviewCard strong { font-size: 25px; } }
+.activityDetail { display: grid; gap: 10px; min-width: 0; margin-top: 8px; }
+.activityDetail h3 { margin: 0; color: var(--ink); font-size: 14px; font-weight: 700; }
+.activityTitle { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.activityColumnLabel { display: inline-flex; align-items: center; gap: 4px; cursor: help; }
+.activityColumnLabel svg { flex: 0 0 auto; color: var(--muted); }
+.activityColumnLabel:hover svg, .activityColumnLabel:focus-visible svg { color: var(--red-dark); }
+.activityColumnLabel:focus-visible { outline: 2px solid var(--control-ring); outline-offset: 2px; border-radius: 3px; }
+.activityTooltip { position: fixed; z-index: 100; display: block; width: max-content; max-width: min(320px, calc(100vw - 16px)); padding: 8px 10px; border: 1px solid var(--control-border); border-radius: 7px; color: var(--ink); background: var(--surface); box-shadow: 0 8px 22px rgba(24, 22, 20, .16); font-size: 12px; font-weight: 500; line-height: 1.5; white-space: normal; pointer-events: none; }
+.activityTableScroll { min-width: 0; max-height: 420px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.activityTableScroll table { width: 100%; min-width: 1050px; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.activityTableScroll th, .activityTableScroll td { padding: 11px 14px; border-bottom: 1px solid var(--line); text-align: right; }
+.activityTableScroll thead th { position: sticky; top: 0; z-index: 1; color: var(--muted); background: var(--surface); font-weight: 700; white-space: nowrap; }
+.activityTableScroll th:first-child { min-width: 155px; text-align: left; }
+.activityTableScroll tbody th { color: var(--ink); font-weight: 650; }
+.activityTableScroll tbody th small { display: block; color: var(--muted); font-size: 11px; font-weight: 500; }
+.activityTableScroll tbody tr:last-child th, .activityTableScroll tbody tr:last-child td { border-bottom: 0; }
+.activityEmpty { padding: 24px 14px; color: var(--muted); text-align: center; font-size: 13px; }
 .summaryToolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .summaryToolbar h2 { margin: 0; color: var(--muted); font-size: 13px; font-weight: 700; }
 .summarySection .summary { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
@@ -189,10 +236,10 @@
 @media (max-width: 600px) { .summarySection .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } .metricChoices { grid-template-columns: 1fr; } }
 
 /* Task report search and result columns */
-.primaryFilters { grid-template-columns: minmax(270px, 1.7fr) minmax(160px, 1fr) minmax(150px, 1fr) auto auto; }
+.primaryFilters { grid-template-columns: minmax(490px, 2.3fr) minmax(160px, 1fr) minmax(150px, 1fr) auto auto; }
 .primaryFilters > label { min-width: 0; }
 .primaryFilters .dateRange { gap: 5px; }
-.primaryFilters .dateRange input { padding-inline: 7px; }
+
 .moreFilters { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .moreFilters > label:first-child { grid-column: span 2; }
 .tableScroll table { min-width: 1280px; font-size: 14px; }
@@ -213,7 +260,8 @@
 .assignmentTooltip strong { display: block; margin: 0 0 8px; font-size: 14px; font-weight: 750; }
 .assignmentTooltip > span { display: block; margin: 7px 0 0; font-size: 13px; font-weight: 500; line-height: 1.5; }
 @media (max-width: 1250px) {
-  .primaryFilters { grid-template-columns: minmax(240px, 1.6fr) minmax(145px, 1fr) minmax(145px, 1fr) auto auto; }
+  .primaryFilters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .primaryFilters .timeFilter { grid-column: 1 / -1; }
 }
 @media (max-width: 920px) {
   .primaryFilters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -221,7 +269,7 @@
 }
 @media (max-width: 600px) {
   .primaryFilters, .moreFilters { grid-template-columns: minmax(0, 1fr); }
-  .primaryFilters > label:first-child, .moreFilters > label:first-child { grid-column: auto; }
+  .primaryFilters .timeFilter, .moreFilters > label:first-child { grid-column: auto; }
 }
 
 /* Secondary task metrics share card styling without filling the main row. */
@@ -233,3 +281,5 @@
 .summarySection .secondaryMetrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; width: min(100%, 409px); min-width: 0; align-items: start; }
 @media (max-width: 480px) { .summarySection .secondaryMetrics { grid-template-columns: minmax(0, 1fr); max-width: 200px; } }
 @media (prefers-reduced-motion: reduce) { .secondaryMetricChevron { transition: none; } }
+
+@media (max-width: 600px) { .dateTimePopup { grid-template-columns: minmax(0, 1fr); width: min(280px, calc(100vw - 32px)); } }

@@ -13,6 +13,7 @@ const PERSON_FIELDS = new Set([
 const STATUS_VALUES = new Set(['PENDING', 'REVIEW_PASSED', 'QA_PENDING', 'QA_RELEASED', 'RETURNED']);
 const SORT_FIELDS = new Set(['FIRST_MANUAL_COPY_ASSIGNMENT', 'FIRST_COPY_ASSIGNMENT', 'FIRST_COPY_REVIEW_ACTION', 'CREATED_AT', 'TASK_ID']);
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/u;
+const CLOCK_RE = /^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/u;
 const MAX_CONDITIONS = 20;
 
 const REPORT_TASK_SQL = `t.task_kind='CONTENT' AND NOT (t.input @> '{"testRun":true}'::jsonb)`;
@@ -151,6 +152,14 @@ function beijingDay(date) {
   }).format(date);
 }
 
+function beijingTime(day, clock, label) {
+  dateFromBeijingDay(day);
+  if (typeof clock !== 'string' || !CLOCK_RE.test(clock)) {
+    throw new TypeError(`${label}应为 HH:mm:ss`);
+  }
+  return new Date(`${day}T${clock}+08:00`);
+}
+
 function positiveInteger(value, name, max = Number.MAX_SAFE_INTEGER) {
   const number = Number(value);
   if (!Number.isSafeInteger(number) || number < 1 || number > max) throw new TypeError(`${name} 必须是有效正整数`);
@@ -214,9 +223,12 @@ export function normalizeTaskDataReportQuery(input = {}, now = new Date()) {
     dateFromBeijingDay(from);
     dateFromBeijingDay(to);
   } else throw new TypeError('时间模式无效');
-  const start = dateFromBeijingDay(from);
-  const end = new Date(dateFromBeijingDay(to).getTime() + 86_400_000);
-  if (start >= end) throw new RangeError('结束日期不得早于开始日期');
+  const fromTime = timeInput.fromTime ?? '00:00:00';
+  const toTime = timeInput.toTime ?? '23:59:59';
+  const start = beijingTime(from, fromTime, '开始时间');
+  const lastSecond = beijingTime(to, toTime, '结束时间');
+  if (start > lastSecond) throw new RangeError('结束时间不得早于开始时间');
+  const end = new Date(lastSecond.getTime() + 1_000);
   const match = input.match ?? 'ALL';
   if (!['ALL', 'ANY'].includes(match)) throw new TypeError('条件组合方式无效');
   const rawConditions = input.conditions ?? [];
@@ -227,7 +239,7 @@ export function normalizeTaskDataReportQuery(input = {}, now = new Date()) {
   const order = input.order ?? 'DESC';
   if (!SORT_FIELDS.has(sort) || !['ASC', 'DESC'].includes(order)) throw new TypeError('排序方式无效');
   return {
-    time: { field: timeInput.field, mode, from, to, start: start.toISOString(), end: end.toISOString() },
+    time: { field: timeInput.field, mode, from, to, fromTime, toTime, start: start.toISOString(), end: end.toISOString() },
     match, conditions: rawConditions.map(conditionOf), page, pageSize, sort, order,
   };
 }
@@ -509,7 +521,7 @@ async function readTaskDeliveryOverview(client,query) {
   const peopleFilter=annotators.length
     ? ` AND (${annotators.map((_,index)=>`operation.account_id=$${index+3}::bigint`)
       .join(query.match==='ANY'?' OR ':' AND ')})` : '';
-  const row=(await client.query(`WITH delivery_records AS (
+  const rows=(await client.query(`WITH delivery_records AS (
     SELECT delivery.task_id,
       CASE WHEN confirmation.item_id IS NOT NULL THEN 'DELIVERED'
         WHEN item.id IS NOT NULL THEN 'PACKED' ELSE 'UNPACKED' END AS phase,
@@ -536,12 +548,56 @@ async function readTaskDeliveryOverview(client,query) {
     ) ready_owner ON item.id IS NULL
     WHERE ${CURRENT_DELIVERY_SQL}
   ) SELECT
+    GROUPING(operation.account_id) AS all_people, operation.account_id,
     count(DISTINCT task_id) FILTER(WHERE phase='UNPACKED')::integer AS unpacked,
     count(DISTINCT task_id) FILTER(WHERE phase='PACKED')::integer AS packed,
     count(DISTINCT task_id) FILTER(WHERE phase='DELIVERED')::integer AS delivered
   FROM delivery_records operation WHERE ready_at >= $1::timestamptz
-    AND ready_at < $2::timestamptz${peopleFilter}`,params)).rows[0] ?? {};
-  return {unpacked:Number(row.unpacked ?? 0),packed:Number(row.packed ?? 0),delivered:Number(row.delivered ?? 0)};
+    AND ready_at < $2::timestamptz${peopleFilter}
+  GROUP BY GROUPING SETS ((operation.account_id), ())`,params)).rows;
+  const counts=row=>({unpacked:Number(row.unpacked ?? 0),packed:Number(row.packed ?? 0),delivered:Number(row.delivered ?? 0)});
+  return {overview:counts(rows.find(row=>Number(row.all_people)===1)??{}),
+    people:rows.filter(row=>Number(row.all_people)===0).map(row=>({
+      accountId:row.account_id==null?null:Number(row.account_id),
+      deliveryTotal:counts(row).unpacked+counts(row).packed+counts(row).delivered,
+    }))};
+}
+
+async function readTaskImageReleaseOverview(client, query) {
+  const annotators = query.conditions.filter(condition => condition.field === 'ANNOTATOR');
+  const params = [query.time.start, query.time.end, ...annotators.map(condition => condition.value)];
+  const peopleFilter = annotators.length
+    ? ` AND (${annotators.map((_, index) => `owner.account_id=$${index + 3}::bigint`)
+      .join(query.match === 'ANY' ? ' OR ' : ' AND ')})` : '';
+  // A delivery entry is the durable record that an image version was finally
+  // released, whether by sampled QA, batch release, exemption or legacy acceptance.
+  // Keep withdrawn entries: they still passed at the time, even if later superseded.
+  const rows = (await client.query(`SELECT GROUPING(owner.account_id) AS all_people,
+    owner.account_id,count(DISTINCT delivery.id)::integer AS image_passed
+    FROM tasks t JOIN delivery_entries delivery ON delivery.task_id=t.id
+    LEFT JOIN LATERAL (
+      SELECT history.account_id FROM (
+        SELECT assignment.id,assignment.assigned_at,assignment.assignee_account_id AS account_id,0 AS source_order
+        FROM task_assignment_records assignment WHERE assignment.task_id=t.id
+          AND assignment.assigned_at<=delivery.approved_at
+          AND (assignment.ended_at IS NULL OR assignment.ended_at>delivery.approved_at)
+        UNION ALL
+        SELECT event.id,event.created_at,account.id,1
+        FROM task_assignment_events event LEFT JOIN app_users account
+          ON account.username=event.assignee_user_id AND account.created_at<=event.created_at
+        WHERE event.task_id=t.id AND event.created_at<=delivery.approved_at
+      ) history ORDER BY history.assigned_at DESC,history.source_order,history.id DESC LIMIT 1
+    ) owner ON true
+    WHERE ${REPORT_TASK_SQL} AND delivery.approved_at >= $1::timestamptz
+      AND delivery.approved_at < $2::timestamptz${peopleFilter}
+    GROUP BY GROUPING SETS ((owner.account_id), ())`, params)).rows;
+  return {
+    total: Number(rows.find(row => Number(row.all_people) === 1)?.image_passed ?? 0),
+    people: rows.filter(row => Number(row.all_people) === 0).map(row => ({
+      accountId: row.account_id == null ? null : Number(row.account_id),
+      imagePassed: Number(row.image_passed ?? 0),
+    })),
+  };
 }
 
 function assertAdmin(actor) {
@@ -560,8 +616,34 @@ export async function readTaskDataReport(pool, actor, input = {}, { now = new Da
     await client.query(exportAll ? "SET LOCAL statement_timeout='60s'" : "SET LOCAL statement_timeout='20s'");
     const asOf = iso((await client.query('SELECT clock_timestamp() AS at')).rows[0].at);
     const poolOverview = await readTaskPoolOverview(client, asOf);
-    const overview = await readTaskDeliveryOverview(client,query);
-    const activityOverview = await readTaskActivityOverview(client, query, asOf);
+    const delivery = await readTaskDeliveryOverview(client,query);
+    const releases = await readTaskImageReleaseOverview(client,query);
+    const activity = await readTaskActivityOverview(client, query, asOf);
+    const overview = delivery.overview;
+    const activityOverview = activity.overview;
+    const workByPerson = new Map();
+    for (const row of [...activity.people, ...delivery.people, ...releases.people]) {
+      const counts = workByPerson.get(row.accountId) ?? {
+        accountId: row.accountId, copyReview: 0, copyRework: 0, imageReview: 0,
+        imageFirstReview: 0, imageRework: 0, imagePassed: 0, deliveryTotal: 0,
+      };
+      for (const metric of ['copyReview', 'copyRework', 'imageReview',
+        'imageFirstReview', 'imageRework', 'imagePassed', 'deliveryTotal']) {
+        counts[metric] += row[metric] ?? 0;
+      }
+      workByPerson.set(row.accountId, counts);
+    }
+    const accountIds = [...workByPerson.keys()].filter(id => id !== null);
+    const accountRows = accountIds.length ? (await client.query(
+      'SELECT id,username,display_name FROM app_users WHERE id=ANY($1::bigint[])', [accountIds],
+    )).rows : [];
+    const accountById = new Map(accountRows.map(row => [Number(row.id), row]));
+    const activityPeople = [...workByPerson.values()].map(row => ({
+      ...row, username: accountById.get(row.accountId)?.username ?? null,
+      displayName: accountById.get(row.accountId)?.display_name ?? null,
+    })).sort((left, right) => (left.displayName || left.username || '')
+      .localeCompare(right.displayName || right.username || '', 'zh-CN')
+      || (left.accountId ?? 0) - (right.accountId ?? 0));
     const summaryRows = (await client.query(`WITH filtered AS MATERIALIZED (
       SELECT t.id,t.state,t.current_copy_revision_id,t.copy_qc_released_revision_id,
         t.current_image_run_id,t.image_qc_released_approval_event_id,t.image_qc_legacy_accepted,
@@ -639,7 +721,7 @@ export async function readTaskDataReport(pool, actor, input = {}, { now = new Da
     await client.query('COMMIT');
     const total = Number(summaryRows.total);
     return {
-      poolOverview, overview, activityOverview,
+      poolOverview, overview, activityOverview, activityPeople,
       summary: {
         total, byState: summaryRows.by_state ?? {},
         reviewPending: Number(summaryRows.copy_review_pending) + Number(summaryRows.image_review_pending),
@@ -663,7 +745,7 @@ export async function readTaskDataReport(pool, actor, input = {}, { now = new Da
       },
       items, total, page: query.page, pageSize: query.pageSize, asOf,
       range: { field: query.time.field, from: query.time.from, to: query.time.to,
-        timeZone: 'Asia/Shanghai' },
+        fromTime: query.time.fromTime, toTime: query.time.toTime, timeZone: 'Asia/Shanghai' },
       dataQuality: {
         legacyAssignmentCount: Number(summaryRows.legacy_assignment_count),
         missingFirstManualAssignmentCount: Number(summaryRows.missing_first_manual_assignment_count),

@@ -123,6 +123,9 @@ test('delivery overview uses ready dates with mutually exclusive current-version
     async function assertOverview(expected, day = DAY) {
       const result = await report(day);
       assert.deepEqual(result.overview, expected);
+      assert.equal(result.activityPeople.reduce((sum, person) => sum + person.deliveryTotal, 0),
+        expected.unpacked + expected.packed + expected.delivered,
+        'personnel delivery rows reconcile with the overview');
       assert.equal(result.total, 0, 'the detail list keeps its first COPY review date outside the query interval');
       assert.equal(result.summary.total, 0, 'overview delivery dates do not change the detail summary');
       assert.equal(result.summary.copyInitialReviewPending, 0,
@@ -165,12 +168,28 @@ test('delivery overview uses ready dates with mutually exclusive current-version
 
     await t.test('the current tuple occupies one stage and uses its annotator at the relevant operation', async () => {
       await assertOverview({ unpacked: 2, packed: 1, delivered: 1 });
-      assert.deepEqual((await report(DAY, [annotator(a)])).overview, { unpacked: 1, packed: 0, delivered: 0 });
+      assert.equal((await report()).activityPeople.reduce((sum, person) => sum + person.imagePassed, 0), 4,
+        'released and legacy accepted image versions both count as passed');
+      const aReport = await report(DAY, [annotator(a)]);
+      assert.deepEqual(aReport.overview, { unpacked: 1, packed: 0, delivered: 0 });
+      assert.equal(aReport.activityPeople.find(person => person.accountId === a.userId)?.imagePassed, 1);
+      assert.deepEqual(aReport.activityPeople.filter(person => person.deliveryTotal > 0)
+        .map(person => [person.accountId, person.deliveryTotal]), [[a.userId, 1]],
+      'the personnel row uses the owner at the delivery operation');
       assert.deepEqual((await report(DAY, [annotator(b)])).overview, { unpacked: 1, packed: 1, delivered: 1 });
       assert.deepEqual((await report(DAY, [annotator(c)])).overview, { unpacked: 0, packed: 0, delivered: 0 },
         'a later reassignment does not change the operation-time owner');
       assert.deepEqual((await report(DAY, [annotator(admin)])).overview, { unpacked: 0, packed: 0, delivered: 0 },
         'the QA approver and packing operator are not the annotator owner');
+    });
+
+    await t.test('exact second bounds include both selected seconds', async () => {
+      const precise = await readTaskDataReport(db, admin, {
+        time: { field: 'FIRST_COPY_REVIEW_ACTION', mode: 'ABSOLUTE',
+          from: DAY, fromTime: '07:30:00', to: DAY, toTime: '08:00:00' },
+      });
+      assert.deepEqual(precise.overview, { unpacked: 1, packed: 0, delivered: 1 });
+      assert.equal(precise.activityPeople.reduce((sum, person) => sum + person.imagePassed, 0), 2);
     });
 
     await t.test('a later confirmation and an old delivered version cannot leave a task in multiple stages', async () => {
@@ -196,10 +215,17 @@ test('delivery overview uses ready dates with mutually exclusive current-version
     const invalidDetailTasks = [];
     let testRunTask;
     await t.test('withdrawn, cancelled, stale, test and ungated tuples are excluded from all overview stages', async () => {
+      const beforeWithdrawn = await report();
+      const beforePassed = beforeWithdrawn.activityPeople.reduce((sum, person) => sum + person.imagePassed, 0);
       const withdrawn = await readyTask('已撤回交付版本');
       await pack(withdrawn, '2026-09-20T12:00:00+08:00');
       await db.query(`UPDATE delivery_entries SET status='WITHDRAWN',
         withdrawn_at='2026-09-22T10:00:00+08:00' WHERE id=$1`, [withdrawn.entryId]);
+      const afterWithdrawn = await report();
+      assert.equal(afterWithdrawn.activityPeople.reduce((sum, person) => sum + person.imagePassed, 0),
+        beforePassed + 1, 'a withdrawn version remains a historical image pass');
+      assert.deepEqual(afterWithdrawn.overview, beforeWithdrawn.overview,
+        'the withdrawn version is absent from current new deliveries');
       const cancelled = await readyTask('交付过但当前已废弃', { owner: b });
       await pack(cancelled, '2026-09-20T12:00:00+08:00', '2026-09-20T13:00:00+08:00');
       await db.query(`UPDATE tasks SET state='CANCELLED',cancelled_from_state='REVIEWED',

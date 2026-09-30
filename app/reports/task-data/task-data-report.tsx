@@ -1,20 +1,20 @@
 'use client';
 
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { Boxes, ChevronDown, ChevronRight, FileClock, FileSearch, ImageUp, Images, RefreshCw, ScanSearch, Search, Settings2, Trash2, X } from 'lucide-react';
+import { Boxes, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, FileClock, FileSearch, FileSpreadsheet, ImageUp, Images, RefreshCw, ScanSearch, Search, Settings2, Trash2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { apiRequest } from '../../components/api-client';
+import { activityColumns, activityDetailWorkbook, visibleActivityPeople, type ActivityPerson } from './activity-detail-xlsx';
 import styles from './task-data-report.module.css';
 
 const REPORT_API = '/api/control-plane/v1/admin/task-data-report/query';
-const EXPORT_API = '/api/control-plane/v1/admin/task-data-report/export';
 const SAVED_API = '/api/control-plane/v1/admin/task-data-report/saved-queries';
 const USERS_API = '/api/control-plane/v1/users';
 
 type TimeField = 'FIRST_COPY_REVIEW_ACTION';
-type TimeSelection = { field: TimeField; mode: 'ABSOLUTE'; from: string; to: string };
+type TimeSelection = { field: TimeField; mode: 'ABSOLUTE'; from: string; to: string; fromTime: string; toTime: string };
 
 const PEOPLE_FIELDS = [
   ['ANNOTATOR', '标注人', '匹配任务历任标注人，包含驳回后的改派'],
@@ -51,6 +51,7 @@ type ReportResponse = {
   poolOverview?: { copyReviewPending: number; copyReworkPending: number; secondAssignmentPending: number; copyQaPending: number; imageGenerating: number; imageReviewPending: number; imageQaPending: number; deliveryTotal: number };
   overview?: { unpacked: number; packed: number; delivered: number };
   activityOverview?: { copyReview: number; copyRework: number; copyQa: number; imageReview: number; imageQa: number; imageQaPassed: number };
+  activityPeople?: ActivityPerson[];
   summary: { total: number; reviewPending: number; copyReviewPending: number; copyInitialReviewPending: number; copyReworkPending: number; imageReviewPending: number; qaPending: number; copyQaPending: number; imageQaPending: number; byState: Record<string, number>; copyQaPassed: number; copyQaFirstPassed: number; imageQaPassed: number; discarded: number; packingDelivery: number };
   items: TaskRow[]; total: number; page: number; pageSize: number; asOf: string;
   dataQuality?: { legacyAssignmentCount?: number; missingFirstManualAssignmentCount?: number };
@@ -92,7 +93,8 @@ const ADDED_METRIC_IDS: MetricId[] = ['secondAssignmentPending'];
 const LEGACY_ADDED_METRIC_IDS: MetricId[] = ['copyInitialReviewPending', 'imageRetryPending', ...ADDED_METRIC_IDS];
 
 const EMPTY_CONFIG: QueryConfig = {
-  time: { field: 'FIRST_COPY_REVIEW_ACTION', mode: 'ABSOLUTE', ...relativeRange(1) },
+  time: { field: 'FIRST_COPY_REVIEW_ACTION', mode: 'ABSOLUTE', ...relativeRange(1),
+    fromTime: '00:00:00', toTime: '23:59:59' },
   match: 'ALL', conditions: [], sort: 'FIRST_COPY_REVIEW_ACTION', order: 'DESC', pageSize: 20,
 };
 
@@ -106,6 +108,89 @@ function relativeRange(days: number) {
   return { from, to };
 }
 
+const CLOCK_HOURS = Array.from({ length: 24 }, (_, index) => String(index).padStart(2, '0'));
+const CLOCK_MINUTES = Array.from({ length: 60 }, (_, index) => String(index).padStart(2, '0'));
+const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'];
+
+function DateTimePicker({ label, date, time, onChange, alignEnd = false }: {
+  label: string; date: string; time: string;
+  onChange: (date: string, time: string) => void; alignEnd?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [visibleMonth, setVisibleMonth] = useState(date.slice(0, 7));
+  const root = useRef<HTMLDivElement>(null);
+  const parts = time.split(':');
+  const [year, month] = visibleMonth.split('-').map(Number);
+  const monthStart = new Date(Date.UTC(year, month - 1, 1));
+  const offset = (monthStart.getUTCDay() + 6) % 7;
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const dayCount = Math.ceil((offset + daysInMonth) / 7) * 7;
+  const days = Array.from({ length: dayCount }, (_, index) =>
+    new Date(monthStart.getTime() + (index - offset) * 86_400_000).toISOString().slice(0, 10));
+  useEffect(() => {
+    if (!open) return;
+    setVisibleMonth(date.slice(0, 7));
+    function closeOutside(event: PointerEvent) {
+      if (root.current && !root.current.contains(event.target as Node)) setOpen(false);
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') setOpen(false);
+    }
+    document.addEventListener('pointerdown', closeOutside);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [open, date]);
+  function changeMonth(delta: number) {
+    setVisibleMonth(new Date(Date.UTC(year, month - 1 + delta, 1)).toISOString().slice(0, 7));
+  }
+  function changePart(index: number, next: string) {
+    const updated = [...parts];
+    updated[index] = next;
+    onChange(date, updated.join(':'));
+  }
+  return <div className={`${styles.dateTimePicker} ${alignEnd ? styles.dateTimePickerEnd : ''}`} ref={root}>
+    <button type="button" className={styles.dateTimeTrigger}
+      aria-label={`${label}：${date} ${time}`} aria-expanded={open}
+      onClick={() => setOpen(current => !current)}>
+      <span>{date.replaceAll('-', '/')} {time}</span><CalendarDays size={15} aria-hidden="true" />
+    </button>
+    {open && <div className={styles.dateTimePopup} role="group" aria-label={`${label}选择`}>
+      <div className={styles.calendarPane}>
+        <div className={styles.calendarToolbar}>
+          <button type="button" aria-label="上个月" onClick={() => changeMonth(-1)}><ChevronLeft size={16} aria-hidden="true" /></button>
+          <strong>{year}年{month}月</strong>
+          <button type="button" aria-label="下个月" onClick={() => changeMonth(1)}><ChevronRight size={16} aria-hidden="true" /></button>
+        </div>
+        <div className={styles.calendarGrid}>
+          {WEEKDAYS.map(weekday => <span key={weekday}>{weekday}</span>)}
+          {days.map(day => <button type="button" key={day}
+            className={`${styles.calendarDay} ${day.slice(0, 7) !== visibleMonth ? styles.calendarOutside : ''} ${day === date ? styles.calendarSelected : ''}`}
+            aria-label={day} aria-pressed={day === date}
+            onClick={() => { onChange(day, time); setVisibleMonth(day.slice(0, 7)); }}>
+            {Number(day.slice(-2))}
+          </button>)}
+        </div>
+      </div>
+      <div className={styles.clockPane}>
+        <div className={styles.clockColumns}>
+          {(['时', '分', '秒'] as const).map((partLabel, index) => <div className={styles.clockColumn} key={partLabel}>
+            <span>{partLabel}</span>
+            <select size={7} aria-label={`${label}${partLabel}`} value={parts[index]}
+              onChange={event => changePart(index, event.target.value)}>
+              {(index === 0 ? CLOCK_HOURS : CLOCK_MINUTES).map(option =>
+                <option key={option} value={option}>{option}</option>)}
+            </select>
+          </div>)}
+        </div>
+        <button type="button" className={styles.clockDone} onClick={() => setOpen(false)}>完成</button>
+      </div>
+    </div>}
+  </div>;
+}
+
 function numericCondition(field: ConditionField) {
   return PEOPLE_FIELDS.some(([candidate]) => candidate === field) || ['REJECTION_COUNT', 'REASSIGNMENT_COUNT'].includes(field);
 }
@@ -117,7 +202,8 @@ function serializedConditions(conditions: Condition[]) {
 }
 
 function queryBody(config: QueryConfig, page: number) {
-  return { time: { field: 'FIRST_COPY_REVIEW_ACTION', from: config.time.from, to: config.time.to }, match: 'ALL',
+  return { time: { field: 'FIRST_COPY_REVIEW_ACTION', from: config.time.from, to: config.time.to,
+    fromTime: config.time.fromTime, toTime: config.time.toTime }, match: 'ALL',
     conditions: serializedConditions(config.conditions),
     page, pageSize: config.pageSize, sort: config.sort, order: config.order };
 }
@@ -146,6 +232,8 @@ function cleanConfig(value: QueryConfig): QueryConfig {
   const range = value === EMPTY_CONFIG ? relativeRange(1) : savedTime && 'from' in savedTime && 'to' in savedTime
     ? { from: savedTime.from, to: savedTime.to }
     : relativeRange(savedTime && 'days' in savedTime ? savedTime.days : 1);
+  const fromTime = savedTime && 'fromTime' in savedTime ? savedTime.fromTime : '00:00:00';
+  const toTime = savedTime && 'toTime' in savedTime ? savedTime.toTime : '23:59:59';
   const allowed = new Set<ConditionField>(['TASK_ID_OR_NAME', 'ANNOTATOR', 'STATE',
     'REJECTION_COUNT', 'REASSIGNMENT_COUNT', 'COPY_QA_REVIEWER', 'IMAGE_QA_REVIEWER']);
   const seen = new Set<ConditionField>();
@@ -160,7 +248,7 @@ function cleanConfig(value: QueryConfig): QueryConfig {
       : condition.field === 'REASSIGNMENT_COUNT' ? 'GTE' as const : 'EQ' as const,
     value: String(condition.value ?? ''),
   })) : [];
-  return { ...EMPTY_CONFIG, time: { field: 'FIRST_COPY_REVIEW_ACTION', mode: 'ABSOLUTE', ...range },
+  return { ...EMPTY_CONFIG, time: { field: 'FIRST_COPY_REVIEW_ACTION', mode: 'ABSOLUTE', ...range, fromTime, toTime },
     match: 'ALL', conditions };
 }
 
@@ -244,6 +332,69 @@ function OverviewCards({ overview, activity }: {
       </div></div>
       <strong>{count == null ? '—' : count.toLocaleString('zh-CN')}</strong>
     </div>)}
+  </div>;
+}
+
+function ActivityColumnHint({ label, hint }: { label: string; hint: string }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const tooltipId = useId();
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+  useEffect(() => {
+    if (!position) return;
+    const hide = () => setPosition(null);
+    window.addEventListener('scroll', hide, true);
+    window.addEventListener('resize', hide);
+    return () => {
+      window.removeEventListener('scroll', hide, true);
+      window.removeEventListener('resize', hide);
+    };
+  }, [position]);
+  function show() {
+    const rect = ref.current?.getBoundingClientRect();
+    if (!rect) return;
+    setPosition({ top: rect.bottom + 68 > window.innerHeight ? rect.top - 62 : rect.bottom + 6,
+      left: Math.max(8, Math.min(rect.left, window.innerWidth - 328)) });
+  }
+  return <>
+    <span ref={ref} className={styles.activityColumnLabel} tabIndex={0}
+      aria-describedby={position ? tooltipId : undefined}
+      onMouseEnter={show} onMouseLeave={() => setPosition(null)}
+      onFocus={show} onBlur={() => setPosition(null)}>
+      {label}<CircleAlert size={14} aria-hidden="true" />
+    </span>
+    {position && createPortal(<span id={tooltipId} role="tooltip" className={styles.activityTooltip}
+      style={position}>{hint}</span>, document.body)}
+  </>;
+}
+
+function ActivityPeopleTable({ people, exporting, onExport }: {
+  people: ActivityPerson[]; exporting: boolean; onExport: () => void;
+}) {
+  const rows = visibleActivityPeople(people);
+  return <div className={styles.activityDetail}>
+    <div className={styles.activityTitle}><h3>作业详情</h3>
+      <Button variant="outline" size="sm" type="button" disabled={exporting} onClick={onExport}>
+        <FileSpreadsheet size={15} aria-hidden="true" />{exporting ? '正在导出…' : '导出 Excel'}
+      </Button>
+    </div>
+    <div className={styles.activityTableScroll} role="region" aria-label="作业详情" tabIndex={0}>
+      <table><thead><tr>{activityColumns.map(column => <th scope="col" key={column.label}>
+        <ActivityColumnHint label={column.label} hint={column.hint} />
+      </th>)}</tr></thead><tbody>{rows.map(person => <tr key={person.accountId ?? 'unassigned'}>
+        <th scope="row">{person.displayName || person.username || (person.accountId ? `账号 #${person.accountId}` : '未归属人员')}
+          {person.username && person.displayName && person.username !== person.displayName && <small>{person.username}</small>}
+        </th>
+        <td>{(person.copyReview + person.copyRework).toLocaleString('zh-CN')}</td>
+        <td>{person.copyReview.toLocaleString('zh-CN')}</td>
+        <td>{person.copyRework.toLocaleString('zh-CN')}</td>
+        <td>{person.imageReview.toLocaleString('zh-CN')}</td>
+        <td>{person.imageFirstReview.toLocaleString('zh-CN')}</td>
+        <td>{person.imageRework.toLocaleString('zh-CN')}</td>
+        <td>{person.imagePassed.toLocaleString('zh-CN')}</td>
+        <td>{person.deliveryTotal.toLocaleString('zh-CN')}</td>
+      </tr>)}</tbody></table>
+      {!rows.length && <div className={styles.activityEmpty}>该时间区间没有作业记录。</div>}
+    </div>
   </div>;
 }
 
@@ -365,7 +516,8 @@ export function TaskDataReport() {
         const preferred = items.find(item => item.isDefault);
         if (preferred?.query) {
           const config = cleanConfig(preferred.query);
-          const todayConfig: QueryConfig = { ...config, pageSize: 20, time: { field: 'FIRST_COPY_REVIEW_ACTION', mode: 'ABSOLUTE', ...relativeRange(1) } };
+          const todayConfig: QueryConfig = { ...config, pageSize: 20, time: { field: 'FIRST_COPY_REVIEW_ACTION', mode: 'ABSOLUTE', ...relativeRange(1),
+            fromTime: '00:00:00', toTime: '23:59:59' } };
           setDraft(todayConfig); setApplied(todayConfig); setSelectedId(preferred.id); setSchemeName(preferred.name);
         }
       })
@@ -399,7 +551,12 @@ export function TaskDataReport() {
   const fixedValues = useMemo(() => new Map(draft.conditions.map(condition =>
     [condition.field, condition.value] as const)), [draft.conditions]);
   const totalPages = Math.max(1, Math.ceil((report?.total ?? 0) / (report?.pageSize || draft.pageSize)));
-  const invalidDate = !draft.time.from || !draft.time.to || draft.time.from > draft.time.to;
+  const invalidDate = !draft.time.from || !draft.time.to
+    || !/^\d{4}-\d{2}-\d{2}$/u.test(draft.time.from)
+    || !/^\d{4}-\d{2}-\d{2}$/u.test(draft.time.to)
+    || !/^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/u.test(draft.time.fromTime)
+    || !/^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/u.test(draft.time.toTime)
+    || `${draft.time.from}T${draft.time.fromTime}` > `${draft.time.to}T${draft.time.toTime}`;
   const invalidNumber = draft.conditions.some(condition => numericCondition(condition.field) && String(condition.value).trim()
     && (!Number.isSafeInteger(Number(condition.value))
       || Number(condition.value) < (PEOPLE_FIELDS.some(([field]) => field === condition.field) ? 1 : 0)
@@ -463,25 +620,20 @@ export function TaskDataReport() {
     finally { setSchemeBusy(false); }
   }
 
-  async function exportCsv() {
+  async function exportActivityDetail() {
+    if (!report) return;
     setExporting(true); setExportError('');
     try {
-      const response = await fetch(EXPORT_API, {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(queryBody(applied, 1)), cache: 'no-store',
-      });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => null);
-        throw new Error(payload?.error?.message || `导出失败（${response.status}）`);
-      }
-      const blob = await response.blob();
+      const blob = await activityDetailWorkbook(report.activityPeople ?? []);
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
-      link.href = url; link.download = `任务数据统计-${chinaToday()}.csv`;
+      link.href = url;
+      link.download = `${applied.time.from}-${applied.time.to}.xlsx`;
       document.body.append(link); link.click(); link.remove();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (cause) { setExportError(cause instanceof Error ? cause.message : '导出失败'); }
-    finally { setExporting(false); }
+    } catch (cause) {
+      setExportError(cause instanceof Error ? cause.message : '导出失败');
+    } finally { setExporting(false); }
   }
 
   return <div className={styles.page}>
@@ -522,11 +674,13 @@ export function TaskDataReport() {
     <form className={`${styles.filters} panel`} onSubmit={apply} aria-labelledby="task-report-filter-title">
       <h2 id="task-report-filter-title" className={styles.filterTitle}>筛选条件</h2>
       <div className={styles.primaryFilters}>
-        <label>时间区间<div className={styles.dateRange}>
-          <input type="date" aria-label="开始日期" value={draft.time.from} onChange={event => updateTime({ ...draft.time, from: event.target.value })} />
+        <div className={styles.timeFilter}>时间区间<div className={styles.dateRange}>
+          <DateTimePicker label="开始时间" date={draft.time.from} time={draft.time.fromTime}
+            onChange={(from, fromTime) => updateTime({ ...draft.time, from, fromTime })} />
           <span>至</span>
-          <input type="date" aria-label="结束日期" value={draft.time.to} onChange={event => updateTime({ ...draft.time, to: event.target.value })} />
-        </div></label>
+          <DateTimePicker label="结束时间" date={draft.time.to} time={draft.time.toTime} alignEnd
+            onChange={(to, toTime) => updateTime({ ...draft.time, to, toTime })} />
+        </div></div>
         <label>标注人<select value={fixedValues.get('ANNOTATOR') ?? ''} onChange={event => updateFixed('ANNOTATOR', event.target.value)}>
           <option value="">全部标注人</option>{annotatorOptions.map(account => <option key={account.id} value={account.id}>{account.displayName || account.username}（{account.username}）{account.status === 'DISABLED' ? ' · 已停用' : ''}</option>)}
         </select></label>
@@ -559,21 +713,25 @@ export function TaskDataReport() {
               <option key={account.id} value={account.id}>{account.displayName || account.username}（{account.username}）{account.status === 'DISABLED' ? ' · 已停用' : ''}</option>)}
           </select></label>)}
       </div>}
-      {invalidDate && <p role="alert" className={styles.error}>请选择有效的开始和结束日期。</p>}
+      {invalidDate && <p role="alert" className={styles.error}>请选择有效的开始和结束时间（精确到秒）。</p>}
       {invalidNumber && <p role="alert" className={styles.error}>人员账号及次数条件应填写有效整数。</p>}
       {tooManyConditions && <p role="alert" className={styles.error}>最多可以同时使用 20 个已填写条件。</p>}
     </form>
 
     {error && <div role="alert" className={styles.errorBox}>{error}</div>}
     {exportError && <div role="alert" className={styles.errorBox}>{exportError}</div>}
-    {report && <><section className={styles.statisticsPanel} aria-label="查询统计">
+    {report && <><section className={styles.statisticsPanel} aria-label="标注作业统计">
       <section className={styles.overviewSection} aria-labelledby="task-overview-title">
         <div className={styles.overviewToolbar}>
           <h2 id="task-overview-title">标注作业概览</h2>
           <p>仅受时间区间和标注人影响</p>
         </div>
         <OverviewCards overview={report.overview} activity={report.activityOverview} />
+        <ActivityPeopleTable people={report.activityPeople ?? []} exporting={exporting}
+          onExport={() => void exportActivityDetail()} />
       </section>
+    </section>
+    <div className={styles.taskResultsPanel}>
       <section className={styles.summarySection} aria-label="任务数量详情">
         <div className={styles.summaryToolbar}>
           <h2>任务数量详情</h2>
@@ -596,18 +754,17 @@ export function TaskDataReport() {
           <SecondaryMetricCards summary={report.summary} />
         </div>
       </section>
-    </section>
-    <section className={`${styles.results} panel`} aria-label="任务数据明细">
-      <div className={styles.resultHead}><div><h2>任务明细</h2><p>共 {report.total.toLocaleString('zh-CN')} 条任务 · 第 {report.page} / {totalPages} 页 · 北京时间 · 更新于 {timeText(report.asOf)}</p></div>
-        {loading && <span role="status">正在更新…</span>}</div>
-      <div className={styles.tableScroll} role="region" aria-label="任务数据明细" tabIndex={0}><table><thead><tr>
-        <th scope="col">任务ID</th><th scope="col">任务名</th><th scope="col">当前标注人</th><th scope="col">文案质检人</th><th scope="col">图片质检人</th><th scope="col">任务状态</th><th scope="col">驳回次数</th><th scope="col">改派次数</th>
-      </tr></thead><tbody>{report.items.map(row => <FragmentRow key={row.taskId} row={row} open={openTaskId === row.taskId} onToggle={() => setOpenTaskId(current => current === row.taskId ? null : row.taskId)} />)}</tbody></table>
-        {!report.items.length && <div className={styles.empty}>该范围没有符合条件的任务。可调整日期或筛选条件。</div>}
-      </div>
-      <div className={styles.pagination}><span>每页 {report.pageSize} 条</span><div><Button variant="outline" size="sm" type="button" disabled={page <= 1 || loading} onClick={() => setPage(value => value - 1)}>上一页</Button>
-        <span>{page} / {totalPages}</span><Button variant="outline" size="sm" type="button" disabled={page >= totalPages || loading} onClick={() => setPage(value => value + 1)}>下一页</Button></div></div>
-    </section></>}
+      <section className={`${styles.results} panel`} aria-label="任务数据明细">
+        <div className={styles.resultHead}><div><h2>任务明细</h2><p>共 {report.total.toLocaleString('zh-CN')} 条任务 · 第 {report.page} / {totalPages} 页 · 北京时间 · 更新于 {timeText(report.asOf)}</p></div>
+          {loading && <span role="status">正在更新…</span>}</div>
+        <div className={styles.tableScroll} role="region" aria-label="任务数据明细" tabIndex={0}><table><thead><tr>
+          <th scope="col">任务ID</th><th scope="col">任务名</th><th scope="col">当前标注人</th><th scope="col">文案质检人</th><th scope="col">图片质检人</th><th scope="col">任务状态</th><th scope="col">驳回次数</th><th scope="col">改派次数</th>
+        </tr></thead><tbody>{report.items.map(row => <FragmentRow key={row.taskId} row={row} open={openTaskId === row.taskId} onToggle={() => setOpenTaskId(current => current === row.taskId ? null : row.taskId)} />)}</tbody></table>
+          {!report.items.length && <div className={styles.empty}>该范围没有符合条件的任务。可调整日期或筛选条件。</div>}
+        </div>
+        <div className={styles.pagination}><span>每页 {report.pageSize} 条</span><div><Button variant="outline" size="sm" type="button" disabled={page <= 1 || loading} onClick={() => setPage(value => value - 1)}>上一页</Button>
+          <span>{page} / {totalPages}</span><Button variant="outline" size="sm" type="button" disabled={page >= totalPages || loading} onClick={() => setPage(value => value + 1)}>下一页</Button></div></div>
+      </section></div></>}
     <Dialog open={metricSettingsOpen} onOpenChange={setMetricSettingsOpen}>
       <DialogContent className={styles.metricDialog} overlayClassName={styles.metricOverlay}>
         <DialogTitle className={styles.metricDialogTitle}>选择显示的数量标签</DialogTitle>

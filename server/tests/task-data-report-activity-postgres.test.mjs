@@ -287,7 +287,9 @@ test('activity overview counts personal handoff work and historical operations i
     });
 
     await t.test('IMAGE review combines modern submissions with legacy decisions without archive duplication', async () => {
-      const initial = await activity();
+      const initialReport = await report();
+      const initial = initialReport.activityOverview;
+      const initialPerson = initialReport.activityPeople.find(person => person.accountId === a.userId);
       const modern = await task('同任务两次图片初审提交');
       await copyApproval(modern, at('2026-09-01'));
       await image(modern, at(DAY, '10:00:00'));
@@ -305,8 +307,36 @@ test('activity overview counts personal handoff work and historical operations i
       await human(legacy, 'IMAGE', 'RETRY', at(DAY, '11:00:00'));
       await archive(legacy, { deleteLive: false });
       await reassign(modern, b, at(AFTER));
-      assert.deepEqual(difference(await activity(), initial), { ...ZERO, imageReview: 3 });
+      const currentReport = await report();
+      assert.deepEqual(difference(currentReport.activityOverview, initial), { ...ZERO, imageReview: 3 });
+      const currentPerson = currentReport.activityPeople.find(person => person.accountId === a.userId);
+      assert.equal(currentPerson.imageFirstReview - (initialPerson?.imageFirstReview ?? 0), 2);
+      assert.equal(currentPerson.imageRework - (initialPerson?.imageRework ?? 0), 1);
+      assert.equal(currentPerson.imageReview,
+        currentPerson.imageFirstReview + currentPerson.imageRework);
       assert.equal((await activity(DAY, [annotator(b)])).imageReview, 0);
+    });
+
+    await t.test('IMAGE first work restarts after a handoff back to the same annotator', async () => {
+      const beforeA = (await report(DAY, [annotator(a)])).activityPeople
+        .find(person => person.accountId === a.userId);
+      const beforeB = (await report(DAY, [annotator(b)])).activityPeople
+        .find(person => person.accountId === b.userId);
+      const fixture = await task('图片接手轮次首次与返修');
+      await copyApproval(fixture, at('2026-09-01'));
+      await image(fixture, at(DAY, '08:00:00'));
+      await image(fixture, at(DAY, '09:00:00'));
+      await reassign(fixture, b, at(DAY, '10:00:00'));
+      await image(fixture, at(DAY, '11:00:00'));
+      await reassign(fixture, a, at(DAY, '12:00:00'));
+      await image(fixture, at(DAY, '13:00:00'));
+      const afterA = (await report(DAY, [annotator(a)])).activityPeople
+        .find(person => person.accountId === a.userId);
+      const afterB = (await report(DAY, [annotator(b)])).activityPeople
+        .find(person => person.accountId === b.userId);
+      assert.equal(afterA.imageFirstReview - (beforeA?.imageFirstReview ?? 0), 2);
+      assert.equal(afterA.imageRework - (beforeA?.imageRework ?? 0), 1);
+      assert.equal(afterB.imageFirstReview - (beforeB?.imageFirstReview ?? 0), 1);
     });
 
     await t.test('legacy QA counts each affected task and includes batch release without counting passed items twice', async () => {
@@ -481,6 +511,15 @@ test('activity overview counts personal handoff work and historical operations i
       await qaEvent(imageSample, 'PASS', at(DAY));
       const current = await report();
       assert.deepEqual(difference(current.activityOverview, initial), { ...ZERO, copyReview: 2 });
+      for (const metric of ['copyReview', 'copyRework', 'imageReview']) {
+        assert.equal(current.activityPeople.reduce((sum, person) => sum + person[metric], 0),
+          current.activityOverview[metric], `${metric} personnel rows reconcile with the overview`);
+      }
+      assert.equal(current.activityPeople.reduce((sum, person) => sum + person.imagePassed, 0), 0,
+        'QA decisions alone do not count as final image releases');
+      for (const person of current.activityPeople) {
+        assert.equal(person.imageReview, person.imageFirstReview + person.imageRework);
+      }
       const filtered = await report(DAY, [
         { field: 'STATE', op: 'EQ', value: 'IMAGE_FAILED' },
         { field: 'TASK_ID_OR_NAME', op: 'CONTAINS', value: 'definitely-no-matching-task' },
@@ -491,6 +530,8 @@ test('activity overview counts personal handoff work and historical operations i
       ]);
       assert.equal(filtered.total, 0);
       assert.deepEqual(filtered.activityOverview, current.activityOverview);
+      assert.deepEqual(filtered.activityPeople, current.activityPeople,
+        'task-level conditions do not affect the personnel activity overview');
       assert.ok(current.activityOverview.imageQaPassed <= current.activityOverview.imageQa);
     });
 

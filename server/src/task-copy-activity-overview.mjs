@@ -25,13 +25,18 @@ export async function readTaskCopyActivityOverview(client,query,asOf) {
   const annotators=query.conditions.filter(condition=>condition.field==='ANNOTATOR').map(condition=>condition.value);
   const start=Date.parse(query.time.start),end=Date.parse(query.time.end),snapshot=Date.parse(asOf);
   const counts={copyReview:0,copyRework:0};
+  const people=new Map();
   for(const row of work) {
     const at=Date.parse(row.at);
     if(!isAnnotationWork(row) || row.stage!=='COPY' || at<start || at>=end || at>snapshot) continue;
     if(annotators.length && !(query.match==='ANY'
       ?annotators.some(accountId=>row.accountId===accountId)
       :annotators.every(accountId=>row.accountId===accountId))) continue;
-    counts[row.annotationFirst?'copyReview':'copyRework']++;
+    const metric=row.annotationFirst?'copyReview':'copyRework';
+    counts[metric]++;
+    const person=people.get(row.accountId)??{accountId:row.accountId,copyReview:0,copyRework:0};
+    person[metric]++;
+    people.set(row.accountId,person);
   }
-  return counts;
+  return {counts,people:[...people.values()]};
 }
