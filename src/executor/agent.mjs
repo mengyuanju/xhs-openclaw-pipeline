@@ -196,6 +196,14 @@ export async function executeImageClaim({
   const taskRoot = safeTaskWorkRoot(workRoot, task.id);
   const source = copySource(snapshot.copyRevision);
   if (!source.query) source.query = snapshot.task.query;
+  // Validate approved copy before selecting a local recovery run. Source
+  // contract failures occur before image generation creates any checkpoint.
+  try {
+    normalizeStandaloneImageSource(source);
+  } catch (error) {
+    if (!(error instanceof TypeError || error instanceof RangeError)) throw error;
+    throw Object.assign(new Error(error.message, { cause: error }), { code: 'IMAGE_SOURCE_INVALID' });
+  }
   const recoveryRunIds = imageRecoveryRunIds(execution, taskRoot);
   let sourceRunId = null;
   const restorePlan = storedPlan => plannedForStandaloneRecovery({
@@ -416,8 +424,9 @@ export function createExecutorAgent({
       const code = codexCode ?? (error?.code?.startsWith('EXECUTION_') || error?.code === 'STALE_EXECUTION'
         ? error.code : null);
       const retryableModelAvailability = ['CODEX_MODEL_AT_CAPACITY', 'CODEX_RATE_LIMITED'].includes(codexCode);
+      const invalidImageSource = error?.code === 'IMAGE_SOURCE_INVALID';
       await controlPlane.failExecution(claim.execution.id, error,
-        code ? { autoRetry: retryableModelAvailability } : {});
+        code || invalidImageSource ? { autoRetry: retryableModelAvailability } : {});
     } catch (reportError) {
       if (reportError?.code !== 'STALE_EXECUTION'
           && !(claim.imageEdit && ['IMAGE_EDIT_CONFLICT', 'NOT_FOUND'].includes(reportError?.code))) {

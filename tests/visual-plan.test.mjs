@@ -152,23 +152,40 @@ describe('visual plan contract', () => {
     assert.ok(direct.pages[0].sourceEvidence.every(Boolean));
   });
 
-  it('allows dense checklist text up to 40 characters while keeping steps at 30', () => {
+  it('counts English runs as one in bullets and preserves approved overflow unchanged', () => {
     const checklistText = '清'.repeat(40);
     const post = postFixture();
     post.body += checklistText;
     post.imagePlan[2].bullets[0] = checklistText;
+    post.imagePlan[1].bullets[0] = `${'清'.repeat(29)}ONVIF`;
     const output = validVisualPlan(post);
     assert.equal(
       parseVisualPlanOutput(JSON.stringify(output), { post, imageCount: 3 })
         .pages[2].allowedVisibleText.bullets[0],
       checklistText,
     );
+    assert.equal(
+      parseVisualPlanOutput(JSON.stringify(output), { post, imageCount: 3 })
+        .pages[1].allowedVisibleText.bullets[0],
+      `${'清'.repeat(29)}ONVIF`,
+    );
 
-    post.imagePlan[1].bullets[0] = checklistText;
-    const invalidSteps = validVisualPlan(post);
+    const invalidSteps = structuredClone(output);
+    invalidSteps.pages[1].allowedVisibleText.bullets[0] = '清'.repeat(31);
     assert.throws(
       () => parseVisualPlanOutput(JSON.stringify(invalidSteps), { post, imageCount: 3 }),
       /pages\[1\].allowedVisibleText.bullets\[0\].*30 characters/i,
+    );
+
+    post.imagePlan[1].bullets[0] = '清'.repeat(45);
+    const approvedOverflow = validVisualPlan(post);
+    assert.equal(parseVisualPlanOutput(JSON.stringify(approvedOverflow), { post, imageCount: 3 })
+      .pages[1].allowedVisibleText.bullets[0], '清'.repeat(45));
+    post.imagePlan[1].bullets[0] = '清'.repeat(201);
+    const beyondHardMax = validVisualPlan(post);
+    assert.throws(
+      () => parseVisualPlanOutput(JSON.stringify(beyondHardMax), { post, imageCount: 3 }),
+      /pages\[1\].allowedVisibleText.bullets\[0\].*200 characters/i,
     );
   });
 

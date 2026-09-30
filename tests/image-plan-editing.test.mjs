@@ -74,6 +74,25 @@ test('image plan bullet warnings count user-visible graphemes instead of Unicode
   ]);
 });
 
+test('image plan bullet warnings count each English letter run as one unit', () => {
+  const task597Bullet = '第三方录像机选ONVIF，填写摄像头IP、账号、密码和端口80';
+  const imagePlan = [{
+    kind: 'detail',
+    bullets: [
+      task597Bullet,
+      `${task597Bullet}${'字'.repeat(4)}`,
+      `${task597Bullet}${'字'.repeat(5)}`,
+      `${'字'.repeat(24)}ONVIF，IP 80`,
+      `${'字'.repeat(25)}ONVIF，IP 80`,
+    ],
+  }];
+
+  assert.deepEqual(imagePlanBulletLengthWarnings(imagePlan), [
+    { pageIndex: 0, bulletIndex: 2, length: 31, recommendedMax: 30 },
+    { pageIndex: 0, bulletIndex: 4, length: 31, recommendedMax: 30 },
+  ]);
+});
+
 test('image plan reports empty and whitespace-only bullet lines with their page positions', () => {
   assert.deepEqual(imagePlanBlankBulletLines([
     { kind: 'hero', bullets: ['有效要点', '', '   '] },

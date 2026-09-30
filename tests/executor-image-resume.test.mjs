@@ -332,6 +332,40 @@ test('executor reports a missing recovery checkpoint without starting a new gene
   }
 });
 
+for (const recoveryRunIds of [[], [FIRST_RUN_ID]]) {
+  test(`executor stops automatic retry for invalid approved image source${recoveryRunIds.length ? ' before inspecting recovery' : ''}`, async () => {
+    const workRoot = await mkdtemp(join(tmpdir(), 'executor-invalid-image-source-'));
+    const claim = imageClaim(SECOND_RUN_ID, recoveryRunIds);
+    claim.execution.snapshot.copyRevision.content.imagePlan[0].bullets[0] = '长'.repeat(31);
+    const failures = [];
+    const agent = createExecutorAgent({
+      nodeId: 'image-node', imageWorkerEnabled: true, workRoot,
+      readinessCheck: async () => ({}), availabilityCheck: async () => {},
+      executeImage: input => executeImageClaim({ ...input, imageClient: noFurtherModelCalls() }),
+      controlPlane: {
+        async claimImage() { return claim; },
+        async failExecution(executionId, error, options) { failures.push({ executionId, error, options }); },
+        async updateProgress() { assert.fail('invalid source must fail before starting generation'); },
+        async uploadAsset() { assert.fail('invalid source must not upload assets'); },
+        async completeImage() { assert.fail('invalid source must not report success'); },
+      },
+    });
+    try {
+      await agent.prepare();
+      const result = await agent.runImageOnce();
+      assert.equal(result.status, 'FAILED');
+      assert.equal(result.error.code, 'IMAGE_SOURCE_INVALID');
+      assert.match(result.error.message, /imagePlan\[0\]\.bullets\[0\].*30/u);
+      assert.equal(failures.length, 1);
+      assert.equal(failures[0].executionId, SECOND_RUN_ID);
+      assert.deepEqual(failures[0].options, { autoRetry: false });
+      await assert.rejects(access(join(workRoot, String(TASK_ID))), { code: 'ENOENT' });
+    } finally {
+      await rm(workRoot, { recursive: true, force: true });
+    }
+  });
+}
+
 test('a delayed completion only cleans its own directory and preserves the next execution', async t => {
   const workRoot = await mkdtemp(join(tmpdir(), 'executor-concurrent-cleanup-'));
   t.after(() => rm(workRoot, { recursive: true, force: true }));

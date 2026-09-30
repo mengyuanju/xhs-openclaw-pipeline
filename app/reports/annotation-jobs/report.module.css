@@ -31,4 +31,34 @@
 .methods{margin-top:16px;color:var(--muted);font-size:12px;line-height:1.8}
 .methods summary{cursor:pointer;color:var(--ink);font-weight:650}
 .methods p{margin:8px 0 0}
+.trends{min-width:0;padding:19px}
+.trendHead{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.trendHead h2{margin:0 0 4px;font-size:20px}
+.trendHead p,.trendCard p,.trendMethod{margin:0;color:var(--muted);font-size:12px;line-height:1.7}
+.trendCount{color:var(--muted);font-size:12px;white-space:nowrap}
+.trendEmpty{padding:42px 14px;text-align:center;color:var(--muted);font-size:13px}
+.personPicker{margin-top:14px;border:1px solid var(--line);border-radius:9px}
+.personPicker summary{cursor:pointer;padding:10px 13px;color:var(--ink);font-size:13px;font-weight:650}
+.personPickerBody{display:grid;gap:9px;padding:0 13px 12px}
+.personPickerBody p,.personPickerBody>small{margin:0;color:var(--muted);font-size:12px}
+.personPickerTop{display:flex;align-items:end;gap:12px;flex-wrap:wrap}
+.personPickerTop label{display:grid;gap:5px;flex:1 1 220px;max-width:350px;color:var(--muted);font-size:12px}
+.personPickerTop input{width:100%;height:34px;padding:6px 9px;border:1px solid var(--control-border);border-radius:7px;background:var(--control-bg);color:var(--ink);font:inherit}
+.personPickerTop button{border:0;background:transparent;color:var(--red-dark);font:inherit;font-size:12px;cursor:pointer}
+.personOptions{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:5px;max-height:180px;overflow:auto}
+.personOptions label{display:flex;align-items:flex-start;gap:7px;padding:7px 8px;border-radius:6px;font-size:12px;cursor:pointer}
+.personOptions label:hover{background:var(--surface)}
+.personOptions input{margin-top:2px;accent-color:var(--red-dark)}
+.personOptions span{display:grid;gap:2px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.personOptions small,.personNoMatch{color:var(--muted);font-size:11px}
+.trendGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:16px}
+.trendCard{min-width:0;padding:15px 14px 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel,#fff)}
+.trendCardHead{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.trendCardHead h3{margin:0;font-size:15px}
+.trendCardHead span{color:var(--muted);font-size:11px;white-space:nowrap}
+.trendChart,.trendChartLoading{width:100%;height:300px;min-width:0;margin-top:8px}
+.trendChartLoading{display:grid;place-items:center;color:var(--muted);font-size:12px;text-align:center}
+.trendMethod{margin-top:12px}
+@media(max-width:1000px){.trendGrid{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:650px){.header{flex-wrap:wrap}.summary{gap:7px}.summaryCard{padding:13px}.summaryCard strong{font-size:22px}.results{padding:14px}.filters label,.filters label:nth-child(3){max-width:none}}
+@media(max-width:650px){.trends{padding:14px}.trendCard{padding:12px 10px 8px}.trendChart,.trendChartLoading{height:270px}}

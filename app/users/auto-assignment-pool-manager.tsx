@@ -108,7 +108,7 @@ function workerAvailability(
   if (worker.status === 'PAUSED') return { label: '已暂停接单', tone: 'tone-amber' };
   if (!settingsEnabled) return { label: '总开关已关闭', tone: 'tone-neutral' };
   if (mode === 'FIXED_QUANTITY') {
-    return { label: `单次 ${workerAllocationCount(worker)} 条`, tone: 'pill-active' };
+    return { label: `每次最多 ${workerAllocationCount(worker)} 条`, tone: 'pill-active' };
   }
   if (worker.availableSlots <= 0) return { label: '额度已满', tone: 'tone-neutral' };
   return { label: `可补 ${worker.availableSlots} 条`, tone: 'pill-active' };
@@ -357,11 +357,15 @@ export function AutoAssignmentPoolManager({
       <div className="panel-head user-list-head">
         <div>
           <h2 id="auto-assignment-pool-title">自动分配人员池</h2>
-          <p className="subtle">可选择持续补位或定量单次分配。新建用户默认不会加入自动分配池。</p>
+          <p className="subtle">可选择持续补位或按人定量分配。新建用户默认不会加入自动分配池。</p>
           <div className="auto-assignment-summary" aria-label="自动分配状态摘要">
-            <span>当前可分配 <strong>{autoAssignableTaskCount}</strong></span>
-            <span title="仍在机器阶段或需要管理员处理">需人工关注 <strong>{manualAttentionTaskCount}</strong></span>
-            <span>{assignmentMode === 'CONTINUOUS' ? '当前可补' : '配置单次数量'} <strong>{effectiveAssignmentCount}</strong></span>
+            <span title="未分配且已进入文案待审核阶段的任务">共享池待分配 <strong>{autoAssignableTaskCount}</strong></span>
+            <span title="仍在机器阶段或需要管理员处理的未分配任务">其他未分配 <strong>{manualAttentionTaskCount}</strong></span>
+            <span title={assignmentMode === 'CONTINUOUS'
+              ? '当前可接单成员距离各自待审核上限的空位总数'
+              : '当前可接单成员配置的单次数量之和，并非实际派单数'}>
+              {assignmentMode === 'CONTINUOUS' ? '当前可补' : '单次数量合计'} <strong>{effectiveAssignmentCount}</strong>
+            </span>
             {assignmentMode === 'FIXED_QUANTITY' && <>
               <span>今日定量已分配 <strong>{fixedQuantityAssignedToday}</strong></span>
               <span>池成员累计已分配 <strong>{fixedQuantityAssignedTotal}</strong></span>
@@ -404,9 +408,18 @@ export function AutoAssignmentPoolManager({
 
       <ToastFeedback id="auto-assignment-pool-success" message={message} />
       <ToastFeedback id="auto-assignment-pool-error" message={error} tone="error" />
+      <div className="auto-assignment-guide" aria-label="自动分配数据说明">
+        <p><strong>当前待审文案：</strong>统计已分配给该标注、等待文案审核的任务，包含首次审核、文案返修和手工分配；图片返修、待质检及执行中的任务不计入。数据以页面最近一次刷新为准。</p>
+        {assignmentMode === 'FIXED_QUANTITY'
+          ? <>
+            <p><strong>定量分配记录：</strong>累计和今日只统计点击“分配”产生的派单历史，任务处理完或改派后仍保留；今日按北京时间计算。</p>
+            <p><strong>单次分配：</strong>每次点击最多按配置数量派单，不限制该标注当前待审文案总数；实际派单量以分配时共享池中可领取的任务为准。顶部“单次数量合计”是可接单成员配置数之和，不代表一次操作会派出的数量。</p>
+          </>
+          : <p><strong>持续补位：</strong>总开关开启时，系统按当前待审文案数量补到每人的配置上限；完成任务后继续补位。</p>}
+      </div>
       {initialSnapshot.settings.enabled && autoAssignableTaskCount === 0 && <div className="notice" role="status">
-        当前没有可分配的数据。
-        {manualAttentionTaskCount > 0 && <>当前 {manualAttentionTaskCount} 条需人工关注的任务不在自动分配队列中。</>}
+        当前没有可分配的文案待审核任务。
+        {manualAttentionTaskCount > 0 && <>另有 {manualAttentionTaskCount} 条未分配任务尚未进入自动分配队列，可能仍在机器阶段或需要管理员处理。</>}
         {assignmentMode === 'FIXED_QUANTITY'
           ? '待新任务进入未分配的待审核队列后，即可执行定量分配。'
           : '待新任务进入未分配的待审核队列后，系统会按配置自动补位。'}
@@ -415,8 +428,8 @@ export function AutoAssignmentPoolManager({
       {initialSnapshot.workers.length === 0
         ? <div className="empty-state">人员池为空。请点击“加入标注”明确选择需要自动接单的人员。</div>
         : <div className="table-wrap mobile-cards user-table-wrap"><table className="user-table">
-          <thead><tr><th>标注</th><th>池状态</th><th>当前待审核</th>
-            {assignmentMode === 'FIXED_QUANTITY' && <th>分配统计</th>}
+          <thead><tr><th>标注</th><th>池状态</th><th>当前待审文案</th>
+            {assignmentMode === 'FIXED_QUANTITY' && <th>定量分配记录</th>}
             <th>分配规则</th><th className="user-actions-heading">操作</th></tr></thead>
           <tbody>{initialSnapshot.workers.map((worker) => {
             const isAccountEligible = worker.userRole === 'USER' && worker.userStatus === 'ACTIVE';
@@ -435,18 +448,18 @@ export function AutoAssignmentPoolManager({
                 </span>
                 {!isAccountEligible && <span className="pill tone-red">账号停用</span>}
               </div></td>
-              <td data-label="当前待审核">
+              <td data-label="当前待审文案">
                 <strong className="mono">{worker.currentTaskCount} 条</strong>
-                <div className="subtle">当前已分配且等待文案审核</div>
+                <div className="subtle">含文案返修与手工分配</div>
               </td>
-              {assignmentMode === 'FIXED_QUANTITY' && <td data-label="分配统计">
-                <strong className="mono">累计 {worker.fixedQuantityAssignedTotal ?? 0} 条</strong>
-                <div className="subtle">今日已分配 {worker.fixedQuantityAssignedToday ?? 0} 条</div>
+              {assignmentMode === 'FIXED_QUANTITY' && <td data-label="定量分配记录">
+                <strong className="mono">累计分配 {worker.fixedQuantityAssignedTotal ?? 0} 条</strong>
+                <div className="subtle">今日分配 {worker.fixedQuantityAssignedToday ?? 0} 条</div>
               </td>}
               <td data-label="分配规则"><span className={`pill ${availability.tone}`}>{availability.label}</span>
                 <div className="subtle">{assignmentMode === 'CONTINUOUS'
                   ? `待审核上限 ${worker.assignmentLimit} 条`
-                  : `共享池当前 ${autoAssignableTaskCount} 条，本次最多可分配 ${currentlyAllocatableCount} 条`}</div>
+                  : `共享池待分配 ${autoAssignableTaskCount} 条，预计本次最多 ${currentlyAllocatableCount} 条`}</div>
               </td>
               <td className="row-action" data-label="操作"><div className="user-row-actions">
                 {assignmentMode === 'FIXED_QUANTITY' && <Button unstyled className="button small primary" type="button"

@@ -15,6 +15,7 @@ import { useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 
 import { apiRequest } from '../components/api-client';
+import { fetchWithSessionCoordination } from '../components/session-client';
 
 const ROLE_LABELS: Record<string, string> = { ADMIN: '管理员', REVIEWER: '质检', USER: '标注' };
 const LOGOUT_TIMEOUT_MS = 4_000;
@@ -33,7 +34,7 @@ async function logoutWithTimeout() {
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), LOGOUT_TIMEOUT_MS);
   try {
-    return await fetch('/api/auth/logout', { method: 'POST', signal: controller.signal });
+    return await fetchWithSessionCoordination('/api/auth/logout', { method: 'POST', signal: controller.signal });
   } finally {
     window.clearTimeout(timeoutId);
   }
@@ -125,14 +126,7 @@ export function ProfileManager({ user }: { user: ProfileUser }) {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ currentPassword: current, newPassword: next }),
       });
-      try {
-        await logoutWithTimeout();
-      } catch {
-        // The password update rotates the credential version, so the old session
-        // is already unusable. Never leave the user trapped if logout is offline.
-      } finally {
-        window.location.replace('/login?reauth=1&passwordChanged=1');
-      }
+      window.location.replace('/login?reauth=1&passwordChanged=1');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '密码修改失败');
       setBusy('');

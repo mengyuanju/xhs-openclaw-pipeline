@@ -1,4 +1,5 @@
 import { notifyWorkspaceUpdated } from './workspace-updates';
+import { browserSessionGeneration, fetchWithSessionCoordination, invalidateBrowserSession } from './session-client';
 
 export class ApiRequestError extends Error {
   constructor(public status: number, public code: string, message: string) {
@@ -8,13 +9,12 @@ export class ApiRequestError extends Error {
 }
 
 export async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
+  const generation = browserSessionGeneration();
+  const response = await fetchWithSessionCoordination(url, init);
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
     if (response.status === 401 && typeof window !== 'undefined' && window.location.pathname !== '/login') {
-      const next = `${window.location.pathname}${window.location.search}`;
-      window.location.assign(`/login?next=${encodeURIComponent(next)}`);
-      throw new Error('登录已过期，请重新登录');
+      if (invalidateBrowserSession(generation)) throw new Error('登录已过期，请重新登录');
     }
     const code = typeof payload?.error?.code === 'string' ? payload.error.code : `HTTP_${response.status}`;
     const message = typeof payload?.error?.message === 'string'

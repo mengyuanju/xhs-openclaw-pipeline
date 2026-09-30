@@ -46,9 +46,12 @@ export function visualPlanSchema(post, indices = post.imagePlan.map((_, index) =
         subtitle: lockedText(post.imagePlan[index - 1].subtitle, 30, 0),
         // The model schema API rejects array-valued const. Restrict the strings
         // and count here; assertLockedImageText verifies exact order after output.
+        // This schema uses a raw-string ceiling. The weighted 30/40-character
+        // recommendation is checked in parseVisualPlanOutput, while approved
+        // historical text may remain locked up to the 200-character hard cap.
         bullets: promptRuntimeSnapshot()
-          ? list(textChoices(post.imagePlan[index - 1].bullets, kind === 'checklist' ? 40 : 30), post.imagePlan[index - 1].bullets.length, post.imagePlan[index - 1].bullets.length)
-          : list(text(kind === 'checklist' ? 40 : 30), 2, 5), labels: list(text(20), 0, promptRuntimeSnapshot() ? 0 : 3),
+          ? list(textChoices(post.imagePlan[index - 1].bullets, 200), post.imagePlan[index - 1].bullets.length, post.imagePlan[index - 1].bullets.length)
+          : list(text(200), 2, 5), labels: list(text(20), 0, promptRuntimeSnapshot() ? 0 : 3),
       }),
       mustShow: list({ ...text(100), pattern: '^画面：.+' }, 0, 10),
       mustAvoid: list(text(100), 1, 10),

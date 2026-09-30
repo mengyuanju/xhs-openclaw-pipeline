@@ -577,12 +577,22 @@ async function assertTaskAccess(ctx, repository, {
   return { actor, task };
 }
 
+async function readAuthenticationUser(repository, readUser, identity) {
+  try {
+    return await readUser.call(repository, identity);
+  } catch (error) {
+    // A failed account lookup cannot establish that an existing session is stale.
+    if (mappedError(error).status < 500) throw error;
+    throw new HttpError(503, 'CONTROL_PLANE_UNAVAILABLE', '中心服务暂时不可用，请稍后重试');
+  }
+}
+
 async function assertCurrentActorIdentity(repository, actor) {
   if (!actor) return;
   const current = typeof repository.getUserByIdentity === 'function'
-    ? await repository.getUserByIdentity(actor)
+    ? await readAuthenticationUser(repository, repository.getUserByIdentity, actor)
     : typeof repository.getUserByUsername === 'function'
-      ? await repository.getUserByUsername(actor.username)
+      ? await readAuthenticationUser(repository, repository.getUserByUsername, actor.username)
       : null;
   if (typeof repository.getUserByIdentity !== 'function'
     && typeof repository.getUserByUsername !== 'function') return;
@@ -1108,8 +1118,8 @@ function installRoutes(
     const actor = requestActor(ctx);
     const readUser = repository.getUserByIdentity ?? repository.getUserByUsername;
     const user = repository.getUserByIdentity
-      ? await readUser.call(repository, actor)
-      : await readUser.call(repository, actor.username);
+      ? await readAuthenticationUser(repository, readUser, actor)
+      : await readAuthenticationUser(repository, readUser, actor.username);
     if (!user || user.status !== 'ACTIVE') throw new HttpError(401, 'SESSION_STALE', '账号状态已变化，请重新登录');
     json(ctx, 200, user);
   });
@@ -2835,7 +2845,7 @@ export function createControlPlaneApp({
     const actorUserId = /^[1-9]\d*$/u.test(rawUserId) ? Number(rawUserId) : NaN;
     const role = String(ctx.get('X-Actor-Role') || '').trim().toUpperCase();
     const credentialVersion = Number(ctx.get('X-Actor-Credential-Version'));
-    const user = await repository.getUserByUsername(username).catch(() => null);
+    const user = await readAuthenticationUser(repository, repository.getUserByUsername, username);
     if (!Number.isSafeInteger(actorUserId) || !user || user.id !== actorUserId
       || user.status !== 'ACTIVE' || user.role !== role
       || user.credentialVersion !== credentialVersion) {

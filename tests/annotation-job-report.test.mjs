@@ -76,6 +76,7 @@ test('direct discard decisions count as work and deduplicate discarded tasks',()
   assert.equal(report.people[0].discarded,1);
   assert.equal(report.people[0].copyFirstDirectDiscarded,1);
   assert.equal(report.people[0].copyFirstUnjudged,0);
+  assert.equal(report.trend.rows[0].copyFirstPassRate,null);
 });
 
 test('first-pass rate follows first copy submissions and ignores rework verdicts',()=>{
@@ -311,4 +312,47 @@ test('unjudged personal cycles keep pending, unsampled-unreleased, administrativ
   assert.equal(person.copyFirstBypassed,2);
   assert.equal(person.copyFirstUnjudgedOther,1);
   assert.equal(person.copyFirstDirectDiscarded,1);
+});
+
+test('daily trend uses Beijing operation dates and attributes first QA to the earliest first operation',()=>{
+  const events=[
+    fact('restored-2',11,'SUBMIT',{taskId:2,annotationCycleKey:'cycle-2',annotationFirst:true,
+      at:'2026-09-24T16:10:00Z'}),
+    fact('first-1',11,'SUBMIT',{taskId:1,annotationCycleKey:'cycle-1',annotationFirst:true,
+      at:'2026-09-23T15:59:00Z'}),
+    fact('image-1',11,'SUBMIT',{taskId:1,stage:'IMAGE',annotationCycleKey:'image-1',annotationFirst:true,
+      at:'2026-09-23T16:00:00Z'}),
+    fact('discard-2',11,'ANNOTATION_DISCARD',{taskId:2,annotationCycleKey:'cycle-2',annotationFirst:true,
+      at:'2026-09-23T16:30:00Z'}),
+    fact('rework-1',11,'SUBMIT',{taskId:1,annotationCycleKey:'cycle-1',annotationFirst:false,
+      at:'2026-09-24T16:15:00Z'}),
+    fact('first-22',22,'SUBMIT',{taskId:1,annotationCycleKey:'cycle-22',annotationFirst:true,
+      at:'2026-09-24T16:20:00Z'}),
+    fact('return-33',33,'ANNOTATION_QUALITY',{taskId:4,outcome:'RETURN',at:'2026-09-24T03:00:00Z'}),
+    fact('excluded-11',11,'SUBMIT',{taskId:9,exclusion:'SIMULATED',at:'2026-09-23T17:00:00Z'}),
+  ];
+  const filters=normalizePerformanceFilters({period:'custom',from:'2026-09-23',to:'2026-09-26'},now);
+  const report=buildAnnotationJobReport(buildPerformanceSnapshot(events,[],[],filters,'2026-09-26T00:00:00Z'),[
+    {cycleKey:'cycle-1',taskId:1,accountId:11,submitted:true,outcome:'PASS'},
+    {cycleKey:'cycle-2',taskId:2,accountId:11,submitted:true,outcome:'PASS'},
+    {cycleKey:'cycle-22',taskId:1,accountId:22,submitted:true,outcome:'RETURN'},
+  ]);
+  assert.deepEqual(report.trend.dates,['2026-09-23','2026-09-24','2026-09-25','2026-09-26']);
+  assert.deepEqual(report.trend.rows,[
+    {date:'2026-09-23',accountId:11,totalJobs:1,copyReview:1,imageFirstReview:0,
+      copyFirstPassed:1,copyDecided:1,copyFirstPassRate:1},
+    {date:'2026-09-24',accountId:11,totalJobs:2,copyReview:1,imageFirstReview:1,
+      copyFirstPassed:1,copyDecided:1,copyFirstPassRate:1},
+    {date:'2026-09-25',accountId:11,totalJobs:2,copyReview:1,imageFirstReview:0,
+      copyFirstPassed:0,copyDecided:0,copyFirstPassRate:null},
+    {date:'2026-09-25',accountId:22,totalJobs:1,copyReview:1,imageFirstReview:0,
+      copyFirstPassed:0,copyDecided:1,copyFirstPassRate:0},
+  ]);
+  assert.equal(report.summary.totalJobs,report.trend.rows.reduce((sum,row)=>sum+row.totalJobs,0));
+  for (const person of report.people) {
+    const rows=report.trend.rows.filter(row=>row.accountId===person.accountId);
+    for (const metric of ['totalJobs','copyReview','imageFirstReview','copyFirstPassed','copyDecided']) {
+      assert.equal(rows.reduce((sum,row)=>sum+row[metric],0),person[metric]);
+    }
+  }
 });

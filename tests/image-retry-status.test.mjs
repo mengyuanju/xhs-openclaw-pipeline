@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  canRequeueImages,
   IMAGE_RETRY_EXHAUSTED_LABEL,
   imageFailureDisplayReason,
   isImageRetryExhausted,
@@ -17,6 +18,16 @@ test('only exhausted image retries in copy review display the three-failures sta
     { state: 'IMAGE_FAILED', currentStage: 'FAILED' },
     { state: 'CANCELLED', currentStage: 'IMAGE_RETRY_EXHAUSTED' },
   ]) assert.equal(isImageRetryExhausted(task), false);
+});
+
+test('approved image work and exhausted retries can be manually requeued', () => {
+  for (const state of ['IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE']) {
+    assert.equal(canRequeueImages({ state, currentCopyRevisionId: 12 }), true);
+  }
+  assert.equal(canRequeueImages({ state: 'COPY_REVIEW_PENDING', currentStage: 'IMAGE_RETRY_EXHAUSTED', currentCopyRevisionId: 12 }), true);
+  assert.equal(canRequeueImages({ state: 'COPY_REVIEW_PENDING', currentStage: 'COPY_REVIEW_PENDING', currentCopyRevisionId: 12 }), false);
+  assert.equal(canRequeueImages({ state: 'COPY_REVIEW_PENDING', currentStage: 'IMAGE_RETRY_EXHAUSTED', currentCopyRevisionId: null }), false);
+  assert.equal(canRequeueImages(null), false);
 });
 
 test('the exhausted status exposes the latest three concrete image failures in attempt order', () => {

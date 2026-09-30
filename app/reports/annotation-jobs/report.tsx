@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { apiRequest } from '../../components/api-client';
+import { AnnotationTrendPanel, type AnnotationJobTrend } from './trend-panel';
 import styles from './report.module.css';
 
 type Person = {
@@ -18,6 +19,7 @@ type Person = {
 type Report = {
   range:{from:string;to:string};asOf:string;
   summary:{workers:number;totalJobs:number;returned:number};people:Person[];
+  trend:AnnotationJobTrend;
   dataQuality:{unknownIdentity:number;unattributedAnnotationBatchReturns:number;unattributedAnnotationBatchScopes:number};
 };
 type Account = {id:number;username:string;displayName?:string;status?:string};
@@ -106,5 +108,7 @@ export function AnnotationJobReport({initialFilters}:{initialFilters?:{from:stri
         <p>文案一次通过率按所选日期内首次文案作业对应的个人接手轮次统计，追踪该轮首次提交截至报表时点的首个有效结果：首次通过轮次 / 有有效首检结论的轮次。人工质检通过、未被抽中但已随批次放行均计为通过，同时计入分子和分母；打回、整批打回影响及质检废弃计为未通过，只计入分母。每轮只计一次，本轮返修后的重复质检、其他标注人或本人此前接手轮次的结果不计入本轮。待质检、尚未批次放行、管理员直接放行，以及本人直接废弃但未提交质检的轮次，不进入分母。本期首次废弃后恢复并提交的轮次，即使首次提交发生在所选日期之后，也追踪截至报表时点的首检结论或无首检记录。没有有效首检结论时显示“—”。</p>
       </details>
     </section>
+    <AnnotationTrendPanel key={`${filters.from}:${filters.to}:${filters.accountId}`}
+      trend={report?.trend??null} people={report?.people??[]} busy={busy} />
   </div>;
 }

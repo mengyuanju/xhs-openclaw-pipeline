@@ -36,7 +36,7 @@ test('new creation workbench owns the root route and exposes lifecycle views', a
   assert.match(proxy, /sessionActorHeaders\(session, \{ username, role \}\)/u);
   assert.match(proxy, /sessionActorHeaders/u);
   assert.match(proxy, /'Content-Disposition': contentDisposition/u);
-  assert.match(views, /生图连续3次失败的任务会回到此处，等待重新审核/u);
+  assert.match(views, /生图连续3次失败的任务会回到此处，可核对原因后直接重试或修改并提交强制复检/u);
   assert.match(views, /states: \['COPY_REVIEW_PENDING'\]/u);
   assert.match(views, /states: \['IMAGE_QUEUED', 'IMAGE_RUNNING'\]/u);
   assert.match(views, /label: '图片初审与返修'/u);

@@ -10,6 +10,7 @@ import {
   validateLayoutTemplate,
 } from './layout-contract.mjs';
 import { assertLockedImageText, directSourceEvidence, imageTextHash } from './locked-image-plan.mjs';
+import { imagePlanBulletCount, visibleCharacterCount } from './visible-text.mjs';
 
 const VISUAL_MEDIA = new Set(['PHOTO', 'ILLUSTRATION', 'INFOGRAPHIC', 'PHOTO_INFOGRAPHIC']);
 const INFORMATION_DENSITIES = new Set(['LOW', 'MEDIUM', 'HIGH']);
@@ -127,14 +128,31 @@ function explicitLayoutItemCount(layoutDirection) {
   return CHINESE_COUNTS.get(match[1]) ?? null;
 }
 
-function validateVisibleText(value, name, finalizedText, bulletMax = 30, kind) {
+function validatedImagePlanBullets(value, name, lockedBullets, recommendedMax) {
+  if (!Array.isArray(value) || value.length < 2 || value.length > 5) {
+    throw new TypeError(`${name} must contain between 2 and 5 items`);
+  }
+  return value.map((item, index) => {
+    const field = `${name}[${index}]`;
+    const text = requiredText(item, field);
+    if (visibleCharacterCount(text) > 200) {
+      throw new RangeError(`${field} cannot exceed 200 characters`);
+    }
+    if (imagePlanBulletCount(text) > recommendedMax && text !== lockedBullets?.[index]) {
+      throw new RangeError(`${field} cannot exceed ${recommendedMax} characters`);
+    }
+    return text;
+  });
+}
+
+function validateVisibleText(value, name, finalizedText, lockedBullets, bulletMax = 30) {
   if (!isRecord(value)) throw new TypeError(`${name} must be an object`);
   if (value.language !== 'zh-CN') throw new TypeError(`${name}.language must be zh-CN`);
   const visible = {
     language: 'zh-CN',
     headline: requiredText(value.headline, `${name}.headline`, { max: 18 }),
     subtitle: requiredText(value.subtitle, `${name}.subtitle`, { min: 0, max: 30 }),
-    bullets: textList(value.bullets, `${name}.bullets`, { min: 2, max: 5, itemMax: bulletMax }),
+    bullets: validatedImagePlanBullets(value.bullets, `${name}.bullets`, lockedBullets, bulletMax),
     labels: textList(value.labels ?? [], `${name}.labels`, { max: 3, itemMax: 20 }),
   };
   for (const [index, label] of visible.labels.entries()) {
@@ -433,8 +451,8 @@ function validatePage(rawPage, arrayIndex, finalized, finalizedText, direct = fa
       rawPage.allowedVisibleText,
       `pages[${arrayIndex}].allowedVisibleText`,
       finalizedText,
+      finalized.imagePlan[arrayIndex].bullets,
       expectedKind === 'checklist' ? 40 : 30,
-      expectedKind,
     );
     const explicitItemCount = explicitLayoutItemCount(layoutDirection);
     if (explicitItemCount !== null && explicitItemCount !== allowedVisibleText.bullets.length) {

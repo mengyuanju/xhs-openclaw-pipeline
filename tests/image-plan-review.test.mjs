@@ -109,3 +109,27 @@ test('comparison accepts unchanged legacy long bullets while the strict normaliz
   assert.equal(result.validationError, null);
   assert.throws(() => normalizeCopyReviewImagePlan(saved), /第 2 页画面要点第 1 行超过 30 字/u);
 });
+
+test('image plan review uses English run units at the 30-unit recommendation', () => {
+  const draft = plan();
+  draft[1].bullets[0] = '第三方录像机选ONVIF，填写摄像头IP、账号、密码和端口80';
+  assert.doesNotThrow(() => normalizeCopyReviewImagePlan(draft));
+
+  draft[1].bullets[0] = `${'字'.repeat(29)}ONVIF`;
+  assert.doesNotThrow(() => normalizeCopyReviewImagePlan(draft));
+
+  draft[1].bullets[0] = `${'字'.repeat(30)}ONVIF`;
+  assert.throws(
+    () => normalizeCopyReviewImagePlan(draft),
+    /第 2 页画面要点第 1 行超过 30 字（当前 31 字）/u,
+  );
+});
+
+test('image plan review retains the 200 visible-character safety cap after overflow confirmation', () => {
+  const draft = plan();
+  draft[1].bullets[0] = 'A'.repeat(200);
+  assert.doesNotThrow(() => normalizeCopyReviewImagePlan(draft, { allowBulletOverflow: true }));
+
+  draft[1].bullets[0] = 'A'.repeat(201);
+  assert.throws(() => normalizeCopyReviewImagePlan(draft, { allowBulletOverflow: true }), /200/u);
+});

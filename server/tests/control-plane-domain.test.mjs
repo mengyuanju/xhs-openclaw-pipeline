@@ -105,6 +105,19 @@ test('copy review requires explicit confirmation for overlong bullets and retain
   assert.throws(() => normalizeCopyReviewEdits(edits, {
     allowImagePlanBulletOverflow: true,
   }), /第 2 页画面要点第 1 行超过 200 字（当前 201 字）/u);
+
+  edits.imagePlan[1].bullets[0] = 'A'.repeat(201);
+  assert.throws(() => normalizeCopyReviewEdits(edits, {
+    allowImagePlanBulletOverflow: true,
+  }), /200/u);
+});
+
+test('copy review body keeps visible-character counting when image-plan English runs are compacted', () => {
+  const edits = validReviewEdits();
+  edits.copy.body = `${'字'.repeat(395)}ONVIF`;
+  edits.imagePlan[1].bullets[0] = '第三方录像机选ONVIF，填写摄像头IP、账号、密码和端口80';
+
+  assert.equal(normalizeCopyReviewEdits(edits).copy.body, edits.copy.body);
 });
 
 test('copy review bullet limits count user-visible graphemes consistently with the workbench', () => {

@@ -5084,7 +5084,7 @@ export class PostgresControlPlaneRepository {
       } : null;
       const taskMessage = isImage
         ? manual ? '执行失败，已停止自动重试；请检查错误详情与检查点后人工续跑'
-          : exhausted ? '生图3次失败，已停止自动重试，等待人工文案审核'
+          : exhausted ? '生图3次失败，自动重试已停止；可人工重试，或修订后提交强制复检'
           : `生图第${failedAttempts}次失败，等待原执行机重试（最多${MAX_IMAGE_ATTEMPTS}次）`
         : progressMessage;
       await client.query(`
@@ -5585,10 +5585,20 @@ export class PostgresControlPlaneRepository {
           ownerOnly: actorIdentity.role !== 'ADMIN',
         })).task;
       if (!task) throw new ControlPlaneNotFoundError('task not found');
-      if (task.state === 'COPY_REVIEW_PENDING' && task.current_stage === 'IMAGE_RETRY_EXHAUSTED') {
+      const retryExhausted = task.state === 'COPY_REVIEW_PENDING'
+        && task.current_stage === 'IMAGE_RETRY_EXHAUSTED';
+      if (retryExhausted && retryOnly) {
         throw new ControlPlaneConflictError(
           'IMAGE_RETRY_REVIEW_REQUIRED',
-          '生图重试已用尽，请进入任务详情修改文案或图片规划，并提交强制复检',
+          '生图重试已用尽，请从任务详情单条确认后重试生图',
+        );
+      }
+      if (retryExhausted && (task.mandatory_copy_qc !== true
+          || task.mandatory_copy_qc_origin !== 'IMAGE_RETRY_REVIEW'
+          || task.copy_qa_rework_pending === true)) {
+        throw new ControlPlaneConflictError(
+          'IMAGE_RETRY_REVIEW_REQUIRED',
+          '当前任务还有文案返工或复检要求，不能直接重试生图',
         );
       }
       if (retryOnly && !['IMAGE_RUNNING', 'IMAGE_FAILED'].includes(task.state)) {
@@ -5604,6 +5614,19 @@ export class PostgresControlPlaneRepository {
       `, [task.current_copy_revision_id, taskId]);
       if (!revision.rows[0]) {
         throw new ControlPlaneConflictError('IMAGE_RETRY_UNAVAILABLE', '文案尚未审核通过，不能进入待生图队列');
+      }
+      if (retryExhausted) {
+        const previouslyReleased = task.copy_qc_released_revision_id != null
+          && String(task.copy_qc_released_revision_id) === String(task.current_copy_revision_id);
+        const quality = previouslyReleased ? await client.query(`
+          SELECT copy_quality_image_eligible($1, $2, false) AS eligible
+        `, [taskId, task.current_copy_revision_id]) : { rows: [] };
+        if (!quality.rows[0]?.eligible) {
+          throw new ControlPlaneConflictError(
+            'IMAGE_RETRY_UNAVAILABLE',
+            '当前文案版本尚未完成质检放行，不能直接重试生图',
+          );
+        }
       }
       if (task.current_execution_id) {
         const execution = await client.query(`
@@ -5635,10 +5658,12 @@ export class PostgresControlPlaneRepository {
           pending_snapshot = NULL, execution_started_at = NULL,
           image_production_chain_id = NULL, image_production_started_at = NULL,
           image_production_duration_ms = 0,
+          mandatory_copy_qc = CASE WHEN $2 THEN false ELSE mandatory_copy_qc END,
+          mandatory_copy_qc_origin = CASE WHEN $2 THEN NULL ELSE mandatory_copy_qc_origin END,
           last_activity_at = now(), finished_at = NULL, error = NULL, updated_at = now()
         WHERE id = $1
         RETURNING *
-      `, [taskId]);
+      `, [taskId, retryExhausted]);
       return taskFrom(updated.rows[0]);
     });
   }

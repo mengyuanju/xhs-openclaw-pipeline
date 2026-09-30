@@ -1609,6 +1609,9 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
 .auto-assignment-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 14px; margin-top: 9px; color: var(--muted); font-size: 10px; }
 .auto-assignment-summary span { display: inline-flex; align-items: baseline; gap: 4px; }
 .auto-assignment-summary strong { color: var(--ink); font-size: 11px; font-variant-numeric: tabular-nums; }
+.auto-assignment-guide { display: grid; gap: 5px; padding: 12px 22px; border-top: 1px solid var(--line); background: #faf8f5; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.auto-assignment-guide p { margin: 0; }
+.auto-assignment-guide strong { color: var(--ink); }
 .user-action-notice { margin: 0 22px 16px; }
 .user-table-wrap { contain: inline-size; border: 0; border-top: 1px solid var(--line); border-radius: 0; }
 .user-table th:first-child, .user-table td:first-child { padding-left: 22px; }
@@ -1721,6 +1724,7 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
   .auto-assignment-mode-control { width: 100%; }
   .auto-assignment-mode-control .select-trigger { width: 100%; }
   .user-list-head .button { width: 100%; }
+  .auto-assignment-guide { padding-inline: 12px; }
   .user-action-notice { margin-inline: 12px; }
   .user-list-toolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); padding-inline: 12px; }
   .user-list-toolbar .ui-search { grid-column: 1 / -1; max-width: none; }

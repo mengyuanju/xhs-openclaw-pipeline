@@ -44,7 +44,7 @@ import { apiRequest } from '../components/api-client';
 import { createRequestId } from '../components/request-id';
 import { resumeImageTask } from '../components/resume-image-task';
 import { canResumeImageTask } from '../../src/control-plane/image-resume.mjs';
-import { IMAGE_RETRY_EXHAUSTED_LABEL, isImageRetryExhausted } from '../../src/control-plane/image-retry-status.mjs';
+import { canRequeueImages, IMAGE_RETRY_EXHAUSTED_LABEL, isImageRetryExhausted } from '../../src/control-plane/image-retry-status.mjs';
 import { parseQueryBatch } from '../../src/control-plane/query-batch.mjs';
 import { imageExecutorLabel } from '../../src/control-plane/image-executor-label.mjs';
 import {
@@ -362,11 +362,6 @@ function copyExecutorLabel(task: DistributedTask, nodes: ExecutorNode[]) {
     return task.state === 'COPY_QUEUED' ? '待领取' : '—';
   }
   return nodes.find((node) => node.id === task.copyExecutorNodeId)?.name ?? task.copyExecutorNodeId;
-}
-
-function canRequeueImages(task: DistributedTask) {
-  return task.currentCopyRevisionId !== null
-    && ['IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE'].includes(task.state);
 }
 
 const STALE_AFTER_MS = 30 * 60_000;
@@ -1639,9 +1634,12 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
 
   async function retryImages(task: DistributedTask) {
     if (!canRequeueImages(task)) return;
+    const exhausted = isImageRetryExhausted(task);
     if (!await confirm({
-      title: '重新生成这组图片？',
-      description: '正在执行的生图任务会立即作废；系统将保留历史记录，清除旧恢复快照，并使用已审核文案重新进入全局待生图队列。',
+      title: exhausted ? '从已审核文案重新生图？' : '重新生成这组图片？',
+      description: exhausted
+        ? '直接重试仍沿用当前已审核文案和图片规划，保留历史失败记录，清除旧恢复快照并重置本轮自动重试计数。若错误源于内容本身，重新生图仍可能失败。'
+        : '正在执行的生图任务会立即作废；系统将保留历史记录，清除旧恢复快照，并使用已审核文案重新进入全局待生图队列。',
       confirmLabel: '重试生图',
     })) return;
     setActingTaskId(task.id);
@@ -1820,15 +1818,6 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       : canHandleAssignedImages && task.state === 'IMAGE_REWORK_PENDING'
         ? <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><RotateCcw size={14} />返修图片</Button>
         : <Button unstyled className="button small" type="button" onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>;
-    if (isAllJobs) return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
-      {assignmentButton}
-      {directCopyQaButton}
-      {allJobsDetailButton}
-      {restoreButton}
-      {['COPY_RUNNING', 'COPY_FAILED'].includes(task.state) && <Button unstyled className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</Button>}
-      {queued && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardQueuedTask(task); }}><Trash2 size={14} />废弃</Button>}
-      {permanentDeleteButton}
-    </TaskRowActions>;
     const hasOwnerControl = role === 'ADMIN' || isTaskAssignee(task, creatorUserId, creatorAccountId);
     const creatorCanControlMachineCopy = taskOwnerId(task) === null
       && isTaskCreator(task, creatorUserId, creatorAccountId)
@@ -1842,12 +1831,21 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       className="button small"
       type="button"
       disabled={busy || !canRetryImages}
-      title={canRetryImages ? '重新进入待生图队列'
+      title={canRetryImages ? isImageRetryExhausted(task) ? '沿用已审核文案并重置本轮自动重试计数' : '重新进入待生图队列'
         : task.state === 'MANUAL_ARCHIVE' ? '请进入审核，完成图片评分后选择重试生图'
-          : isImageRetryExhausted(task) ? '生图重试已用尽，请进入详情修改文案并提交强制复检'
           : '文案尚未审核通过，暂不能重试生图'}
       onClick={() => { void retryImages(task); }}
     ><RotateCcw size={14} />重试生图</Button>;
+    if (isAllJobs) return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
+      {assignmentButton}
+      {directCopyQaButton}
+      {allJobsDetailButton}
+      {restoreButton}
+      {['COPY_RUNNING', 'COPY_FAILED'].includes(task.state) && <Button unstyled className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</Button>}
+      {isImageRetryExhausted(task) && canRetryImages && retryImageButton}
+      {queued && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardQueuedTask(task); }}><Trash2 size={14} />废弃</Button>}
+      {permanentDeleteButton}
+    </TaskRowActions>;
     if (activeView === 'ALL_COPY') return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
       {assignmentButton}
       {directCopyQaButton}
@@ -1861,6 +1859,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       {taskOwnerId(task) === null
         ? <Button unstyled className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
         : <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><FileCheck2 size={14} />审核</Button>}
+      {isImageRetryExhausted(task) && canRetryImages && retryImageButton}
       {permanentDeleteButton}
     </TaskRowActions>;
     if (activeView === 'IMAGE_WORK') return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>

@@ -6,6 +6,10 @@ import {
 } from 'node:crypto';
 import { promisify } from 'node:util';
 
+import { ADMIN_SESSION_SECONDS, SESSION_ABSOLUTE_SECONDS } from './session-policy.mjs';
+
+export { ADMIN_SESSION_SECONDS } from './session-policy.mjs';
+
 const scrypt = promisify(scryptCallback);
 const PASSWORD_HASH_PREFIX = 'scrypt-v1';
 const PASSWORD_SALT_BYTES = 16;
@@ -29,18 +33,24 @@ const REVIEW_ACCOUNT_ROLES = Object.freeze([
 const DUMMY_PASSWORD_HASH = 'scrypt-v1.MDEyMzQ1Njc4OWFiY2RlZg.MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZg';
 
 export const ADMIN_SESSION_COOKIE = 'xhs_admin_session';
-export const ADMIN_SESSION_SECONDS = 8 * 60 * 60;
 
-export function serializeAdminSessionCookie(token, { secure = false, clear = false } = {}) {
+export function serializeAdminSessionCookie(token, {
+  secure = false,
+  clear = false,
+  maxAge = ADMIN_SESSION_SECONDS,
+} = {}) {
   if (typeof token !== 'string' || (!clear && token.length === 0)) {
     throw new TypeError('session token is invalid');
+  }
+  if (!clear && (!Number.isSafeInteger(maxAge) || maxAge < 1 || maxAge > ADMIN_SESSION_SECONDS)) {
+    throw new TypeError('session cookie lifetime is invalid');
   }
   const attributes = [
     `${ADMIN_SESSION_COOKIE}=${clear ? '' : token}`,
     'Path=/',
     'HttpOnly',
     'SameSite=Strict',
-    `Max-Age=${clear ? 0 : ADMIN_SESSION_SECONDS}`,
+    `Max-Age=${clear ? 0 : maxAge}`,
     'Priority=High',
   ];
   if (secure) attributes.push('Secure');
@@ -100,14 +110,16 @@ function signSessionPayload(payload, secret) {
 
 /**
  * @param {string} secret
- * @param {{nowSeconds?: number, actor?: null | {userId: number, username: string, displayName?: string, roles: string[], credentialVersion: number, mustChangePassword?: boolean, copyReviewEnabled?: boolean, copyQcEnabled?: boolean, imageQcEnabled?: boolean}}} options
+ * @param {{nowSeconds?: number, renewal?: null | {authenticatedAt?: number, sessionId?: string}, actor?: null | {userId: number, username: string, displayName?: string, roles: string[], credentialVersion: number, mustChangePassword?: boolean, copyReviewEnabled?: boolean, copyQcEnabled?: boolean, imageQcEnabled?: boolean}}} options
  */
 export function createSessionToken(secret, {
   nowSeconds = Math.floor(Date.now() / 1_000),
   actor = null,
+  renewal = null,
 } = {}) {
   assertSessionSecret(secret);
-  if (!Number.isSafeInteger(nowSeconds)) {
+  if (!Number.isSafeInteger(nowSeconds) || nowSeconds < 0
+    || !Number.isSafeInteger(nowSeconds + ADMIN_SESSION_SECONDS)) {
     throw new TypeError('session timing is invalid');
   }
   let identity = { v: 1, sub: 'admin' };
@@ -150,10 +162,25 @@ export function createSessionToken(secret, {
       ...(typeof actor.imageQcEnabled === 'boolean' ? { iqe: actor.imageQcEnabled } : {}),
     };
   }
+  let expiresAt = nowSeconds + ADMIN_SESSION_SECONDS;
+  if (renewal !== null) {
+    if (actor === null || !renewal || typeof renewal !== 'object' || Array.isArray(renewal)) {
+      throw new TypeError('renewable session requires a user identity');
+    }
+    const authenticatedAt = renewal.authenticatedAt ?? nowSeconds;
+    const sessionId = renewal.sessionId ?? randomBytes(16).toString('base64url');
+    if (!Number.isSafeInteger(authenticatedAt) || authenticatedAt < 0 || authenticatedAt > nowSeconds
+      || !decodeBase64Url(sessionId, 16)
+      || authenticatedAt + SESSION_ABSOLUTE_SECONDS <= nowSeconds) {
+      throw new TypeError('renewable session claims are invalid');
+    }
+    expiresAt = Math.min(expiresAt, authenticatedAt + SESSION_ABSOLUTE_SECONDS);
+    identity = { ...identity, v: 3, authAt: authenticatedAt, sid: sessionId };
+  }
   const payload = Buffer.from(JSON.stringify({
     ...identity,
     iat: nowSeconds,
-    exp: nowSeconds + ADMIN_SESSION_SECONDS,
+    exp: expiresAt,
     jti: randomBytes(16).toString('base64url'),
   })).toString('base64url');
   const signature = signSessionPayload(payload, secret).toString('base64url');
@@ -162,8 +189,11 @@ export function createSessionToken(secret, {
 
 export function verifySessionToken(token, secret, {
   nowSeconds = Math.floor(Date.now() / 1_000),
+  includeMetadata = false,
 } = {}) {
-  if (typeof token !== 'string' || typeof secret !== 'string' || Buffer.byteLength(secret, 'utf8') < 32) {
+  if (typeof token !== 'string' || token.length > 8_192
+    || typeof secret !== 'string' || Buffer.byteLength(secret, 'utf8') < 32
+    || !Number.isSafeInteger(nowSeconds)) {
     return null;
   }
   const parts = token.split('.');
@@ -180,7 +210,8 @@ export function verifySessionToken(token, secret, {
     return null;
   }
   const isAdmin = payload?.v === 1 && payload?.sub === 'admin';
-  const isReviewer = payload?.v === 2
+  const isRenewable = payload?.v === 3;
+  const isReviewer = (payload?.v === 2 || isRenewable)
     && payload?.sub === 'user'
     && Number.isSafeInteger(payload.uid)
     && payload.uid > 0
@@ -200,14 +231,28 @@ export function verifySessionToken(token, secret, {
   if (
     (!isAdmin && !isReviewer)
     || !Number.isSafeInteger(payload.iat)
+    || payload.iat < 0
     || !Number.isSafeInteger(payload.exp)
     || !decodeBase64Url(payload.jti, 16)
     || payload.iat > nowSeconds + 60
     || payload.exp <= nowSeconds
-    || payload.exp - payload.iat !== ADMIN_SESSION_SECONDS
+    || payload.exp <= payload.iat
+    || (isRenewable
+      ? (!Number.isSafeInteger(payload.authAt) || payload.authAt < 0
+        || payload.authAt > payload.iat
+        || !Number.isSafeInteger(payload.authAt + SESSION_ABSOLUTE_SECONDS)
+        || !decodeBase64Url(payload.sid, 16)
+        || payload.exp !== Math.min(payload.iat + ADMIN_SESSION_SECONDS,
+          payload.authAt + SESSION_ABSOLUTE_SECONDS))
+      : payload.exp - payload.iat !== ADMIN_SESSION_SECONDS)
   ) {
     return null;
   }
+  const metadata = isRenewable || includeMetadata ? {
+    sessionId: isRenewable ? payload.sid : payload.jti,
+    authenticatedAt: isRenewable ? payload.authAt : payload.iat,
+    absoluteExpiresAt: (isRenewable ? payload.authAt : payload.iat) + SESSION_ABSOLUTE_SECONDS,
+  } : {};
   if (isReviewer) {
     return {
       subject: 'user',
@@ -222,12 +267,14 @@ export function verifySessionToken(token, secret, {
       ...(typeof payload.iqe === 'boolean' ? { imageQcEnabled: payload.iqe } : {}),
       issuedAt: payload.iat,
       expiresAt: payload.exp,
+      ...metadata,
     };
   }
   return {
     subject: 'admin',
     issuedAt: payload.iat,
     expiresAt: payload.exp,
+    ...metadata,
   };
 }
 

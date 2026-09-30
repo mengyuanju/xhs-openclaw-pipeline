@@ -1,6 +1,8 @@
 import { internalPrompt } from './prompt-runtime.mjs';
 import { businessPrompt, promptRuntimeSnapshot, hasPublishedPrompt } from './prompt-runtime.mjs';
 import { normalizePageLayout } from '../server/src/image-options.mjs';
+import { IMAGE_PLAN_BULLET_HARD_MAX } from './image-plan-editing.mjs';
+import { imagePlanBulletCount } from './visible-text.mjs';
 
 import { renderPrompt } from './admin/prompt-service.mjs';
 import { buildCopyKnowledgeReferencePrompt } from './copy-knowledge-match.mjs';
@@ -51,7 +53,9 @@ export function postOutputSchema(imageCount = AUTO_IMAGE_COUNT) {
       kind: { type: 'string', enum: IMAGE_KINDS },
       headline: boundedString(18),
       subtitle: boundedString(30, 0),
-      bullets: boundedStringArray(5, 40, 2),
+      // The raw transport cap leaves room for English terms counted as one
+      // image-plan unit; validateImagePlan enforces the page-specific limit.
+      bullets: boundedStringArray(5, IMAGE_PLAN_BULLET_HARD_MAX, 2),
       prompt: boundedString(1_000, 10),
     },
   };
@@ -194,6 +198,19 @@ function expectStringArray(value, field, { min = 0, max = 10, itemMax = 200 } = 
   return value.map((item, index) => expectString(item, `${field}[${index}]`, { max: itemMax }));
 }
 
+function expectImagePlanBullets(value, field, kind) {
+  const bullets = expectStringArray(value, field, {
+    min: 2, max: 5, itemMax: IMAGE_PLAN_BULLET_HARD_MAX,
+  });
+  const max = kind === 'checklist' ? 40 : 30;
+  return bullets.map((bullet, index) => {
+    if (imagePlanBulletCount(bullet) > max) {
+      throw new RangeError(`${field}[${index}] cannot exceed ${max} image-plan characters`);
+    }
+    return bullet;
+  });
+}
+
 function parseJsonFragments(raw) {
   const fragments = [];
   const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/iu);
@@ -264,11 +281,7 @@ function validateImagePlan(value, imageCount) {
       kind,
       headline: expectString(image.headline, `imagePlan[${index}].headline`, { max: 18 }),
       subtitle: expectString(image.subtitle, `imagePlan[${index}].subtitle`, { max: 30, allowEmpty: true }),
-      bullets: expectStringArray(image.bullets, `imagePlan[${index}].bullets`, {
-        min: 2,
-        max: 5,
-        itemMax: kind === 'checklist' ? 40 : 30,
-      }),
+      bullets: expectImagePlanBullets(image.bullets, `imagePlan[${index}].bullets`, kind),
       prompt,
       ...(image.layout === undefined ? {} : { layout: normalizePageLayout(image.layout, kind) }),
     };

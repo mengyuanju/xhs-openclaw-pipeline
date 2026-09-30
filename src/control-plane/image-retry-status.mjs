@@ -5,6 +5,13 @@ export function isImageRetryExhausted(task) {
   return task.state === 'COPY_REVIEW_PENDING' && task.currentStage === 'IMAGE_RETRY_EXHAUSTED';
 }
 
+/** @param {{ state: string, currentStage?: string | null, currentCopyRevisionId?: number | null } | null} task */
+export function canRequeueImages(task) {
+  return Number.isSafeInteger(task?.currentCopyRevisionId) && task.currentCopyRevisionId > 0
+    && (['IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE'].includes(task.state)
+      || isImageRetryExhausted(task));
+}
+
 function imageAttemptNumber(execution) {
   const priorFailures = execution?.snapshot?.imageRetry?.failedAttempts;
   return Number.isSafeInteger(priorFailures) && priorFailures >= 0 ? priorFailures + 1 : 1;

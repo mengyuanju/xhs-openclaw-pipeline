@@ -33,7 +33,7 @@ import { canResumeImageTask } from '../../src/control-plane/image-resume.mjs';
 import { orderedImageFileName } from '../../src/image-file-name.mjs';
 import { TaskQualitySummary } from './task-quality-summary';
 import { ModelCallTrace } from './model-call-trace';
-import { IMAGE_RETRY_EXHAUSTED_LABEL, imageFailureDisplayReason, isImageRetryExhausted } from '../../src/control-plane/image-retry-status.mjs';
+import { canRequeueImages, IMAGE_RETRY_EXHAUSTED_LABEL, imageFailureDisplayReason, isImageRetryExhausted } from '../../src/control-plane/image-retry-status.mjs';
 import { ImagePreview } from '../components/image-preview';
 import { ImagePreviewPreference } from '../components/image-preview-preference';
 import { imageApprovalNoteForVersion, type ImageApprovalEvent } from '../components/image-approval-note.mjs';
@@ -1034,6 +1034,9 @@ export function TaskReviewDialog({
   const canReviewImages = false;
   const downloadable = isAdmin && detail?.state === 'REVIEWED' && detail.deliveryStatus === 'READY';
   const canResumeImages = canResumeImageTask(detail) && hasOwnerControl && role !== 'REVIEWER';
+  const canRetryExhaustedImages = Boolean(detail && isImageRetryExhausted(detail)
+    && canRequeueImages(detail) && revision?.approvedAt && hasOwnerControl
+    && role !== 'REVIEWER' && !detail.currentExecutionId);
   const canModifyImages = Boolean(detail && revision?.approvedAt && hasOwnerControl && role !== 'REVIEWER'
     && (isAdmin
       ? ['MANUAL_ARCHIVE', 'IMAGE_REWORK_PENDING', 'REVIEWED', 'IMAGE_FAILED', 'IMAGE_QUEUED'].includes(detail.state)
@@ -1973,6 +1976,24 @@ export function TaskReviewDialog({
     finally { setSubmitting(false); }
   }
 
+  async function retryExhaustedImages() {
+    if (!detail || !canRetryExhaustedImages || submitting || loading || draftSaveStatus === 'saving') return;
+    if (!await confirm({
+      title: '从已审核文案重新生图？',
+      description: `直接重试仍沿用当前已审核文案和图片规划，保留历史失败记录，清除旧恢复快照并重置本轮自动重试计数。若错误源于内容本身，重新生图仍可能失败。${draftChanged ? '当前未提交的草稿修改不会用于本次重试。' : ''}`,
+      confirmLabel: '重试生图',
+    })) return;
+    setSubmitting(true); setError('');
+    try {
+      await apiRequest(apiPath(`/v1/tasks/${detail.id}/retry-image`), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+      await onUpdated(`任务 #${detail.id} 已重新进入待生图队列，本轮自动重试计数已重置。`);
+      onOpenChange(false);
+    } catch (caught) { setError(caught instanceof Error ? caught.message : '重新生成图片失败'); }
+    finally { setSubmitting(false); }
+  }
+
   async function retryCopy() {
     if (!detail || !canRetryCopy || submitting || loading) return;
     if (!await confirm({
@@ -2328,7 +2349,7 @@ export function TaskReviewDialog({
                 {detail.state === 'COPY_REVIEW_PENDING' && taskHasAssignee && !canReviewCopy
                   && <div className="notice warning" role="status">当前任务由其他负责人处理；这里仅提供只读查看。</div>}
               {editable && isCopyRework && (isImageRetryRework
-                ? <div className="notice warning" role="status"><strong>生图失败文案修订</strong><br />请根据上方失败原因修改文案或图片规划，然后直接提交强制复检；复检通过后系统会清除旧恢复链并从头生图。</div>
+                ? <div className="notice warning" role="status"><strong>生图失败处理</strong><br />请核对上方失败原因。当前文案与规划无须修改时，任务负责人或管理员可直接重试生图；需要调整内容时，修改后提交强制复检。</div>
                 : activeReworkRequirement
                   ? <ReworkRequirementNotice
                       title={`${activeReworkRequirement.source === 'IMAGE_QA' ? '图片质检打回' : '文案抽检返工'}${revision?.reworkRecommendation === 'DISCARD' ? ' · 质检建议废弃' : ''}`}
@@ -2776,7 +2797,7 @@ export function TaskReviewDialog({
                           onChange={(event) => updateImagePlan(index, { subtitle: event.target.value })} />
                       </div>
                       <div className="field full">
-                        <label htmlFor={`review-plan-bullets-${index}`}>画面要点 <small id={`review-plan-bullets-help-${index}`}>每行一条，2–5 条；{item.kind === 'checklist' ? '建议每条不超过 40 字' : '建议每条不超过 30 字'}{blankBulletLines.length ? `，有 ${blankBulletLines.length} 个无效空行，请删除` : ''}{bulletLengthWarnings.length ? `，当前有 ${bulletLengthWarnings.length} 条超出，保存时需确认` : ''}</small></label>
+                        <label htmlFor={`review-plan-bullets-${index}`}>画面要点 <small id={`review-plan-bullets-help-${index}`}>每行一条，2–5 条；{item.kind === 'checklist' ? '建议每条不超过 40 字' : '建议每条不超过 30 字'}，连续英文算 1 字{blankBulletLines.length ? `，有 ${blankBulletLines.length} 个无效空行，请删除` : ''}{bulletLengthWarnings.length ? `，当前有 ${bulletLengthWarnings.length} 条超出，保存时需确认` : ''}</small></label>
                         <AutosizeTextarea id={`review-plan-bullets-${index}`} className="textarea workbench-plan-bullets-editor" value={item.bullets.join('\n')} required readOnly={planFieldsReadOnly}
                           aria-describedby={`review-plan-bullets-help-${index}`} aria-invalid={blankBulletLines.length > 0}
                           resizeToken={activePlanIndex === index} onChange={(event) => updateImagePlan(index, { bullets: event.target.value.split(/\r?\n/u) })} />
@@ -2848,6 +2869,7 @@ export function TaskReviewDialog({
                 onClick={() => { if (copyReviewDraftContent && currentDraftFingerprint) void persistCopyReviewDraft(copyReviewDraftContent, currentDraftFingerprint); }}><Save size={15} />保存草稿</Button>}
               {canModifyImages && <Button unstyled className="button primary" type="button" disabled={submitting} onClick={() => void reviseImages('REGENERATE')}><RotateCcw size={15} />重新生成图片</Button>}
               {canRetryCopy && <Button unstyled className="button primary" type="button" disabled={submitting || loading} onClick={() => { void retryCopy(); }}><RotateCcw size={15} />重试文案</Button>}
+              {canRetryExhaustedImages && <Button unstyled className="button primary" type="button" disabled={submitting || loading || draftSaveStatus === 'saving'} onClick={() => { void retryExhaustedImages(); }}><RotateCcw size={15} />重试生图</Button>}
               {role === 'ADMIN' && detail.state === 'COPY_QC_PENDING'
                 && <a className="button primary" href="/copy-qa">进入质检批次</a>}
               {canResumeImages && <Button unstyled className="button primary" type="button" disabled={submitting || loading} onClick={() => { void resumeImages(); }}><RotateCcw size={15} />从失败步骤继续</Button>}

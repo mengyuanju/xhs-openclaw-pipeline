@@ -119,6 +119,34 @@ test('PostgreSQL: image retry exhaustion starts a new rework round after a passe
       passedMember: (await qualityMembers(pool, task.id))[0] };
   }
 
+  await t.test('manual retry keeps the released copy and past QA verdict without creating a recheck', async () => {
+    const fixture = await exhaustedTask();
+    const before = await persistedTask(pool, fixture.taskId);
+    const retried = await repository.requeueImageTask(fixture.taskId, { actor: worker });
+    assert.equal(retried.state, 'IMAGE_QUEUED');
+    assert.equal(retried.currentCopyRevisionId, fixture.revisionId);
+    assert.equal(retried.mandatoryCopyQc, false);
+    assert.equal(retried.mandatoryCopyQcOrigin, null);
+    assert.equal(retried.currentImageRunId, null);
+    assert.equal((await imageEligibility(pool, fixture.taskId)).eligible, true);
+    const after = await persistedTask(pool, fixture.taskId);
+    for (const key of ['revisions', 'approvals', 'submissions', 'assessments', 'members', 'batches']) {
+      assert.deepEqual(after[key], before[key], `${key} must retain its existing audit history`);
+    }
+  });
+
+  await t.test('manual retry cannot release an unapproved QA return', async () => {
+    const fixture = await exhaustedTask();
+    await pool.query(`UPDATE tasks SET copy_qc_released_revision_id = NULL WHERE id = $1`,
+      [fixture.taskId]);
+    await assert.rejects(repository.requeueImageTask(fixture.taskId, { actor: worker }), {
+      code: 'IMAGE_RETRY_UNAVAILABLE',
+    });
+    const held = await imageEligibility(pool, fixture.taskId);
+    assert.equal(held.state, 'COPY_REVIEW_PENDING');
+    assert.equal(held.mandatory_copy_qc, true);
+  });
+
   for (const editKind of ['COPY', 'PLAN']) {
     await t.test(`${editKind} edits require a distinct mandatory inspection before images can restart`, async () => {
       const fixture = await exhaustedTask();

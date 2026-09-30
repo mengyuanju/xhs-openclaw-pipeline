@@ -151,7 +151,7 @@ function buildPostRepairPrompt(task, error, previousOutput, options = {}) {
     data: { query: task.query, validationError, previousOutput, receivedLength: receivedLength ? Number(receivedLength) : null,
       ...(bodyRepair ? { lengthBudget: bodyRepairLengthBudget(options.previousCandidate?.body),
         repairHistory: options.repairHistory ?? [] } : {}),
-      countingRule: '英文字母、数字、标点、空格和换行均逐个计数，英文单词不能按一个字计算',
+      countingRule: '正文、标题等字段的英文字母、数字、标点、空格和换行均逐个计数；仅 imagePlan.bullets 的连续英文字母算1字，数字、标点、空格和换行仍逐个计数',
       completionRule: internalPrompt('INTERNAL_BODY_REPAIR_COMPLETENESS'),
       protectedNumericFacts: bodyRepair
         ? protectedNumericFacts(options.previousCandidate?.body)

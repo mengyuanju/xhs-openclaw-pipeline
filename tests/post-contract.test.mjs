@@ -205,13 +205,48 @@ describe('post output contract', () => {
     input.imagePlan[1].bullets[0] = checklistText;
     assert.throws(
       () => parsePostOutput(JSON.stringify(input), { imageCount: 3 }),
-      /imagePlan\[1\].bullets\[0\].*30 characters/i,
+      /imagePlan\[1\].bullets\[0\].*30.*characters/i,
     );
     input.imagePlan[1] = validPost(3).imagePlan[1];
     input.imagePlan[2].bullets[0] = '清'.repeat(41);
     assert.throws(
       () => parsePostOutput(JSON.stringify(input), { imageCount: 3 }),
-      /imagePlan\[2\].bullets\[0\].*40 characters/i,
+      /imagePlan\[2\].bullets\[0\].*40.*characters/i,
+    );
+  });
+
+  it('counts each English letter run as one unit in generated image-plan bullets', () => {
+    const input = validPost();
+    input.imagePlan[1].bullets[0] = '第三方录像机选ONVIF，填写摄像头IP、账号、密码和端口80';
+    assert.doesNotThrow(() => parsePostOutput(JSON.stringify(input)));
+
+    assert.equal(
+      postOutputSchema(3).properties.imagePlan.items.properties.bullets.items.maxLength,
+      200,
+    );
+    input.imagePlan[1].bullets[0] = 'ONVIF'.repeat(9);
+    assert.doesNotThrow(() => parsePostOutput(JSON.stringify(input)));
+
+    input.imagePlan[1].bullets[0] = `${'字'.repeat(29)}ONVIF`;
+    assert.doesNotThrow(() => parsePostOutput(JSON.stringify(input)));
+
+    input.imagePlan[1].bullets[0] = `${'字'.repeat(30)}ONVIF`;
+    assert.throws(
+      () => parsePostOutput(JSON.stringify(input)),
+      /imagePlan\[1\].bullets\[0\].*30.*characters/i,
+    );
+
+    input.imagePlan[1].bullets[0] = 'A'.repeat(201);
+    assert.throws(() => parsePostOutput(JSON.stringify(input)), /imagePlan\[1\].bullets\[0\].*200.*characters/i);
+  });
+
+  it('keeps the 400 to 600 body range based on visible characters', () => {
+    const input = validPost();
+    input.body = `${'字'.repeat(394)}ONVIF。`;
+
+    assert.equal(
+      parsePostOutput(JSON.stringify(input), { query: '桌面整理' }).body,
+      input.body,
     );
   });
 
@@ -513,7 +548,9 @@ describe('post prompt', () => {
     assert.match(prompt, /实体科普 \| 推荐 \| 盘点 \| 对比测评/);
     assert.match(prompt, /headline.{0,15}18.{0,15}subtitle.{0,15}30/u);
     assert.match(prompt, /checklist.{0,30}40.{0,30}其他.{0,30}30/u);
-    assert.match(prompt, /英文字母、数字、标点、空格和换行/u);
+    assert.match(prompt, /仅.*bullets.*连续英文字母.*1字/u);
+    assert.match(prompt, /数字、标点、空格和换行仍逐个计数/u);
+    assert.match(prompt, /其他字段.*英文字母.*逐个计数/u);
   });
 
   it('passes a fixed untrusted research snapshot without granting it instruction authority', () => {
@@ -592,7 +629,11 @@ describe('post prompt', () => {
     assert.deepEqual(input, { title: finalized.title, body: finalized.body });
     assert.match(prompt, /3～5页，首项kind=hero/u);
     assert.match(prompt, /headline为1～18字符，subtitle允许为空字符串、非空时≤30字符/u);
-    assert.match(prompt, /checklist≤40否则≤30/u);
+    assert.match(prompt, /checklist≤40.*否则≤30/u);
+    assert.match(prompt, /原始可见字符≤200个/u);
+    assert.match(prompt, /仅 bullets 中连续英文字母算1字/u);
+    assert.match(prompt, /数字、标点、空格和换行逐个计数/u);
+    assert.match(prompt, /其他字段仍按可见字符逐个计数/u);
     assert.match(prompt, /不得修改正文/u);
     assert.match(prompt, /headline、subtitle、bullets 是最终逐字上图文字/u);
     assert.equal(imagePlan.length, 5);
