@@ -45,10 +45,12 @@ test('saved report config preserves relative date semantics and removes current 
   }).conditions, [{ field: 'TASK_ID_OR_NAME', op: 'CONTAINS', value: '#1024' }]);
   assert.deepEqual(normalizeSavedTaskReportQueryConfig({
     time: { field: 'IMAGE_QA_RELEASED_AT', mode: 'ABSOLUTE', from: '2026-09-01', to: '2026-09-24' },
-  }).time, { field: 'IMAGE_QA_RELEASED_AT', mode: 'ABSOLUTE', from: '2026-09-01', to: '2026-09-24' });
+  }).time, { field: 'IMAGE_QA_RELEASED_AT', mode: 'ABSOLUTE', from: '2026-09-01', to: '2026-09-24',
+    fromTime: '00:00:00', toTime: '23:59:59' });
   assert.deepEqual(normalizeSavedTaskReportQueryConfig({
     time: { field: 'CREATED_AT', mode: 'ABSOLUTE', from: '2024-01-01', to: '2026-09-24' },
-  }).time, { field: 'CREATED_AT', mode: 'ABSOLUTE', from: '2024-01-01', to: '2026-09-24' });
+  }).time, { field: 'CREATED_AT', mode: 'ABSOLUTE', from: '2024-01-01', to: '2026-09-24',
+    fromTime: '00:00:00', toTime: '23:59:59' });
 });
 
 test('saved report config rejects unsupported conditions and invalid date intervals', () => {
@@ -67,6 +69,18 @@ test('saved report config rejects unsupported conditions and invalid date interv
   assert.throws(() => normalizeSavedTaskReportQueryConfig({
     time: { mode: 'ABSOLUTE', from: '2026-09-24', to: '2026-09-01' },
   }), /after/u);
+  assert.deepEqual(normalizeSavedTaskReportQueryConfig({
+    time: { mode: 'ABSOLUTE', from: '2026-09-24', fromTime: '08:15:30',
+      to: '2026-09-24', toTime: '09:00:00' },
+  }).time, { field: 'FIRST_COPY_REVIEW_ACTION', mode: 'ABSOLUTE',
+    from: '2026-09-24', to: '2026-09-24', fromTime: '08:15:30', toTime: '09:00:00' });
+  assert.throws(() => normalizeSavedTaskReportQueryConfig({
+    time: { mode: 'ABSOLUTE', from: '2026-09-24', to: '2026-09-24',
+      fromTime: '10:00:00', toTime: '09:59:59' },
+  }), /after/u);
+  assert.throws(() => normalizeSavedTaskReportQueryConfig({
+    time: { mode: 'ABSOLUTE', from: '2026-09-24', to: '2026-09-24', toTime: '24:00:00' },
+  }), /HH:mm:ss/u);
   assert.throws(() => normalizeSavedTaskReportQueryConfig({
     conditions: [{ field: 'TASK_ID_OR_NAME', op: 'EQ', value: '#1024' }],
   }), /task name condition/u);

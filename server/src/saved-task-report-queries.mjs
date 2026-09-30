@@ -26,6 +26,7 @@ const STATUS_FIELDS = new Set(['STATE', 'COPY_STATUS', 'IMAGE_STATUS']);
 const STAGE_STATUSES = new Set(['PENDING', 'REVIEW_PASSED', 'QA_PENDING', 'QA_RELEASED', 'RETURNED']);
 const COUNT_OPS = new Set(['EQ', 'GTE', 'LTE']);
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/u;
+const CLOCK_PATTERN = /^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/u;
 
 function plainObject(value, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)
@@ -81,12 +82,13 @@ function normalizeDate(value, label) {
 
 function normalizeTime(raw) {
   const time = plainObject(raw, 'saved report time');
-  onlyKeys(time, ['field', 'mode', 'days', 'from', 'to'], 'saved report time');
+  onlyKeys(time, ['field', 'mode', 'days', 'from', 'to', 'fromTime', 'toTime'], 'saved report time');
   const field = String(time.field ?? 'FIRST_COPY_REVIEW_ACTION');
   if (!TIME_FIELDS.has(field)) throw new TypeError('saved report time field is invalid');
   const mode = String(time.mode ?? (time.from || time.to ? 'ABSOLUTE' : 'RELATIVE'));
   if (mode === 'RELATIVE') {
-    if (time.from !== undefined || time.to !== undefined) {
+    if (time.from !== undefined || time.to !== undefined
+        || time.fromTime !== undefined || time.toTime !== undefined) {
       throw new TypeError('relative report time cannot contain fixed dates');
     }
     const days = positiveId(time.days ?? 30, 'saved report relative days');
@@ -98,8 +100,16 @@ function normalizeTime(raw) {
   }
   const from = normalizeDate(time.from, 'saved report date from');
   const to = normalizeDate(time.to, 'saved report date to');
-  if (from > to) throw new RangeError('saved report date from cannot be after date to');
-  return { field, mode, from, to };
+  const fromTime = time.fromTime ?? '00:00:00';
+  const toTime = time.toTime ?? '23:59:59';
+  if (typeof fromTime !== 'string' || !CLOCK_PATTERN.test(fromTime)
+      || typeof toTime !== 'string' || !CLOCK_PATTERN.test(toTime)) {
+    throw new TypeError('saved report time must be HH:mm:ss');
+  }
+  if (`${from}T${fromTime}` > `${to}T${toTime}`) {
+    throw new RangeError('saved report start cannot be after end');
+  }
+  return { field, mode, from, to, fromTime, toTime };
 }
 
 function normalizeCondition(raw) {
