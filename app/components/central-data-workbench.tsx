@@ -64,10 +64,11 @@ export function CentralDataWorkbench() {
       value.imageEditRepairMaxAttempts = imageEditRepairLimit(latestProduction.imageEditRepairMaxAttempts);
       const draftModelApi = { ...value.modelApi };
       delete draftModelApi.webSearchProviderOrder;
+      delete draftModelApi.doubaoSearchMode;
       delete draftModelApi.doubaoIcpHostOnly;
       const currentSearchSettings = Object.fromEntries(Object.entries(
         normalizeWebSearchSettings(latestProduction.modelApi ?? {}),
-      ).filter(([key, setting]) => !['webSearchProviderOrder', 'doubaoIcpHostOnly'].includes(key) || setting !== null));
+      ).filter(([key, setting]) => !['webSearchProviderOrder', 'doubaoSearchMode', 'doubaoIcpHostOnly'].includes(key) || setting !== null));
       value.modelApi = {
         ...draftModelApi,
         ...currentSearchSettings,

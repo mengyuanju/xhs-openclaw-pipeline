@@ -137,13 +137,18 @@ test('ordered providers retain legacy primary while resolving fallback configura
   assert.deepEqual(resolveWebSearchConfig(environment, settings), {
     provider: 'DOUBAO', providers: ['DOUBAO', 'DEEPSEEK'],
     model: 'deepseek-v5-search-preview', timeoutMs: 20_000, resultLimit: 5,
+    doubaoSearchMode: 'GLOBAL',
     doubaoIcpHostOnly: false,
   });
   assert.deepEqual(effectiveModelApiConfig(settings, environment).webSearchProviderOrder,
     ['DOUBAO', 'DEEPSEEK']);
   assert.deepEqual(resolveWebSearchConfig({}, { webSearchProvider: 'DOUBAO' }), {
-    provider: 'DOUBAO', timeoutMs: 120_000, resultLimit: 5, doubaoIcpHostOnly: true,
+    provider: 'DOUBAO', timeoutMs: 120_000, resultLimit: 5,
+    doubaoSearchMode: 'GLOBAL', doubaoIcpHostOnly: true,
   });
+  assert.equal(resolveWebSearchConfig({}, { webSearchProvider: 'DOUBAO',
+    doubaoSearchMode: 'CUSTOM' }).doubaoSearchMode, 'CUSTOM');
+  assert.throws(() => normalizeModelApiSettings({ doubaoSearchMode: 'WRONG' }), /doubaoSearchMode/u);
   assert.equal(resolveWebSearchConfig({ XHS_DEEPSEEK_SEARCH_TIMEOUT_MS: '5000' },
     { webSearchProvider: 'DOUBAO' }).timeoutMs, 120_000);
   for (const order of [[], ['DOUBAO', 'DOUBAO'], ['UNKNOWN'], ['DOUBAO', 'DEEPSEEK', 'CODEX', 'OTHER']]) {
@@ -172,6 +177,12 @@ test('ordered settings expose only key readiness and legacy single-provider patc
     assert.equal(legacy.settings.webSearchProvider, 'CODEX');
     assert.equal(legacy.settings.webSearchProviderOrder, null);
     assert.deepEqual(legacy.effective, { provider: 'CODEX', resultLimit: 5 });
+    const explicitGlobal = await updateWebSearchSettings(options, { webSearchProvider: 'DOUBAO',
+      doubaoSearchMode: 'GLOBAL' });
+    assert.equal(explicitGlobal.effective.doubaoSearchMode, 'GLOBAL');
+    const restoredCustom = await updateWebSearchSettings(options, { doubaoSearchMode: null });
+    assert.equal(restoredCustom.settings.doubaoSearchMode, 'CUSTOM');
+    assert.equal(restoredCustom.effective.doubaoSearchMode, 'CUSTOM');
   } finally { db.close(); }
 });
 

@@ -19,6 +19,13 @@ function payload(documents = [document(1), document(2)]) {
   return { Result: { ErrorCode: 0, Documents: documents } };
 }
 
+function customPayload(webResults = [{
+  Title: '自驾线路', Url: 'https://example.cn/route', SiteName: 'example.cn',
+  Summary: '八天行程摘要', Snippet: '备用摘要',
+}]) {
+  return { Result: { WebResults: webResults } };
+}
+
 function runWith(fetchImpl, options = {}, input = {}) {
   return runDoubaoWebSearch({ apiKey: KEY, timeoutMs: 5_000, fetchImpl, ...options },
     { query: QUERY, ...input });
@@ -54,6 +61,70 @@ test('Doubao requests web search with domestic ICP scope and returns grounded so
   assert.doesNotMatch(result.result.content, /应排除|<p>/u);
 });
 
+test('Doubao Custom uses the subscription endpoint and returns service summaries as evidence', async () => {
+  const result = await runWith(async (url, init) => {
+    assert.equal(url, 'https://open.feedcoopapi.com/search_api/web_search');
+    assert.equal(init.headers.Authorization, `Bearer ${KEY}`);
+    assert.deepEqual(JSON.parse(init.body), {
+      Query: QUERY, SearchType: 'web', Count: 5, NeedSummary: true,
+    });
+    return new Response(JSON.stringify(customPayload([{
+      Title: '<b>自驾线路</b>', Url: 'https://example.cn/route', SiteName: 'example.cn',
+      Summary: '<p>八天行程摘要</p>', Snippet: '备用摘要',
+    }, {
+      Title: '第二条', Url: 'https://example.cn/second', SiteName: 'example.cn',
+      Snippet: '无 Summary 时使用 Snippet',
+    }])));
+  }, { mode: 'CUSTOM', icpHostOnly: true });
+  assert.equal(result.provider, 'doubao');
+  assert.deepEqual(result.result.sources, [
+    { title: '自驾线路', url: 'https://example.cn/route',
+      snippet: '八天行程摘要', siteName: 'example.cn' },
+    { title: '第二条', url: 'https://example.cn/second',
+      snippet: '无 Summary 时使用 Snippet', siteName: 'example.cn' },
+  ]);
+  assert.match(result.result.content, /八天行程摘要/u);
+  assert.doesNotMatch(result.result.content, /备用摘要|<p>|未由模型改写/u);
+});
+
+test('Doubao Custom handles upstream errors and redacts echoed credentials', async () => {
+  const result = await runWith(async () => new Response(JSON.stringify(customPayload([{
+    Title: `secret ${KEY}`, Url: 'https://example.cn/guide', SiteName: 'example.cn',
+    Summary: `summary ${KEY}`,
+  }, {
+    Title: 'unsafe', Url: `https://example.cn/?key=${KEY}`, Summary: 'skip',
+  }]))), { mode: 'CUSTOM' });
+  assert.equal(result.result.sources.length, 1);
+  assert.doesNotMatch(JSON.stringify(result), new RegExp(KEY, 'u'));
+  await assert.rejects(runWith(async () => new Response(JSON.stringify({
+    ResponseMetadata: { Error: { CodeN: 10409, Message: `secret ${KEY}` } },
+  })), { mode: 'CUSTOM' }), (error) => {
+    assert.equal(error.message, 'Doubao web search failed with API code 10409');
+    assert.doesNotMatch(error.message, new RegExp(KEY, 'u'));
+    return true;
+  });
+  await assert.rejects(runWith(async () => new Response(JSON.stringify(customPayload([]))),
+    { mode: 'CUSTOM' }), /no source evidence/u);
+});
+
+test('Doubao excludes URLs that echo an encoded API key in either mode', async () => {
+  const key = 'offline/fixture+key';
+  const encodedUrl = `https://example.cn/?token=${encodeURIComponent(key)}`;
+  for (const mode of ['GLOBAL', 'CUSTOM']) {
+    const body = mode === 'GLOBAL' ? payload([
+      document(1, { Url: encodedUrl }), document(2),
+    ]) : customPayload([{
+      Title: 'unsafe', Url: encodedUrl, Summary: 'should not appear',
+    }, {
+      Title: 'safe', Url: 'https://example.cn/route', Summary: 'safe source',
+    }]);
+    const result = await runWith(async () => new Response(JSON.stringify(body)),
+      { mode, apiKey: key });
+    assert.equal(result.result.sources.length, 1);
+    assert.doesNotMatch(JSON.stringify(result), /offline%2Ffixture%2Bkey/u);
+  }
+});
+
 test('Doubao allows worldwide scope and includes all configured sources in the excerpt', async () => {
   const documents = Array.from({ length: 7 }, (_, index) => document(index + 1));
   const result = await runWith(async (_url, init) => {
@@ -79,6 +150,7 @@ test('Doubao rejects invalid local inputs before calling the network', async () 
     [{ apiKey: '' }, {}, /DOUBAO_SEARCH_API_KEY/u],
     [{ apiKey: 'bad key' }, {}, /DOUBAO_SEARCH_API_KEY/u],
     [{ icpHostOnly: 'true' }, {}, /IcpHostOnly/u],
+    [{ mode: 'INVALID' }, {}, /mode/u],
     [{ timeoutMs: 1_000 }, {}, /timeoutMs/u],
     [{}, { query: '' }, /query/u],
     [{}, { query: 'x'.repeat(501) }, /query/u],
@@ -100,6 +172,55 @@ test('Doubao fails safely for HTTP, protocol and no-source errors', async () => 
   } }))), /service code 9001/u);
   await assert.rejects(runWith(async () => new Response(JSON.stringify(payload([])))),
     /no source evidence/u);
+});
+
+test('Doubao reports only safe API error codes from response metadata', async () => {
+  const metadataError = (error, result = null) => new Response(JSON.stringify({
+    ResponseMetadata: { RequestId: 'upstream-request-id', Error: error }, Result: result,
+  }));
+  await assert.rejects(runWith(async () => metadataError({
+    Code: 'PermissionDenied', CodeN: 10403, Message: `secret ${KEY}`,
+  })), (error) => {
+    assert.equal(error.message, 'Doubao web search failed with API code PermissionDenied');
+    assert.doesNotMatch(error.message, new RegExp(KEY, 'u'));
+    return true;
+  });
+  await assert.rejects(runWith(async () => metadataError({ CodeN: 10408, Message: `secret ${KEY}` })),
+    /API code 10408/u);
+  await assert.rejects(runWith(async () => metadataError({
+    Code: `invalid_${KEY}`, Message: `secret ${KEY}`,
+  })), (error) => {
+    assert.equal(error.message, 'Doubao web search failed with an API error without safe code');
+    assert.doesNotMatch(error.message, new RegExp(KEY, 'u'));
+    return true;
+  });
+  await assert.rejects(runWith(async () => metadataError({
+    Code: 'Invalid\nrequest body', Message: 'untrusted message',
+  })), /API error without safe code/u);
+  await assert.rejects(runWith(async () => metadataError({
+    Code: 'A'.repeat(65), Message: 'untrusted message',
+  })), /API error without safe code/u);
+  await assert.rejects(runWith(async () => metadataError({ Code: 'PermissionDenied' }, {
+    ErrorCode: 0, Documents: [document(1)],
+  })), /API code PermissionDenied/u);
+  await assert.rejects(runWith(async () => metadataError({ Code: 'PermissionDenied' }, {
+    ErrorCode: 9001,
+  })), /service code 9001/u);
+});
+
+test('Doubao distinguishes missing response fields without exposing payload content', async () => {
+  const cases = [
+    [{ unrelated: `secret ${KEY}` }, 'missing Result'],
+    [{ Result: { unrelated: `secret ${KEY}` } }, 'missing ErrorCode'],
+    [{ Result: { ErrorCode: '0', unrelated: `secret ${KEY}` } }, 'invalid ErrorCode'],
+  ];
+  for (const [body, diagnostic] of cases) {
+    await assert.rejects(runWith(async () => new Response(JSON.stringify(body))), (error) => {
+      assert.equal(error.message, `Doubao web search failed with ${diagnostic}`);
+      assert.doesNotMatch(error.message, new RegExp(KEY, 'u'));
+      return true;
+    });
+  }
 });
 
 test('Doubao does not expose the API key echoed by untrusted result fields', async () => {

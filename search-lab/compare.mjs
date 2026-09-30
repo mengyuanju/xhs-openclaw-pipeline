@@ -61,8 +61,8 @@ export function validateCompareRequest(body, catalogue = providerCatalogue) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new TypeError('请求格式不正确');
   const query = typeof body.query === 'string' ? body.query.replace(/\s+/gu, ' ').trim() : '';
   if (!query || [...query].length > 500) throw new RangeError('Query 需要 1–500 个字符');
-  if (!Array.isArray(body.providers) || body.providers.length < 1 || body.providers.length > 12) {
-    throw new RangeError('请选择 1–12 家服务商');
+  if (!Array.isArray(body.providers) || body.providers.length < 1 || body.providers.length > 13) {
+    throw new RangeError('请选择 1–13 家服务商');
   }
   const selections = body.providers.map((item) => normalizedSelection(item, catalogue));
   const ids = selections.map(({ provider }) => provider.id);

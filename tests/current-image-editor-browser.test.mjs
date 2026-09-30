@@ -6,6 +6,7 @@ import { join,resolve } from 'node:path';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
+import { decodeReference } from '../src/image-edit-pixels.mjs';
 import { localEditAlternatives } from '../src/local-edit-alternatives.mjs';
 
 test('image editor browser: prompt-localized edit, multi-page product replacement, preview and explicit acceptance',{skip:process.env.RUN_IMAGE_EDIT_BROWSER!=='1',timeout:75000},async()=>{
@@ -324,7 +325,7 @@ test('image editor browser: prompt-localized edit, multi-page product replacemen
     assert.equal(uploadStyle.borderStyle,'dashed');assert.equal(uploadStyle.borderWidth,'2px');assert.notEqual(uploadStyle.backgroundColor,'rgba(0, 0, 0, 0)');
     assert.deepEqual(inputStyle,{opacity:'0',position:'absolute'});
     assert.equal(await page.getByText('点击选择产品图片',{exact:true}).count(),1);
-    assert.equal(await page.getByText('PNG / JPG / WebP · 最大 5 MB',{exact:false}).count(),1);
+    assert.equal(await page.getByText('PNG / JPG / WebP · 最大 5 MiB',{exact:false}).count(),1);
     await uploadInput.setInputFiles({name:'reference.png',mimeType:'image/png',buffer:png});
     await page.getByRole('img',{name:'已上传的真实产品参考图',exact:true}).waitFor();
     // Navigation can load the global select rule after the editor's CSS module.
@@ -421,6 +422,9 @@ test('image editor browser: prompt-localized edit, multi-page product replacemen
     await selection.getByLabel('选择第 1 页生成标识').check();
     await selection.getByLabel('选择第 3 页生成标识').check();
     await selection.getByRole('button',{name:'预览第 2 页图片',exact:true}).click();
+    // Existing results automatically open comparison when the preview page changes.
+    // Select the current image before asserting its original page source.
+    await page.getByRole('button',{name:'当前图',exact:true}).click();
     assert.match(await livePreview.locator('img').getAttribute('src'),/\/v1\/assets\/2$/u);
     assert.equal(await selection.getByLabel('选择第 2 页生成标识').isChecked(),false,'switching the preview must not change selection');
     assert.equal(await selection.getByLabel('选择第 1 页生成标识').isChecked(),true);
@@ -499,4 +503,80 @@ test('image editor browser: prompt-localized edit, multi-page product replacemen
     assert.equal(await page.getByRole('button',{name:'修改图片',exact:true}).isVisible(),true);
     assert.deepEqual(errors,[]);
   }finally{await browser?.close();if(server)await new Promise(r=>server.close(r));assert.ok(resolve(root).startsWith(resolve(tmpdir())));await rm(root,{recursive:true,force:true});}
+});
+
+test('image editor browser: reference upload errors explain size and actual format, and allow corrected files',
+ {skip:process.env.RUN_IMAGE_EDIT_BROWSER!=='1',timeout:45000},async()=>{
+  const {build}=await import('esbuild'),{chromium}=await import('playwright-core');
+  const root=await mkdtemp(join(tmpdir(),'image-reference-errors-'));
+  const png=await sharp({create:{width:1086,height:1448,channels:3,background:'#eeeeee'}}).png().toBuffer();
+  const jpeg=await sharp(png).jpeg().toBuffer(),uploadRequests=[];
+  let browser,server,editSubmissions=0;
+  try {
+    await build({stdin:{contents:`import './app/globals.css';import React from 'react';import{createRoot}from'react-dom/client';import{ConfirmDialogProvider}from'./components/ui/confirm-dialog';import{CurrentImageEditor}from'./app/components/current-image-editor';const asset={id:1,sha256:'a'.repeat(64),url:'/v1/assets/1'};createRoot(document.getElementById('root')).render(<ConfirmDialogProvider><CurrentImageEditor taskId={838} runId="${randomUUID()}" copyRevisionId={1} asset={asset} page={1} runs={[]} onChanged={async()=>{}}/></ConfirmDialogProvider>);`,resolveDir:process.cwd(),loader:'tsx'},bundle:true,outfile:join(root,'bundle.js'),jsx:'automatic',platform:'browser',conditions:['style'],alias:{'@':process.cwd()},define:{'process.env.NODE_ENV':'"test"'}});
+    const [js,rawCss]=await Promise.all([readFile(join(root,'bundle.js')),readFile(join(root,'bundle.css'),'utf8')]);
+    const {default:postcss}=await import('postcss'),{default:tailwind}=await import('@tailwindcss/postcss');
+    const {css}=await postcss([tailwind()]).process(rawCss,{from:join(process.cwd(),'app/globals.css')});
+    server=createServer(async(req,res)=>{
+      if(req.url==='/bundle.js'){res.setHeader('content-type','application/javascript');res.end(js);return;}
+      if(req.url==='/bundle.css'){res.setHeader('content-type','text/css');res.end(css);return;}
+      if(req.url?.includes('/assets/')){res.setHeader('content-type','image/png');res.end(png);return;}
+      if(req.url?.startsWith('/api/')){
+        let body='';for await(const chunk of req)body+=chunk;
+        const data=body?JSON.parse(body):null;
+        res.setHeader('content-type','application/json');
+        if(req.method==='POST'&&req.url.endsWith('/image-edit-references')){
+          uploadRequests.push(data);
+          assert.deepEqual(Buffer.from(data.base64,'base64'),jpeg);
+          if(data.mediaType==='image/png'){
+            let validationError;
+            try {await decodeReference(Buffer.from(data.base64,'base64'),data.mediaType);}
+            catch(error){validationError=error;}
+            assert.ok(validationError instanceof TypeError);
+            res.statusCode=400;res.end(JSON.stringify({error:{code:'VALIDATION_ERROR',message:validationError.message}}));return;
+          }
+          assert.equal(data.mediaType,'image/jpeg');
+          res.end(JSON.stringify({data:{id:9,sha256:'b'.repeat(64),url:'/v1/assets/9'}}));return;
+        }
+        if(req.method==='POST')editSubmissions+=1;
+        res.end(JSON.stringify({data:[]}));return;
+      }
+      res.setHeader('content-type','text/html');res.end('<html><meta charset="utf-8"><link rel="stylesheet" href="/bundle.css"><body><div id="root"></div><script src="/bundle.js"></script></body></html>');
+    });
+    await new Promise(r=>server.listen(0,'127.0.0.1',r));
+    browser=await chromium.launch({headless:true,channel:process.env.IMAGE_EDIT_BROWSER_CHANNEL??'msedge'});
+    const page=await browser.newPage({viewport:{width:1280,height:960}}),errors=[];
+    page.on('pageerror',error=>errors.push(error.message));
+    await page.goto(`http://127.0.0.1:${server.address().port}`);
+    await page.getByRole('button',{name:'修改图片',exact:true}).click();
+    await page.getByRole('tab',{name:'实体替换',exact:true}).click();
+    const input=page.getByLabel('上传真实产品参考图',{exact:true});
+    await page.waitForFunction(()=>document.querySelector('input[aria-label="上传真实产品参考图"]')?.disabled===false);
+    await input.setInputFiles({name:'large.jpg',mimeType:'image/jpeg',buffer:Buffer.alloc(5_680_000)});
+    const sizeError=page.getByRole('alert').filter({hasText:'5.42 MiB'});
+    await sizeError.waitFor();
+    assert.match(await sizeError.innerText(),/5\s*MiB/u);
+    assert.match(await sizeError.innerText(),/5[，,\s]?242[，,\s]?880\s*字节/u);
+    assert.match(await sizeError.innerText(),/5[，,\s]?680[，,\s]?000\s*字节/u);
+    assert.equal(uploadRequests.length,0,'oversized reference files never reach the upload API');
+    assert.equal(await input.inputValue(),'','reselecting the same failed file remains possible');
+    const screenshots=resolve('.codex_artifacts/image-upload-feedback');await mkdir(screenshots,{recursive:true});
+    await page.screenshot({path:join(screenshots,'task-size-error.png'),animations:'disabled'});
+    await input.setInputFiles({name:'reference.png',mimeType:'image/png',buffer:jpeg});
+    const formatError=page.getByRole('alert').filter({hasText:'实际为 JPEG'});
+    await formatError.waitFor();
+    assert.match(await formatError.innerText(),/\.jpg/u);assert.match(await formatError.innerText(),/\.jpeg/u);
+    assert.equal(uploadRequests.length,1);
+    assert.equal(await page.getByRole('img',{name:'已上传的真实产品参考图',exact:true}).count(),0);
+    await page.screenshot({path:join(screenshots,'task-format-error.png'),animations:'disabled'});
+    await input.setInputFiles({name:'reference.jpg',mimeType:'image/jpeg',buffer:jpeg});
+    await page.getByRole('img',{name:'已上传的真实产品参考图',exact:true}).waitFor();
+    assert.equal(uploadRequests.length,2,'correcting the file type permits another upload');
+    assert.equal(await page.getByRole('alert').count(),0,'successful upload clears the earlier error');
+    assert.equal(editSubmissions,0,'reference uploads never submit a model edit');
+    assert.deepEqual(errors,[]);
+  } finally {
+    await browser?.close();if(server)await new Promise(r=>server.close(r));
+    assert.ok(resolve(root).startsWith(resolve(tmpdir())));await rm(root,{recursive:true,force:true});
+  }
 });

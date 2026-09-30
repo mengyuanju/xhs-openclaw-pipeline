@@ -1,5 +1,6 @@
 import { DEFAULT_PRODUCTION_SETTINGS } from '../production-settings.mjs';
-import { DEFAULT_WEB_SEARCH_SETTINGS, normalizeWebSearchSettings, resolveWebSearchConfig } from '../web-search-config.mjs';
+import { DEFAULT_DOUBAO_SEARCH_MODE, DEFAULT_WEB_SEARCH_SETTINGS,
+  normalizeWebSearchSettings, resolveWebSearchConfig } from '../web-search-config.mjs';
 
 function publicRecord(production, { controlPlane, environment = process.env }) {
   const settings = normalizeWebSearchSettings(production.settings.modelApi ?? {});
@@ -7,7 +8,9 @@ function publicRecord(production, { controlPlane, environment = process.env }) {
   return {
     settings,
     scope: controlPlane ? 'central' : 'local',
-    effective: controlPlane ? null : resolveWebSearchConfig(environment, settings),
+    effective: controlPlane ? null : resolveWebSearchConfig(environment, {
+      ...settings, doubaoSearchMode: settings.doubaoSearchMode ?? DEFAULT_DOUBAO_SEARCH_MODE,
+    }),
     apiKeyConfigured: deepseekKeyConfigured,
     providerKeyConfigured: {
       DEEPSEEK: deepseekKeyConfigured,
@@ -20,7 +23,10 @@ function publicRecord(production, { controlPlane, environment = process.env }) {
 async function centralProduction(controlPlane) {
   const records = await controlPlane.listSettings();
   const record = records.find((item) => item.key === 'production');
-  const settings = record?.value ?? DEFAULT_PRODUCTION_SETTINGS;
+  // The center's seed omits this newer field until Doubao is enabled, so
+  // unrelated executors can continue reading its production settings.
+  const settings = record?.value ?? { ...DEFAULT_PRODUCTION_SETTINGS,
+    modelApi: { ...DEFAULT_PRODUCTION_SETTINGS.modelApi, doubaoSearchMode: null } };
   if (!settings || typeof settings !== 'object' || Array.isArray(settings)
     || (settings.modelApi != null && (typeof settings.modelApi !== 'object' || Array.isArray(settings.modelApi)))) {
     throw new TypeError('中心生产配置格式无效，请先修正生产配置 JSON');
@@ -39,7 +45,7 @@ export async function updateWebSearchSettings(options, patch) {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)
     || Object.keys(patch).length === 0
     || Object.keys(patch).some((key) => !Object.hasOwn(DEFAULT_WEB_SEARCH_SETTINGS, key))) {
-    throw new TypeError('只允许修改搜索提供方、备用顺序、模型、超时、来源条数和豆包范围');
+    throw new TypeError('只允许修改搜索提供方、备用顺序、模型、超时、来源条数、豆包模式和范围');
   }
   const normalized = normalizeWebSearchSettings(patch);
   const current = options.controlPlane
@@ -61,6 +67,7 @@ export async function updateWebSearchSettings(options, patch) {
   const modelApi = { ...(current.settings.modelApi ?? {}), ...selected };
   // Absent new fields preserve compatibility with older executors until this feature is enabled.
   if (modelApi.webSearchProviderOrder === null) delete modelApi.webSearchProviderOrder;
+  if (modelApi.doubaoSearchMode === null) delete modelApi.doubaoSearchMode;
   if (modelApi.doubaoIcpHostOnly === null) delete modelApi.doubaoIcpHostOnly;
   const value = { ...current.settings, modelApi };
   const saved = await options.controlPlane.updateSetting('production', value,

@@ -1,7 +1,9 @@
 import { priorityFrom, priorityOrderSql, normalizePriorityMode } from './task-priority.mjs';
 import { adjustTaskPriority, readPriorityScope } from './task-priority-store.mjs';
 import { flushExpiredCopyQualityBatches } from './copy-quality-control.mjs';
-import { restoreReassignmentCase, finishReassignmentBaseline, regenerateReassignmentBaseline, escalateQualityToAdmin, listReassignmentCases, getReassignmentCase, retryReassignmentReset, disposeReassignmentCase } from './secondary-assignment.mjs';
+import { restoreReassignmentCase, finishReassignmentBaseline, regenerateReassignmentBaseline, escalateQualityToAdmin, listReassignmentCases, getReassignmentCase, retryReassignmentReset, disposeReassignmentCase, batchReassignmentCases } from './secondary-assignment.mjs';
+import { readSecondaryAssignmentFeedback } from './secondary-assignment-feedback.mjs';
+import { snapshotProductionSearchMode } from '../../src/web-search-config.mjs';
 import { normalizeCopySamplingRateOverride } from '../../src/copy-sampling-policy.mjs';
 import {
   createCopyQaReasonTag,
@@ -1487,7 +1489,8 @@ async function configurationSnapshots(client, tasks, kind) {
     schemaVersion: 1,
     capturedAt: new Date().toISOString(),
     productionSettings: Object.fromEntries(
-      settings.rows.map((row) => [row.key, { version: Number(row.version), value: row.value }]),
+      settings.rows.map((row) => [row.key, { version: Number(row.version),
+        value: row.key === 'production' ? snapshotProductionSearchMode(row.value) : row.value }]),
     ),
     prompts: Object.fromEntries(prompts.rows.map((row) => [row.kind, row.version_id === null
       ? null
@@ -1687,6 +1690,7 @@ export class PostgresControlPlaneRepository {
   getReassignmentCase(id, { actor } = {}) { return getReassignmentCase(this.pool, id, actor); }
   retryReassignmentReset(id, input, { actor, storageRoot } = {}) { return retryReassignmentReset(this.pool, id, input, actor, { storageRoot }); }
   disposeReassignmentCase(id, input, { actor, operation } = {}) { return disposeReassignmentCase(this.pool, id, input, actor, operation); }
+  batchReassignmentCases(input, { actor, storageRoot } = {}) { return batchReassignmentCases(this.pool, input, actor, { storageRoot }); }
   listImageQaItems(options, { actor } = {}) { return listImageQaItems(this.pool, options, actor); }
   getImageQaAsset(itemId, assetId, { actor } = {}) {
     return getImageQaAsset(this.pool, itemId, assetId, actor);
@@ -1821,7 +1825,7 @@ export class PostgresControlPlaneRepository {
   async health() {
     const result = await this.pool.query('SELECT now() AS now');
     return { ok: true, databaseTime: result.rows[0].now,
-      capabilities: { taskRestoreVersion: 1, taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 13, executorManagementVersion: 1, adminTaskFilters: true, adminTaskDateFilters: true, adminTaskActivityDateFilters: 1, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 7, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 2, copyQaBatchVersion: 1, copyQaReasonTagsVersion: 1, secondaryAssignmentVersion: 1, accountQualityStatisticsVersion: 1, copyReturnedDiscardVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, copyReviewDraftVersion: 1, copyImagePlanRegenerationVersion: 2, finalDeliveryVersion: 5, sharedDeliveryVersion: 1, imageDiscardVersion: 1, imageReworkSubmissionVersion: 1, pendingImageEditResolutionVersion: 1, deliverySpreadsheetVersion: 3, deliveryPreviewVersion: 6 } };
+      capabilities: { taskRestoreVersion: 1, taskPriorityVersion: 1, executionHeartbeats: true, executionRetryControl: true, imageResume: true, executorConcurrency: true, codexConcurrencyPoolVersion: 1, imageEditExecutorVersion: 13, executorManagementVersion: 1, adminTaskFilters: true, adminTaskDateFilters: true, adminTaskActivityDateFilters: 1, creatorAccountFilters: true, assigneeAccountFilters: true, taskCursorPaginationVersion: 1, adminTaskOperations: true, savedTaskViews: true, imageControlsVersion: 1, taskAssignmentVersion: 3, autoAssignmentPoolVersion: 3, queryPackageVersion: 7, xiaohongshuQuerySearchVersion: XIAOHONGSHU_SEARCH_PROTOCOL_VERSION, xiaohongshuAccountStatusVersion: 2, duplicateQueryDiscardVersion: 1, copySamplingVersion: 2, copyQaBatchVersion: 1, copyQaReasonTagsVersion: 1, secondaryAssignmentVersion: 1, secondaryAssignmentBatchVersion: 1, accountQualityStatisticsVersion: 1, copyReturnedDiscardVersion: 1, blindCopyReviewVersion: 1, adminDirectCopyQaVersion: 1, copyReviewDraftVersion: 1, copyImagePlanRegenerationVersion: 2, finalDeliveryVersion: 5, sharedDeliveryVersion: 1, imageDiscardVersion: 1, imageReworkSubmissionVersion: 1, pendingImageEditResolutionVersion: 1, deliverySpreadsheetVersion: 3, deliveryPreviewVersion: 6 } };
   }
 
   async authenticateUser(rawUsername, password) {
@@ -3704,7 +3708,7 @@ export class PostgresControlPlaneRepository {
 
   async getTask(rawTaskId) {
     const taskId = normalizeTaskId(rawTaskId);
-    const [task, executions, revisions, imageRuns, assets, humanQualityAssessments] = await Promise.all([
+    const [task, executions, revisions, imageRuns, assets, humanQualityAssessments, secondaryAssignmentFeedback] = await Promise.all([
       this.pool.query(`
         WITH task AS (
           SELECT * FROM tasks WHERE id = $1
@@ -3823,6 +3827,7 @@ export class PostgresControlPlaneRepository {
         SELECT * FROM human_quality_assessments
         WHERE task_id = $1 ORDER BY created_at, id
       `, [taskId]),
+      readSecondaryAssignmentFeedback(this.pool, taskId),
     ]);
     if (!task.rows[0]) return null;
     const copyRevisions = revisions.rows.map(revisionFrom);
@@ -3842,6 +3847,9 @@ export class PostgresControlPlaneRepository {
     return {
       ...mappedTask,
       issuedQuery: task.rows[0].issued_query ?? null,
+      secondaryAssignmentFeedback: secondaryAssignmentFeedback && mappedTask.assignedAt
+        && new Date(secondaryAssignmentFeedback.assignedAt).getTime() === new Date(mappedTask.assignedAt).getTime()
+        ? secondaryAssignmentFeedback : null,
       imageApprovalEvents: (task.rows[0].image_approval_events ?? []).map((approval) => ({
         id: Number(approval.id),
         imageRunId: approval.imageRunId,

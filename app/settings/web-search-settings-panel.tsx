@@ -11,25 +11,29 @@ import { apiRequest } from '../components/api-client';
 import { DEEPSEEK_MODEL_ID_PATTERN, DEFAULT_DEEPSEEK_SEARCH_MODEL, DEFAULT_WEB_SEARCH_PROVIDER, DEFAULT_WEB_SEARCH_TIMEOUT_MS, DEFAULT_WEB_SEARCH_RESULT_LIMIT } from '../../src/web-search-config.mjs';
 
 type SearchProvider = 'DOUBAO' | 'DEEPSEEK' | 'CODEX';
+type DoubaoSearchMode = 'GLOBAL' | 'CUSTOM';
 type SearchSettings = {
   webSearchProvider: SearchProvider | null;
   webSearchProviderOrder: SearchProvider[] | null;
   deepseekSearchModel: string | null;
   webSearchTimeoutMs: number | null;
   webSearchResultLimit: number | null;
+  doubaoSearchMode: DoubaoSearchMode | null;
   doubaoIcpHostOnly: boolean | null;
 };
 type SearchRecord = {
   settings: SearchSettings;
   scope: 'central' | 'local';
   effective: { provider: SearchProvider; providers?: SearchProvider[]; model?: string;
-    timeoutMs?: number; resultLimit: number; doubaoIcpHostOnly?: boolean } | null;
+    timeoutMs?: number; resultLimit: number; doubaoSearchMode?: DoubaoSearchMode;
+    doubaoIcpHostOnly?: boolean } | null;
   apiKeyConfigured: boolean | null;
   providerKeyConfigured?: { DEEPSEEK: boolean | null; DOUBAO: boolean | null };
   updatedAt: string | null;
 };
 const EMPTY_SETTINGS: SearchSettings = { webSearchProvider: null, webSearchProviderOrder: null,
-  deepseekSearchModel: null, webSearchTimeoutMs: null, webSearchResultLimit: null, doubaoIcpHostOnly: null };
+  deepseekSearchModel: null, webSearchTimeoutMs: null, webSearchResultLimit: null,
+  doubaoSearchMode: null, doubaoIcpHostOnly: null };
 const INHERIT = 'INHERIT';
 const SEARCH_PROVIDERS: SearchProvider[] = ['DOUBAO', 'DEEPSEEK', 'CODEX'];
 const PROVIDER_LABELS: Record<SearchProvider, string> = {
@@ -104,9 +108,14 @@ export function WebSearchSettingsPanel({
   const usesDeepSeek = configuredProviders.includes('DEEPSEEK');
   const usesDoubao = configuredProviders.includes('DOUBAO');
   const usesApi = usesDeepSeek || usesDoubao;
+  const doubaoMode = settings.doubaoSearchMode ?? 'CUSTOM';
   const savedProvider = record?.effective?.provider ?? record?.settings.webSearchProvider;
   const savedOrder = record?.settings.webSearchProviderOrder;
   const savedModel = record?.effective?.model ?? record?.settings.deepseekSearchModel;
+  const savedDoubaoMode = record?.effective?.doubaoSearchMode ?? record?.settings.doubaoSearchMode ?? 'CUSTOM';
+  const savedProviderLabel = (provider: SearchProvider) => provider === 'DOUBAO'
+    ? `${PROVIDER_LABELS.DOUBAO}（${savedDoubaoMode === 'CUSTOM' ? 'Custom' : 'Global'}）`
+    : PROVIDER_LABELS[provider];
 
   function changePrimary(value: string) {
     setMessage('');
@@ -149,9 +158,9 @@ export function WebSearchSettingsPanel({
     {loading && <p className="subtle" role="status">正在读取搜索配置…</p>}
     {record && <p className="notice" role="status">
       {record.scope === 'local' ? '当前生效：' : '已保存的搜索服务：'}
-      {savedOrder ? savedOrder.map((provider) => PROVIDER_LABELS[provider]).join(' → ')
+      {savedOrder ? savedOrder.map(savedProviderLabel).join(' → ')
         : savedProvider === 'CODEX' ? '默认生成引擎'
-          : savedProvider === 'DOUBAO' ? '火山引擎豆包搜索'
+          : savedProvider === 'DOUBAO' ? savedProviderLabel('DOUBAO')
             : savedProvider === 'DEEPSEEK' ? `DeepSeek · ${savedModel ?? `执行机模型（默认 ${DEFAULT_DEEPSEEK_SEARCH_MODEL}）`}`
               : `继承执行机环境（项目默认 ${DEFAULT_DEEPSEEK_SEARCH_MODEL}）`}
       {hasChanges && <span> · 有未保存的更改</span>}
@@ -239,8 +248,26 @@ export function WebSearchSettingsPanel({
           : '请求并最多保留 1–10 条公开来源；留空使用默认 5 条。过滤和去重后，实际来源可能更少。'}</small>
       </div>
       <div className="field">
-        <label htmlFor="doubao-icp-host-only">豆包搜索站点范围</label>
+        <label htmlFor="doubao-search-mode">豆包搜索模式</label>
         <Select disabled={disabled || !usesDoubao}
+          value={settings.doubaoSearchMode ?? INHERIT}
+          onValueChange={(value) => {
+            setMessage('');
+            setSettings((current) => ({ ...current,
+              doubaoSearchMode: value === INHERIT ? null : value as DoubaoSearchMode }));
+          }}>
+          <SelectTrigger id="doubao-search-mode"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value={INHERIT}>默认：Custom</SelectItem>
+            <SelectItem value="CUSTOM">Custom（订阅套餐）</SelectItem>
+            <SelectItem value="GLOBAL">Global（按量后付费）</SelectItem>
+          </SelectContent>
+        </Select>
+        <small>两种模式使用不同接口；请为执行机配置与所选模式匹配的豆包搜索 Key。</small>
+      </div>
+      <div className="field">
+        <label htmlFor="doubao-icp-host-only">豆包搜索站点范围</label>
+        <Select disabled={disabled || !usesDoubao || doubaoMode !== 'GLOBAL'}
           value={settings.doubaoIcpHostOnly === null ? INHERIT : settings.doubaoIcpHostOnly ? 'ICP' : 'ALL'}
           onValueChange={(value) => {
             setMessage('');
@@ -254,13 +281,16 @@ export function WebSearchSettingsPanel({
             <SelectItem value="ALL">不限站点备案</SelectItem>
           </SelectContent>
         </Select>
-        <small>此选项控制豆包的 IcpHostOnly 过滤；不能保证所有结果都来自境内。</small>
+        <small>{doubaoMode === 'CUSTOM'
+          ? 'Custom 接口不支持此过滤；切回 Global 后会沿用原有设置。'
+          : '此选项控制 Global 的 IcpHostOnly 过滤；不能保证所有结果都来自境内。'}</small>
       </div>
     </div>
     <p className="notice">API Key 由各执行机环境提供：豆包使用 <span className="mono">DOUBAO_SEARCH_API_KEY</span>，
       DeepSeek 使用 <span className="mono">DEEPSEEK_API_KEY</span>。中心不保存密钥。
       {record?.scope === 'central' ? ' 启用多服务前请升级并重启所有执行机，且确认每台执行机都已配置要启用的服务。'
         : record ? ` 本机状态：豆包${record.providerKeyConfigured?.DOUBAO ? '已配置' : '未配置'}，DeepSeek${record.providerKeyConfigured?.DEEPSEEK ? '已配置' : '未配置'}。` : ''}
+      {' '}“已配置”仅表示 Key 非空；Custom 接口权限需实际搜索验证。测试站浏览器中填写的 Key 不会进入执行机。
     </p>
     {error && <div className="notice error" role="alert">{error}</div>}
     <ToastFeedback id="web-search-settings-feedback" message={message} />

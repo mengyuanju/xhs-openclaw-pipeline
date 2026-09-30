@@ -2,13 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { resolve } from 'node:path';
 import { createControlPlaneApp } from '../src/http-server.mjs';
+import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 
 test('secondary disposition routes are admin-only and forward actor, version, request ID and storage root',async()=>{
   const users={admin:{id:1,username:'admin',role:'ADMIN',status:'ACTIVE',credentialVersion:2},
     qa:{id:2,username:'qa',role:'REVIEWER',status:'ACTIVE',credentialVersion:3}};
   const calls=[],repository={getUserByUsername:async username=>users[username]};
   for(const method of ['listReassignmentCases','getReassignmentCase','retryReassignmentReset',
-    'regenerateReassignmentBaseline','restoreReassignmentCase','disposeReassignmentCase','escalateQualityToAdmin']) {
+    'regenerateReassignmentBaseline','restoreReassignmentCase','disposeReassignmentCase','escalateQualityToAdmin','batchReassignmentCases']) {
     repository[method]=async(...args)=>{calls.push({method,args});return {status:'PENDING'};};
   }
   const storageRoot=resolve('test-storage');
@@ -35,6 +36,37 @@ test('secondary disposition routes are admin-only and forward actor, version, re
       if(path.endsWith('/reassign'))assert.equal(call.args.at(-1).operation,'REASSIGN');
       if(path.endsWith('/discard'))assert.equal(call.args.at(-1).operation,'DISCARD');
     }
+    const batchBody={operation:'REASSIGN',note:'批量重新制作',targetAccountId:9,
+      items:[{id:7,expectedVersion:4,requestId:body.requestId}]};
+    const batchUrl=`${base}/v1/admin/reassignment-cases/batch`;
+    const batchOptions=username=>({method:'POST',headers:headers(username),body:JSON.stringify(batchBody)});
+    const beforeBatch=calls.length;
+    assert.equal((await fetch(batchUrl,batchOptions('qa'))).status,403);
+    assert.equal(calls.length,beforeBatch);
+    assert.equal((await fetch(batchUrl,batchOptions('admin'))).status,200);
+    assert.equal(calls.at(-1).method,'batchReassignmentCases');
+    assert.deepEqual(calls.at(-1).args,[batchBody,{actor:{userId:1,username:'admin',role:'ADMIN',credentialVersion:2},storageRoot}]);
+    for(const invalidBody of [{...batchBody,items:[]},{...batchBody,items:[batchBody.items[0],batchBody.items[0]]},
+      {...batchBody,items:[{...batchBody.items[0],expectedVersion:0}]},{...batchBody,note:''},
+      {...batchBody,targetAccountId:'9'}]) {
+      const beforeInvalid=calls.length;
+      const response=await fetch(batchUrl,{...batchOptions('admin'),body:JSON.stringify(invalidBody)});
+      assert.equal(response.status,400);
+      assert.equal((await response.json()).error.code,'VALIDATION_ERROR');
+      assert.equal(calls.length,beforeInvalid,'malformed batches never reach mutation code');
+    }
+    const partial={operation:'REASSIGN',total:2,succeeded:1,failed:1,results:[
+      {id:7,success:true,item:{id:7,status:'REASSIGNED',version:5}},
+      {id:8,success:false,error:{code:'RESET_INCOMPLETE',message:'初始还原或修改记录清理尚未完成'}},
+    ]};
+    repository.batchReassignmentCases=async()=>partial;
+    const partialResponse=await fetch(batchUrl,batchOptions('admin'));
+    assert.equal(partialResponse.status,200);
+    assert.deepEqual((await partialResponse.json()).data,partial);
+    repository.batchReassignmentCases=async()=>{throw new Error('database offline');};
+    const unavailable=await fetch(batchUrl,batchOptions('admin'));
+    assert.equal(unavailable.status,500);
+    assert.equal((await unavailable.json()).error.code,'INTERNAL_ERROR');
     const callCount=calls.length;
     const copyResponse=await fetch(`${base}/v1/copy-qa/items/opaque-id/escalate`,{method:'POST',headers:headers('qa'),body:JSON.stringify(body)});
     assert.equal(copyResponse.status,410);
@@ -42,5 +74,20 @@ test('secondary disposition routes are admin-only and forward actor, version, re
     const imageResponse=await fetch(`${base}/v1/image-qa/items/opaque-id/escalate`,{method:'POST',headers:headers('qa'),body:JSON.stringify(body)});
     assert.equal(imageResponse.status,404);
     assert.equal(calls.length,callCount,'image rechecks cannot enter secondary assignment');
+  } finally {await new Promise(done=>server.close(done));}
+});
+
+test('health exposes the dedicated secondary-assignment batch protocol capability',async()=>{
+  const repository=new PostgresControlPlaneRepository({pool:{
+    async query(sql){assert.equal(sql,'SELECT now() AS now');return {rows:[{now:'2026-09-30T00:00:00Z'}]};},
+  }});
+  const app=createControlPlaneApp({repository,storageRoot:resolve('test-storage'),enforceUserAuth:true,logger:{info(){},error(){}}});
+  const server=await new Promise(done=>{const value=app.listen(0,'127.0.0.1',()=>done(value));});
+  try {
+    const response=await fetch(`http://127.0.0.1:${server.address().port}/health`);
+    assert.equal(response.status,200);
+    const health=(await response.json()).data;
+    assert.equal(health.capabilities.secondaryAssignmentVersion,1);
+    assert.equal(health.capabilities.secondaryAssignmentBatchVersion,1);
   } finally {await new Promise(done=>server.close(done));}
 });

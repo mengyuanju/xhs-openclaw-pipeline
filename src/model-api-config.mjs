@@ -1,4 +1,4 @@
-import { DEFAULT_DOUBAO_ICP_HOST_ONLY, DEFAULT_WEB_SEARCH_SETTINGS,
+import { DEFAULT_DOUBAO_ICP_HOST_ONLY, LEGACY_DOUBAO_SEARCH_MODE, DEFAULT_WEB_SEARCH_SETTINGS,
   normalizeWebSearchSettings, resolveWebSearchConfig } from './web-search-config.mjs';
 
 export const DEFAULT_TEXT_MODEL = 'openai/gpt-5.6-sol';
@@ -262,6 +262,7 @@ export function effectiveModelApiConfig(input = {}, environment = process.env) {
     deepseekSearchModel: search.model ?? settings.deepseekSearchModel,
     webSearchTimeoutMs: search.timeoutMs ?? settings.webSearchTimeoutMs,
     webSearchResultLimit: search.resultLimit,
+    doubaoSearchMode: search.doubaoSearchMode ?? settings.doubaoSearchMode ?? LEGACY_DOUBAO_SEARCH_MODE,
     doubaoIcpHostOnly: search.doubaoIcpHostOnly ?? settings.doubaoIcpHostOnly ?? DEFAULT_DOUBAO_ICP_HOST_ONLY,
     copyGenerationThinking: validatedCopyGenerationThinking(
       settings.copyGenerationThinking ?? environment.XHS_COPY_GENERATION_THINKING,

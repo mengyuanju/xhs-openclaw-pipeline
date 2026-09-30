@@ -19,6 +19,11 @@ type Case = {
 };
 type Account = { id: number; username: string; displayName: string; status: string; role: string; copyReviewEnabled?: boolean };
 type Operation = 'reassign' | 'discard' | 'restore' | 'reset' | 'regenerate';
+type BatchOperation = 'REASSIGN' | 'DISCARD' | 'RESET';
+type BatchResult = { id: number; success: boolean; item?: Case; error?: { code: string; message: string } };
+type BatchResponse = { operation: BatchOperation; total: number; succeeded: number; failed: number; results: BatchResult[] };
+type BatchFeedback = BatchResponse & { tasks: Case[] };
+const batchLabels: Record<BatchOperation, string> = { REASSIGN: '批量分配', DISCARD: '批量废弃', RESET: '批量重试还原 / 清理' };
 const root = '/api/control-plane/v1/admin/reassignment-cases';
 const pageSize = 30;
 const filters = [{ value: 'PENDING', label: '待处理' }, { value: 'REASSIGNED', label: '已重新分配' }, { value: 'DISCARDED', label: '已废弃' }, { value: 'ALL', label: '全部记录' }];
@@ -56,6 +61,28 @@ function PreparationStatus({ item }: { item: Case }) {
   </div>;
 }
 
+function canSelect(item: Case) {
+  return item.status === 'PENDING' && item.resetStatus !== 'REGENERATING';
+}
+
+function BatchResults({ feedback }: { feedback: BatchFeedback }) {
+  return <section className={styles.batchResults} aria-label="批量处理结果">
+    <div role="status" className={feedback.failed ? styles.error : styles.notice}>
+      {feedback.failed ? <AlertCircle size={17} aria-hidden="true" /> : <CheckCircle2 size={17} aria-hidden="true" />}
+      <span>{batchLabels[feedback.operation]}：成功 {feedback.succeeded} 条，失败 {feedback.failed} 条。{feedback.failed > 0 && '请查看失败原因；仍在本页待处理的失败项保留选择。'}</span>
+    </div>
+    <details open={feedback.failed > 0}><summary>查看 {feedback.total} 条处理结果</summary>
+      <ul>{feedback.results.map(result => {
+        const task = feedback.tasks.find(item => item.id === result.id);
+        const message = !result.success ? result.error?.message || '处理失败，请刷新后重试'
+          : feedback.operation === 'RESET' ? result.item?.canAssign ? '还原和清理已完成' : result.item?.resetError || '已重试，仍需完成分配前准备'
+            : feedback.operation === 'REASSIGN' ? '已重新分配' : '已最终废弃';
+        return <li key={result.id} data-tone={result.success ? 'good' : 'danger'}><strong>任务 #{task?.taskId ?? result.id}</strong><span>{message}</span></li>;
+      })}</ul>
+    </details>
+  </section>;
+}
+
 export function ReassignmentQueue() {
   const [items, setItems] = useState<Case[]>([]);
   const [total, setTotal] = useState(0), [offset, setOffset] = useState(0), [status, setStatus] = useState('PENDING');
@@ -64,8 +91,17 @@ export function ReassignmentQueue() {
   const [loading, setLoading] = useState(true), [detailLoading, setDetailLoading] = useState(false), [detailReady, setDetailReady] = useState(false);
   const [busy, setBusy] = useState<Operation | null>(null), [loadError, setLoadError] = useState(''), [error, setError] = useState('');
   const [accountsLoading, setAccountsLoading] = useState(true), [accountsError, setAccountsError] = useState(''), [notice, setNotice] = useState('');
+  const [checkedIds, setCheckedIds] = useState<Set<number>>(new Set());
+  const [batchOperation, setBatchOperation] = useState<BatchOperation | null>(null), [batchItems, setBatchItems] = useState<Case[]>([]);
+  const [batchTarget, setBatchTarget] = useState(''), [batchNote, setBatchNote] = useState(''), [batchError, setBatchError] = useState('');
+  const [batchBusy, setBatchBusy] = useState(false), [batchFeedback, setBatchFeedback] = useState<BatchFeedback | null>(null);
+  const batchRequest = useRef<{ key: string; items: Array<{ id: number; expectedVersion: number; requestId: string }> } | null>(null);
   const pending = useRef(false), request = useRef<{ key: string; id: string } | null>(null);
   const loadSequence = useRef(0), detailSequence = useRef(0);
+  const selectableItems = items.filter(canSelect);
+  const checkedItems = selectableItems.filter(item => checkedIds.has(item.id));
+  const allChecked = selectableItems.length > 0 && checkedItems.length === selectableItems.length;
+  const anyBusy = !!busy || batchBusy;
 
   const load = useCallback(async () => {
     const sequence = ++loadSequence.current;
@@ -73,8 +109,9 @@ export function ReassignmentQueue() {
     try {
       const page = await apiRequest<{ items: Case[]; total: number }>(`${root}?status=${status}&offset=${offset}&limit=${pageSize}`, { cache: 'no-store' });
       if (sequence !== loadSequence.current) return;
-      if (offset > 0 && offset >= page.total) { setOffset(Math.max(0, Math.floor((page.total - 1) / pageSize) * pageSize)); return; }
+      if (offset > 0 && offset >= page.total) { setCheckedIds(new Set()); setOffset(Math.max(0, Math.floor((page.total - 1) / pageSize) * pageSize)); return; }
       setItems(page.items); setTotal(page.total);
+      setCheckedIds(previous => new Set(page.items.filter(item => canSelect(item) && previous.has(item.id)).map(item => item.id)));
     } catch (e) {
       if (sequence === loadSequence.current) setLoadError(e instanceof Error ? e.message : '读取处置列表失败');
     } finally {
@@ -96,6 +133,7 @@ export function ReassignmentQueue() {
   useEffect(() => () => { detailSequence.current++; }, []);
 
   async function open(item: Case) {
+    if (pending.current) return;
     const sequence = ++detailSequence.current;
     setSelected(item); setDetailLoading(true); setDetailReady(false); setError(''); setTarget(''); setNote('');
     try {
@@ -121,10 +159,60 @@ export function ReassignmentQueue() {
     try {
       await apiRequest(`${root}/${selected.id}/${operation}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...payload, requestId: request.current.id }) });
       notifyWorkspaceUpdated(); setSelected(null);
+      setBatchFeedback(null);
       setNotice(operation === 'reassign' ? '已分配初始数据，原账号统计保留。' : operation === 'discard' ? '已最终废弃，原质检日期的统计已更新。' : operation === 'restore' ? '已撤销废弃，任务恢复待二次分配。' : '处理已提交，可刷新列表查看最新结果。');
       await load();
     } catch (e) { setError(e instanceof Error ? e.message : '操作失败'); }
     finally { pending.current = false; setBusy(null); }
+  }
+
+  function changePage(nextOffset: number) {
+    setCheckedIds(new Set()); setBatchFeedback(null); setOffset(nextOffset);
+  }
+
+  function changeStatus(nextStatus: string) {
+    if (nextStatus === status || pending.current) return;
+    setCheckedIds(new Set()); setBatchFeedback(null); setStatus(nextStatus); setOffset(0); setNotice('');
+  }
+
+  function toggle(item: Case, checked: boolean) {
+    if (pending.current || !canSelect(item)) return;
+    setCheckedIds(previous => {
+      const next = new Set(previous);
+      if (checked) next.add(item.id); else next.delete(item.id);
+      return next;
+    });
+  }
+
+  function openBatch(operation: BatchOperation) {
+    if (pending.current || !checkedItems.length || (operation === 'REASSIGN' && checkedItems.some(item => !item.canAssign))) return;
+    setBatchItems(checkedItems); setBatchOperation(operation); setBatchError(''); setBatchTarget(''); setBatchNote('');
+  }
+
+  function closeBatch() {
+    if (pending.current) return;
+    setBatchOperation(null); setBatchError('');
+  }
+
+  async function actBatch() {
+    if (!batchOperation || !batchItems.length || pending.current) return;
+    if (batchOperation !== 'RESET' && !batchNote.trim()) { setBatchError('请填写处理原因'); return; }
+    if (batchOperation === 'REASSIGN' && (!batchTarget || batchItems.some(item => !item.canAssign))) { setBatchError('请选择接手账号，并确保所有任务均已完成还原和清理'); return; }
+    const payload = { operation: batchOperation, ...(batchOperation !== 'RESET' ? { note: batchNote.trim() } : {}),
+      ...(batchOperation === 'REASSIGN' ? { targetAccountId: Number(batchTarget) } : {}) };
+    const versions = batchItems.map(item => ({ id: item.id, expectedVersion: item.version }));
+    const key = JSON.stringify({ ...payload, items: versions });
+    if (batchRequest.current?.key !== key) batchRequest.current = { key, items: versions.map(item => ({ ...item, requestId: createRequestId() })) };
+    pending.current = true; setBatchBusy(true); setBatchError(''); setNotice('');
+    try {
+      const result = await apiRequest<BatchResponse>(`${root}/batch`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...payload, items: batchRequest.current.items }) });
+      setBatchFeedback({ ...result, tasks: batchItems });
+      setCheckedIds(new Set(result.results.filter(item => !item.success).map(item => item.id)));
+      setBatchOperation(null); batchRequest.current = null;
+      notifyWorkspaceUpdated();
+      await load();
+    } catch (e) { setBatchError(e instanceof Error ? e.message : '批量操作失败，请重试'); }
+    finally { pending.current = false; setBatchBusy(false); }
   }
 
   return <div className={styles.page}>
@@ -133,7 +221,7 @@ export function ReassignmentQueue() {
         <span className={styles.headerIcon}><Users size={24} aria-hidden="true" /></span>
         <div><div className={styles.titleRow}><h1>待二次分配</h1><span className={styles.adminLabel}>管理员处置</span></div><p>集中处理复检未通过的任务，让已还原的初稿重新进入创作流程。</p></div>
       </div>
-      <Button variant="outline" disabled={loading} onClick={() => void load()}><RefreshCw size={15} aria-hidden="true" className={loading ? styles.spin : undefined} />{loading ? '刷新中' : '刷新列表'}</Button>
+      <Button variant="outline" disabled={loading || anyBusy} onClick={() => void load()}><RefreshCw size={15} aria-hidden="true" className={loading ? styles.spin : undefined} />{loading ? '刷新中' : '刷新列表'}</Button>
     </header>
 
     <div className={styles.guide}>
@@ -143,37 +231,85 @@ export function ReassignmentQueue() {
     </div>
 
     {notice && <div role="status" className={styles.notice}><CheckCircle2 size={17} aria-hidden="true" />{notice}</div>}
+    {batchFeedback && <BatchResults feedback={batchFeedback} />}
 
     <section className={styles.panel} aria-label="二次分配任务列表">
       <div className={styles.toolbar}>
         <div className={styles.filters} role="group" aria-label="处置状态">
-          {filters.map(filter => <Button unstyled key={filter.value} className={styles.filter} aria-pressed={status === filter.value} onClick={() => { if (status !== filter.value) { setStatus(filter.value); setOffset(0); setNotice(''); } }}>{filter.label}</Button>)}
+          {filters.map(filter => <Button unstyled key={filter.value} className={styles.filter} disabled={anyBusy} aria-pressed={status === filter.value} onClick={() => changeStatus(filter.value)}>{filter.label}</Button>)}
         </div>
         <span className={styles.count}>{loading || loadError ? '—' : total} 条记录</span>
       </div>
 
+      {!loading && !loadError && selectableItems.length > 0 && <div className={styles.batchBar} role="region" aria-label="批量处置操作">
+        <div className={styles.selectionInfo}><strong>已选 {checkedItems.length} 条</strong><span>仅选择本页待处理任务，生成中的任务暂不可选。</span></div>
+        <div className={styles.batchActions}>
+          <Button size="sm" disabled={anyBusy || !checkedItems.length || checkedItems.some(item => !item.canAssign)} onClick={() => openBatch('REASSIGN')}><Users size={14} aria-hidden="true" />批量分配</Button>
+          <Button variant="outline" size="sm" disabled={anyBusy || !checkedItems.length} onClick={() => openBatch('RESET')}><RotateCcw size={14} aria-hidden="true" />批量重试还原 / 清理</Button>
+          <Button variant="outline" size="sm" className={styles.dangerButton} disabled={anyBusy || !checkedItems.length} onClick={() => openBatch('DISCARD')}><Trash2 size={14} aria-hidden="true" />批量废弃</Button>
+          <Button variant="ghost" size="sm" disabled={anyBusy || !checkedItems.length} onClick={() => setCheckedIds(new Set())}>清空选择</Button>
+        </div>
+        {checkedItems.some(item => !item.canAssign) && <p className={styles.batchHint}>所选任务中有 {checkedItems.filter(item => !item.canAssign).length} 条尚未完成还原或清理；全部准备完成后才能批量分配。</p>}
+      </div>}
+
       {loading ? <div className={styles.empty} role="status"><Loader2 size={28} className={styles.spin} aria-hidden="true" /><strong>正在加载处置记录</strong><p>请稍候，正在获取最新任务状态。</p></div>
         : loadError ? <div className={styles.empty} role="alert"><AlertCircle size={30} aria-hidden="true" /><strong>处置列表加载失败</strong><p>{loadError}</p><Button variant="outline" onClick={() => void load()}>重新加载</Button></div>
-          : !items.length ? <div className={styles.empty}><span className={styles.emptyIcon}><Inbox size={30} aria-hidden="true" /></span><strong>{status === 'PENDING' ? '暂无待二次分配的任务' : '暂无处置记录'}</strong><p>{status === 'PENDING' ? '复检未通过并提交管理员的任务会出现在这里。' : '当前状态下没有记录，可切换其他状态查看。'}</p>{status !== 'PENDING' && <Button variant="outline" onClick={() => { setStatus('PENDING'); setOffset(0); }}>返回待处理</Button>}</div>
+          : !items.length ? <div className={styles.empty}><span className={styles.emptyIcon}><Inbox size={30} aria-hidden="true" /></span><strong>{status === 'PENDING' ? '暂无待二次分配的任务' : '暂无处置记录'}</strong><p>{status === 'PENDING' ? '复检未通过并提交管理员的任务会出现在这里。' : '当前状态下没有记录，可切换其他状态查看。'}</p>{status !== 'PENDING' && <Button variant="outline" onClick={() => changeStatus('PENDING')}>返回待处理</Button>}</div>
             : <div className={styles.tableScroll} role="region" aria-label="任务明细，可横向滚动" tabIndex={0}>
               <table className={styles.table}>
-                <thead><tr><th scope="col">任务信息</th><th scope="col">原操作者</th><th scope="col">移交原因</th><th scope="col">分配前准备</th><th scope="col">处置状态</th><th scope="col">操作</th></tr></thead>
-                <tbody>{items.map(item => <tr key={item.id}>
+                <thead><tr><th scope="col" className={styles.selectionCell}><input type="checkbox" className={styles.checkbox} aria-label="全选本页待处理任务" disabled={anyBusy || !selectableItems.length} checked={allChecked} ref={element => { if (element) element.indeterminate = checkedItems.length > 0 && !allChecked; }} onChange={event => setCheckedIds(event.target.checked ? new Set(selectableItems.map(item => item.id)) : new Set())} /></th><th scope="col">任务信息</th><th scope="col">原操作者</th><th scope="col">移交原因</th><th scope="col">分配前准备</th><th scope="col">处置状态</th><th scope="col">操作</th></tr></thead>
+                <tbody>{items.map(item => <tr key={item.id} data-selected={checkedIds.has(item.id) && canSelect(item)}>
+                  <td className={styles.selectionCell}><input type="checkbox" className={styles.checkbox} aria-label={`选择任务 #${item.taskId}`} title={!canSelect(item) ? item.resetStatus === 'REGENERATING' ? '初稿正在生成，暂不可批量处理' : '仅待处理任务可批量处置' : undefined} disabled={anyBusy || !canSelect(item)} checked={checkedIds.has(item.id) && canSelect(item)} onChange={event => toggle(item, event.target.checked)} /></td>
                   <td><div className={styles.taskMeta}><span>#{item.taskId}</span><span className={styles.stage}>{item.stage === 'COPY' ? '文案' : '图片'}</span></div><p className={styles.query} title={item.query}>{item.query || '未命名任务'}</p><span className={styles.timestamp}>移交于 {dateLabel(item.createdAt)}</span></td>
                   <td><div className={styles.operator}><UserRound size={14} aria-hidden="true" /><span>{item.operatorName || `账号 #${item.operatorAccountId}`}</span></div></td>
                   <td><p className={styles.reason} title={item.note}>{item.note || '未填写移交原因'}</p></td>
                   <td><PreparationStatus item={item} />{item.resetError && <p className={styles.rowError} title={item.resetError}>{item.resetError}</p>}</td>
                   <td><StatusBadge item={item} /></td>
-                  <td><Button variant="outline" size="sm" className={item.canAssign ? styles.assignButton : undefined} aria-label={`查看处置：任务 #${item.taskId}`} onClick={() => void open(item)}>{item.status === 'PENDING' ? '查看处置' : '查看记录'}<ArrowRight size={13} aria-hidden="true" /></Button></td>
+                  <td><Button variant="outline" size="sm" disabled={anyBusy} className={item.canAssign ? styles.assignButton : undefined} aria-label={`查看处置：任务 #${item.taskId}`} onClick={() => void open(item)}>{item.status === 'PENDING' ? '查看处置' : '查看记录'}<ArrowRight size={13} aria-hidden="true" /></Button></td>
                 </tr>)}</tbody>
               </table>
             </div>}
 
       <footer className={styles.pagination}>
         <span>{loading ? '正在更新列表…' : loadError ? '请重新加载列表' : total ? `显示 ${offset + 1}–${Math.min(offset + pageSize, total)} 条，共 ${total} 条` : '共 0 条记录'}</span>
-        <div><Button variant="outline" size="sm" disabled={loading || !!loadError || !offset} onClick={() => setOffset(Math.max(0, offset - pageSize))}><ChevronLeft size={14} aria-hidden="true" />上一页</Button><span>{loading || loadError ? '—' : `${Math.floor(offset / pageSize) + 1} / ${Math.max(1, Math.ceil(total / pageSize))}`}</span><Button variant="outline" size="sm" disabled={loading || !!loadError || offset + pageSize >= total} onClick={() => setOffset(offset + pageSize)}>下一页<ChevronRight size={14} aria-hidden="true" /></Button></div>
+        <div><Button variant="outline" size="sm" disabled={loading || anyBusy || !!loadError || !offset} onClick={() => changePage(Math.max(0, offset - pageSize))}><ChevronLeft size={14} aria-hidden="true" />上一页</Button><span>{loading || loadError ? '—' : `${Math.floor(offset / pageSize) + 1} / ${Math.max(1, Math.ceil(total / pageSize))}`}</span><Button variant="outline" size="sm" disabled={loading || anyBusy || !!loadError || offset + pageSize >= total} onClick={() => changePage(offset + pageSize)}>下一页<ChevronRight size={14} aria-hidden="true" /></Button></div>
       </footer>
     </section>
+
+    <Dialog open={!!batchOperation} onOpenChange={isOpen => { if (!isOpen) closeBatch(); }}>
+      <DialogContent className={styles.dialog} showCloseButton={!batchBusy}>
+        <header className={styles.dialogHeader}>
+          <span className={styles.eyebrow}>二次分配 · 批量处置</span>
+          <DialogTitle className={styles.dialogTitle}>{batchOperation && batchLabels[batchOperation]} {batchItems.length} 条任务</DialogTitle>
+          <DialogDescription className={styles.description}>{batchOperation === 'REASSIGN' ? '所选任务统一分配给接手账号，接手人须重新标注并接受完整质检。' : batchOperation === 'DISCARD' ? '所选任务将最终废弃，并更新原操作者在原质检日期的统计。可在已废弃记录中撤销。' : '逐条重试还原机器初稿和清理旧标注；缺少可信初稿或存在其他阻塞的任务仍需单独处理。'}</DialogDescription>
+        </header>
+        {batchError && <div className={styles.dialogError}><div className={styles.error} role="alert"><AlertCircle size={17} aria-hidden="true" /><span>{batchError}</span></div></div>}
+        <div className={styles.dialogBody}>
+          <section className={styles.summary} aria-label="所选任务">
+            <h3>本次处理 {batchItems.length} 条任务</h3>
+            <ul className={styles.batchTaskList}>{batchItems.map(item => <li key={item.id}><strong>#{item.taskId}</strong><span>{item.query || '未命名任务'}</span><StatusBadge item={item} /></li>)}</ul>
+          </section>
+          {batchOperation === 'REASSIGN' && <div className={styles.field}>
+            <label htmlFor="reassignment-batch-target">接手账号</label>
+            <Select value={batchTarget} disabled={batchBusy || accountsLoading || !!accountsError} onValueChange={setBatchTarget}>
+              <SelectTrigger id="reassignment-batch-target" aria-describedby="reassignment-batch-accounts-help"><SelectValue placeholder={accountsLoading ? '正在加载账号…' : '请选择接手账号'} /></SelectTrigger>
+              <SelectContent>{accounts.map(account => <SelectItem key={account.id} value={String(account.id)}>{account.displayName || account.username}（{account.username}）</SelectItem>)}</SelectContent>
+            </Select>
+            <span id="reassignment-batch-accounts-help" className={styles.help}>{accountsError || (!accountsLoading && !accounts.length ? '暂无可用账号，请先在用户管理中启用具有标注权限的账号。' : '仅显示已启用且具有文案标注权限的账号。')}</span>
+            {accountsError && <Button variant="outline" size="sm" disabled={batchBusy || accountsLoading} onClick={() => void loadAccounts()}>重新加载账号</Button>}
+          </div>}
+          {batchOperation !== 'RESET' && <label className={styles.field}>处理原因<textarea aria-label="处理原因" maxLength={1000} rows={3} value={batchNote} disabled={batchBusy} placeholder="为所选任务填写统一处理原因，便于后续追溯" onChange={event => setBatchNote(event.target.value)} /><span className={styles.fieldFoot}><span>必填，将记录到每条任务</span><span>{batchNote.length} / 1000</span></span></label>}
+          <p className={styles.help}>系统会核对每条任务的最新状态，部分任务失败时保留已成功的结果，并列出失败原因。</p>
+        </div>
+        <footer className={styles.dialogFooter}><div className={styles.dispositionActions}>
+          <Button variant="outline" disabled={batchBusy} onClick={closeBatch}>取消</Button>
+          <Button className={batchOperation === 'DISCARD' ? styles.dangerButton : undefined} variant={batchOperation === 'DISCARD' ? 'outline' : 'default'} disabled={batchBusy || (batchOperation !== 'RESET' && !batchNote.trim()) || (batchOperation === 'REASSIGN' && (!batchTarget || accountsLoading || !!accountsError))} onClick={() => void actBatch()}>
+            {batchBusy && <Loader2 size={15} className={styles.spin} aria-hidden="true" />}
+            {batchBusy ? `正在处理 ${batchItems.length} 条任务…` : batchOperation === 'REASSIGN' ? '确认批量分配' : batchOperation === 'DISCARD' ? '确认批量废弃' : '确认批量重试'}
+          </Button>
+        </div></footer>
+      </DialogContent>
+    </Dialog>
 
     <Dialog open={!!selected} onOpenChange={isOpen => { if (!isOpen) close(); }}>
       <DialogContent className={styles.dialog} showCloseButton={!busy}>

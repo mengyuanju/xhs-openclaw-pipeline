@@ -52,6 +52,7 @@ test('production settings route and page expose validated repair and disclosure 
   assert.match(central, /!production \?[^]*编辑器已停用/u);
   assert.match(central, /normalizeWebSearchSettings\(latestProduction\.modelApi \?\? \{\}\)/u);
   assert.match(central, /delete draftModelApi\.webSearchProviderOrder/u);
+  assert.match(central, /delete draftModelApi\.doubaoSearchMode/u);
   assert.match(central, /delete draftModelApi\.doubaoIcpHostOnly/u);
   assert.match(central, /\.\.\.draftModelApi,\s*\.\.\.currentSearchSettings/u);
   assert.doesNotMatch(central, /key=\{`(?:layout-presets|production-settings)-\$\{production/u);

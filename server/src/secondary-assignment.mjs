@@ -11,6 +11,7 @@ const configs = Object.freeze({ COPY: { prefix: 'copy', owner: 'final_approver_a
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const conflict = (code, message) => { throw new ControlPlaneConflictError(code, message); };
 const iso = value => value instanceof Date ? value.toISOString() : value;
+class ReassignmentActorAuthorizationError extends ControlPlaneAuthorizationError {}
 function noteOf(value) {
   if (typeof value !== 'string' || !value.trim() || [...value].length > 1000) throw new TypeError('请填写 1–1000 字的处理原因');
   return value.trim();
@@ -22,11 +23,11 @@ async function transaction(pool, action) {
   finally { c.release(); }
 }
 async function lockActor(c, actor, stage = null) {
-  if (!actor || !Number.isSafeInteger(actor.userId) || !actor.username || !Number.isSafeInteger(actor.credentialVersion) || actor.credentialVersion<1) throw new ControlPlaneAuthorizationError('请重新登录');
+  if (!actor || !Number.isSafeInteger(actor.userId) || !actor.username || !Number.isSafeInteger(actor.credentialVersion) || actor.credentialVersion<1) throw new ReassignmentActorAuthorizationError('请重新登录');
   const account = (await c.query(`SELECT * FROM app_users WHERE id=$1 AND username=$2 AND role=$3 AND status='ACTIVE'
     AND ($4::integer IS NULL OR credential_version=$4) FOR SHARE`,[actor.userId,actor.username,actor.role,actor.credentialVersion ?? null])).rows[0];
   if (!account || (stage ? actor.role !== 'ADMIN' && !(stage === 'COPY' ? account.copy_qc_enabled : account.role === 'REVIEWER' && account.image_qc_enabled) : actor.role !== 'ADMIN')) {
-    throw new ControlPlaneAuthorizationError(stage ? '当前账号不能处理此质检项' : '仅管理员可处理待二次分配数据');
+    throw new ReassignmentActorAuthorizationError(stage ? '当前账号不能处理此质检项' : '仅管理员可处理待二次分配数据');
   }
   return account;
 }
@@ -376,4 +377,65 @@ export async function disposeReassignmentCase(pool,id,input,actor,operation) {
       target_account_id=$4,disposition_note=$5,version=version+1 WHERE id=$1 RETURNING *`,[record.id,operation==='REASSIGN'?'REASSIGNED':'DISCARDED',actor.userId,target?.id ?? null,note])).rows[0];
     return saveResponse(c,actor,replay.requestId,operation,fingerprint,caseFrom(updated));
   });
+}
+
+function positiveBatchInteger(value, name) {
+  if (!Number.isSafeInteger(value) || value < 1) throw new TypeError(`${name} 须为正整数`);
+  return value;
+}
+
+export function normalizeReassignmentBatchInput(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('批量处理参数无效');
+  const { operation } = input;
+  if (!['REASSIGN', 'DISCARD', 'RESET'].includes(operation)) throw new TypeError('批量处理操作无效');
+  if (!Array.isArray(input.items) || input.items.length < 1 || input.items.length > 100) {
+    throw new TypeError('每次请选择 1–100 条待二次分配数据');
+  }
+  const note = operation === 'RESET' && input.note === undefined ? undefined : noteOf(input.note);
+  const targetAccountId = operation === 'REASSIGN'
+    ? positiveBatchInteger(input.targetAccountId, 'targetAccountId') : undefined;
+  if (input.targetAccountId !== undefined && operation !== 'REASSIGN') {
+    throw new TypeError('仅重新分配可指定目标账号');
+  }
+  const ids = new Set(), requestIds = new Set();
+  const items = input.items.map(item => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) throw new TypeError('批量处置单参数无效');
+    const id = positiveBatchInteger(item.id, 'id');
+    const expectedVersion = positiveBatchInteger(item.expectedVersion, 'expectedVersion');
+    if (typeof item.requestId !== 'string') throw new TypeError('requestId 须为 UUID');
+    const requestId = normalizeUuid(item.requestId, 'requestId');
+    if (ids.has(id) || requestIds.has(requestId)) throw new TypeError('处置单或请求编号不能重复');
+    ids.add(id); requestIds.add(requestId);
+    return { id, expectedVersion, requestId };
+  });
+  return { operation, note, targetAccountId, items };
+}
+
+function batchItemError(error) {
+  // An expired administrator identity stops the batch. Target-account access
+  // failures and case conflicts are expected per-item results.
+  if (error instanceof ReassignmentActorAuthorizationError) throw error;
+  if (!(error instanceof ControlPlaneConflictError || error instanceof ControlPlaneNotFoundError
+    || error instanceof ControlPlaneAuthorizationError)) throw error;
+  return { code: error.code, message: error.message };
+}
+
+export async function batchReassignmentCases(pool, input, actor, { storageRoot } = {}) {
+  const { operation, note, targetAccountId, items } = normalizeReassignmentBatchInput(input);
+  await transaction(pool, c => lockActor(c, actor));
+  const results = [];
+  for (const { id, expectedVersion, requestId } of items) {
+    try {
+      const mutation = { expectedVersion, requestId, ...(note === undefined ? {} : { note }),
+        ...(targetAccountId === undefined ? {} : { targetAccountId }) };
+      const item = operation === 'RESET'
+        ? await retryReassignmentReset(pool, id, mutation, actor, { storageRoot })
+        : await disposeReassignmentCase(pool, id, mutation, actor, operation);
+      results.push({ id, success: true, item });
+    } catch (error) {
+      results.push({ id, success: false, error: batchItemError(error) });
+    }
+  }
+  const succeeded = results.filter(result => result.success).length;
+  return { operation, total: items.length, succeeded, failed: items.length - succeeded, results };
 }

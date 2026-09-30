@@ -3,6 +3,8 @@ export const DEFAULT_DEEPSEEK_SEARCH_MODEL = 'deepseek-v4-pro';
 export const DEFAULT_WEB_SEARCH_TIMEOUT_MS = 120_000;
 export const DEFAULT_WEB_SEARCH_RESULT_LIMIT = 5;
 export const DEFAULT_DOUBAO_ICP_HOST_ONLY = true;
+export const DEFAULT_DOUBAO_SEARCH_MODE = 'CUSTOM';
+export const LEGACY_DOUBAO_SEARCH_MODE = 'GLOBAL';
 export const WEB_SEARCH_PROVIDERS = Object.freeze(['DOUBAO', 'DEEPSEEK', 'CODEX']);
 export const DEEPSEEK_MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/u;
 export const DEFAULT_WEB_SEARCH_SETTINGS = Object.freeze({
@@ -11,8 +13,34 @@ export const DEFAULT_WEB_SEARCH_SETTINGS = Object.freeze({
   deepseekSearchModel: null,
   webSearchTimeoutMs: null,
   webSearchResultLimit: null,
+  doubaoSearchMode: null,
   doubaoIcpHostOnly: null,
 });
+
+// Resolve the current production default before a new task captures settings.
+// Do not apply this to historical execution snapshots: their absent mode means Global.
+export function pinDefaultDoubaoSearchMode(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const modelApi = value.modelApi;
+  if (modelApi != null && (typeof modelApi !== 'object' || Array.isArray(modelApi))) return value;
+  if (modelApi?.doubaoSearchMode != null) return value;
+  return { ...value, modelApi: { ...(modelApi ?? {}), doubaoSearchMode: DEFAULT_DOUBAO_SEARCH_MODE } };
+}
+
+export function snapshotProductionSearchMode(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const modelApi = value.modelApi;
+  if (!modelApi || typeof modelApi !== 'object' || Array.isArray(modelApi)) return value;
+  const providers = modelApi.webSearchProviderOrder ?? [modelApi.webSearchProvider];
+  const usesDoubao = Array.isArray(providers)
+    && providers.some((provider) => typeof provider === 'string' && provider.trim().toUpperCase() === 'DOUBAO');
+  if (usesDoubao) return pinDefaultDoubaoSearchMode(value);
+  // Keep unrelated new snapshots readable by older executors whose settings
+  // parser does not yet recognize the mode field.
+  if (!Object.hasOwn(modelApi, 'doubaoSearchMode')) return value;
+  const { doubaoSearchMode: _mode, ...withoutDoubaoMode } = modelApi;
+  return { ...value, modelApi: withoutDoubaoMode };
+}
 
 export function validatedDeepSeekSearchModel(value) {
   const model = typeof value === 'string' ? value.trim() : '';
@@ -40,12 +68,16 @@ export function normalizeWebSearchSettings(input = {}) {
   const webSearchTimeoutMs = input.webSearchTimeoutMs == null ? null : validatedWebSearchTimeout(input.webSearchTimeoutMs);
   const webSearchResultLimit = input.webSearchResultLimit == null
     ? null : validatedWebSearchResultLimit(input.webSearchResultLimit);
+  const doubaoSearchMode = input.doubaoSearchMode == null ? null : input.doubaoSearchMode;
+  if (doubaoSearchMode !== null && !['GLOBAL', 'CUSTOM'].includes(doubaoSearchMode)) {
+    throw new TypeError('doubaoSearchMode must be GLOBAL or CUSTOM');
+  }
   const doubaoIcpHostOnly = input.doubaoIcpHostOnly == null ? null : input.doubaoIcpHostOnly;
   if (doubaoIcpHostOnly !== null && typeof doubaoIcpHostOnly !== 'boolean') {
     throw new TypeError('doubaoIcpHostOnly must be a boolean');
   }
   return { webSearchProvider, webSearchProviderOrder, deepseekSearchModel,
-    webSearchTimeoutMs, webSearchResultLimit, doubaoIcpHostOnly };
+    webSearchTimeoutMs, webSearchResultLimit, doubaoSearchMode, doubaoIcpHostOnly };
 }
 
 export function validatedWebSearchProviderOrder(value) {
@@ -93,8 +125,12 @@ export function resolveWebSearchConfig(environment = process.env, input = {}) {
   }
   const resultLimit = settings.webSearchResultLimit ?? DEFAULT_WEB_SEARCH_RESULT_LIMIT;
   const providers = settings.webSearchProviderOrder;
+  const usesDoubao = (providers ?? [provider]).includes('DOUBAO');
   const usesDeepSeek = (providers ?? [provider]).includes('DEEPSEEK');
-  const usesApi = usesDeepSeek || (providers ?? [provider]).includes('DOUBAO');
+  const usesApi = usesDeepSeek || usesDoubao;
+  // Saved execution snapshots predating this field must keep using Global.
+  // New snapshots and new installations store CUSTOM explicitly.
+  const doubaoSearchMode = settings.doubaoSearchMode ?? LEGACY_DOUBAO_SEARCH_MODE;
   const model = usesDeepSeek ? validatedDeepSeekSearchModel(
     settings.deepseekSearchModel ?? (environment.XHS_DEEPSEEK_SEARCH_MODEL || DEFAULT_DEEPSEEK_SEARCH_MODEL),
   ) : undefined;
@@ -106,9 +142,11 @@ export function resolveWebSearchConfig(environment = process.env, input = {}) {
   )) : undefined;
   if (providers) return { provider, providers, ...(model ? { model } : {}),
     ...(timeoutMs ? { timeoutMs } : {}), resultLimit,
+    ...(usesDoubao ? { doubaoSearchMode } : {}),
     doubaoIcpHostOnly: settings.doubaoIcpHostOnly ?? DEFAULT_DOUBAO_ICP_HOST_ONLY };
   if (provider === 'CODEX') return { provider, resultLimit };
   if (provider === 'DOUBAO') return { provider, timeoutMs, resultLimit,
+    doubaoSearchMode,
     doubaoIcpHostOnly: settings.doubaoIcpHostOnly ?? DEFAULT_DOUBAO_ICP_HOST_ONLY };
   return { provider, model, timeoutMs, resultLimit };
 }

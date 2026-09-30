@@ -24,6 +24,7 @@ export function withWebSearchProvider(client, { environment = process.env, fetch
         return runDoubaoWebSearch({
           // Credentials are read only for an actual search call and never enter settings or snapshots.
           apiKey: environment.DOUBAO_SEARCH_API_KEY,
+          mode: configuration.doubaoSearchMode,
           timeoutMs: configuration.timeoutMs,
           icpHostOnly: configuration.doubaoIcpHostOnly,
           fetchImpl,

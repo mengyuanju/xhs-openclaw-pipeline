@@ -25,13 +25,13 @@ test('upload validation handles large base64 without stack overflow and keeps si
   const upload=base64=>service.create({requestId:randomUUID(),images:[{mediaType:'image/png',base64}]},{});
   // All three padding lengths reach the image-signature check, not a RangeError.
   for(const size of [4*1024*1024,4*1024*1024+1,4*1024*1024+2,5*1024*1024]) {
-    await assert.rejects(()=>upload(Buffer.alloc(size).toString('base64')),{name:'TypeError',message:'文件签名与声明类型不符'});
+    await assert.rejects(()=>upload(Buffer.alloc(size).toString('base64')),{name:'TypeError',message:'文件签名与声明类型不符：无法识别图片内容，可能格式不受支持或文件已损坏。请重新导出为 PNG、JPEG 或 WebP 后上传。'});
   }
   const large=Buffer.alloc(4*1024*1024).toString('base64');
   for(const value of [large.slice(0,-4)+'!!!!',large.slice(0,-4)+'AA=A',large.slice(0,-4)+'A===',large+'\n',large.slice(1),42]) {
     await assert.rejects(()=>upload(value),{name:'TypeError',message:'上传图片编码或大小无效'});
   }
-  await assert.rejects(()=>upload(Buffer.alloc(5*1024*1024+1).toString('base64')),{name:'TypeError',message:'参考图片上限为 5 MB'});
+  await assert.rejects(()=>upload(Buffer.alloc(5*1024*1024+1).toString('base64')),{name:'TypeError',message:'图片文件超过大小限制：当前 5.00 MiB（5,242,881 字节）/上限 5 MiB（5,242,880 字节），超出 1 字节。请压缩或缩小图片后重新上传。'});
   await assert.rejects(()=>upload(Buffer.alloc(5*1024*1024+3).toString('base64')),{name:'TypeError',message:'上传图片编码或大小无效'});
 });
 

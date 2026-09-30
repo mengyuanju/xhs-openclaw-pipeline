@@ -9,6 +9,7 @@ import { createRequestId } from '../components/request-id';
 import { StandaloneImageEditor } from '../components/standalone-image-editor';
 import { ImageEditorList } from './image-editor-list';
 import { STANDALONE_IMAGE_EDITOR_LIMITS as limits } from '../../src/standalone-image-editor-config.mjs';
+import { referenceUploadSizeMessage } from '../../src/image-upload-validation.mjs';
 import styles from './workbench.module.css';
 
 type Workspace = { status:string; operation?:string; id:number; title:string; runId:string; copyRevisionId:number; assets:Array<{id:number;url:string;sha256:string}>; runs:Array<{id:string;result:{processing?:{type:string}}|null}> };
@@ -58,8 +59,16 @@ export function ImageEditorWorkbench() {
   }
   async function upload(files:File[]) {
     if(!files.length)return;
-    if(files.length > limits.maxImages || files.some(file => !limits.formats.includes(file.type) || file.size > limits.maxUploadBytes)) {
-      setError(`每次最多上传 ${limits.maxImages} 张 PNG/JPEG/WebP，每张不超过 ${limits.maxUploadBytes/1024/1024} MB`);return;
+    if(files.length > limits.maxImages) {
+      setError(`当前选择了 ${files.length} 张图片，每次最多上传 ${limits.maxImages} 张。`);return;
+    }
+    const oversized=files.find(file=>file.size>limits.maxUploadBytes);
+    if(oversized) {
+      setError(`${oversized.name}：${referenceUploadSizeMessage(oversized.size)}`);return;
+    }
+    const unsupported=files.find(file=>!limits.formats.includes(file.type));
+    if(unsupported) {
+      setError(`${unsupported.name}：仅支持 PNG/JPEG/WebP，请检查图片格式与文件后缀。`);return;
     }
     setBusy(true);setError('');
     try {
@@ -99,7 +108,7 @@ export function ImageEditorWorkbench() {
             <div className={styles.pages}>{workspace.assets.map((item,index) => <Button key={item.id} size="sm" variant={page === index+1 ? 'default' : 'outline'} disabled={locked} aria-pressed={page === index+1} onClick={() => setPage(index+1)}>第 {index+1} 张</Button>)}</div>
           </div> : <>
             <label className={styles.titleInput}>图片名称（可选）<Input maxLength={200} value={title} disabled={busy} onChange={event => {setTitle(event.target.value);requestId.current=createRequestId();}} placeholder="例如：产品图片调整"/></label>
-            <label className={styles.filePicker}><UploadCloud size={26} aria-hidden="true"/><strong>{busy ? '正在读取图片…' : '选择要编辑的图片'}</strong><span className="subtle">{limits.width} × {limits.height} · PNG / JPEG / WebP · 每张最多 {limits.maxUploadBytes/1024/1024} MB · 最多 {limits.maxImages} 张</span>
+            <label className={styles.filePicker}><UploadCloud size={26} aria-hidden="true"/><strong>{busy ? '正在读取图片…' : '选择要编辑的图片'}</strong><span className="subtle">{limits.width} × {limits.height} · PNG / JPEG / WebP · 每张最多 {limits.maxUploadBytes/1024/1024} MiB · 最多 {limits.maxImages} 张</span>
               <Input aria-label="上传待编辑图片" type="file" multiple accept={limits.formats.join(',')} disabled={busy} onChange={event => {const files=Array.from(event.target.files ?? []);event.target.value='';requestId.current=createRequestId();void upload(files);}}/>
             </label>
           </>}

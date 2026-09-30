@@ -91,6 +91,12 @@ describe('model API production settings UI', () => {
     assert.match(panel, /webSearchResultLimit:\s*event\.target\.value === '' \? null : Number\(event\.target\.value\)/u);
     assert.match(panel, /invalidResultLimit/u);
     assert.match(route, /webSearchResultLimit:\s*z\.number\(\)\.int\(\)\.min\(1\)\.max\(10\)\.nullable\(\)\.optional\(\)/u);
+    assert.match(panel, /<label htmlFor="doubao-search-mode">豆包搜索模式<\/label>/u);
+    assert.match(panel, /const doubaoMode = settings\.doubaoSearchMode \?\? 'CUSTOM'/u);
+    assert.match(panel, /disabled=\{disabled \|\| !usesDoubao \|\| doubaoMode !== 'GLOBAL'\}/u);
+    assert.match(panel, /savedProviderLabel\('DOUBAO'\)/u);
+    assert.match(route, /doubaoSearchMode:\s*z\.enum\(\['GLOBAL', 'CUSTOM'\]\)\.nullable\(\)\.optional\(\)/u);
+    assert.match(central, /delete draftModelApi\.doubaoSearchMode/u);
     assert.match(local, /<WebSearchSettingsPanel/u);
     assert.match(central, /<WebSearchSettingsPanel/u);
   });

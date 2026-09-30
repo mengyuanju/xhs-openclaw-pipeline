@@ -21,6 +21,7 @@ const patchSchema = z.object({
     .regex(DEEPSEEK_MODEL_ID_PATTERN, 'DeepSeek 模型 ID 格式无效').nullable().optional(),
   webSearchTimeoutMs: z.number().int().min(5_000).max(120_000).nullable().optional(),
   webSearchResultLimit: z.number().int().min(1).max(10).nullable().optional(),
+  doubaoSearchMode: z.enum(['GLOBAL', 'CUSTOM']).nullable().optional(),
   doubaoIcpHostOnly: z.boolean().nullable().optional(),
 }).strict().refine((value) => Object.keys(value).length > 0, '至少修改一项搜索配置');
 

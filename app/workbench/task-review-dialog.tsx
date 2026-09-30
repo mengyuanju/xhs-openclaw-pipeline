@@ -32,6 +32,8 @@ import { resumeImageTask } from '../components/resume-image-task';
 import { canResumeImageTask } from '../../src/control-plane/image-resume.mjs';
 import { orderedImageFileName } from '../../src/image-file-name.mjs';
 import { TaskQualitySummary } from './task-quality-summary';
+import { safeDoubaoSearchDiagnostic } from './research-attempt-diagnostic.mjs';
+import { SecondaryAssignmentFeedbackNotice, type SecondaryAssignmentFeedback } from './secondary-assignment-feedback';
 import { ModelCallTrace } from './model-call-trace';
 import { canRequeueImages, IMAGE_RETRY_EXHAUSTED_LABEL, imageFailureDisplayReason, isImageRetryExhausted } from '../../src/control-plane/image-retry-status.mjs';
 import { ImagePreview } from '../components/image-preview';
@@ -180,7 +182,7 @@ type CopyRevision = {
     reviewed?: { copy?: Copy; imagePlan?: ImagePlanItem[] };
     generation?: { research?: {
       provider?: string | null;
-      attempts?: Array<{ provider?: string; status?: 'COMPLETED' | 'FAILED' }>;
+      attempts?: Array<{ provider?: string; status?: 'COMPLETED' | 'FAILED'; error?: string | null }>;
       sources?: Array<{ title?: string; url: string; siteName?: string; provider?: string }>;
     } };
   };
@@ -218,6 +220,7 @@ type TaskDetail = PriorityTask & {
   imageApprovalEvents?: ImageApprovalEvent[];
   copyDiscardEvents?: { source: 'COPY_QA' | 'COPY_QA_RETURN'; reasonCode: string; note: string; actorUsername: string; createdAt: string }[];
   imageQaReturn?: ReworkRequirement | null;
+  secondaryAssignmentFeedback?: SecondaryAssignmentFeedback | null;
   xiaohongshuSearchBlockedReason?: 'LOGIN_REQUIRED' | 'CAPTCHA_REQUIRED' | null;
   assignedToUserId?: string | null;
   assignedToAccountId?: number | null;
@@ -431,10 +434,12 @@ function ReviewReferences({
   detail,
   research,
   xiaohongshuLinks,
+  isAdmin,
 }: {
   detail: TaskDetail;
   research?: ReviewResearch;
   xiaohongshuLinks: TaskDetail['xiaohongshuLinks'];
+  isAdmin: boolean;
 }) {
   const sources = research?.sources ?? [];
   return <>
@@ -463,7 +468,12 @@ function ReviewReferences({
       <DisclosureTrigger>联网资料来源 · {sources.length} 条 · {researchResultLabel(research)}</DisclosureTrigger>
       <DisclosureContent>
         {research?.attempts && research.attempts.length > 0 && <p className="workbench-review-reference-help">
-          服务尝试：{research.attempts.map((attempt, index) => `${index + 1}. ${researchProviderLabel(attempt.provider)}（${attempt.status === 'COMPLETED' ? '已返回来源' : '失败'}）`).join(' → ')}
+          服务尝试：{research.attempts.map((attempt, index) => {
+            const diagnostic = isAdmin && attempt.status === 'FAILED'
+              && typeof attempt.provider === 'string' && attempt.provider.toLowerCase() === 'doubao'
+              ? safeDoubaoSearchDiagnostic(attempt.error) : null;
+            return `${index + 1}. ${researchProviderLabel(attempt.provider)}（${attempt.status === 'COMPLETED' ? '已返回来源' : '失败'}${diagnostic ? `：${diagnostic}` : ''}）`;
+          }).join(' → ')}
         </p>}
         {sources.length > 0 ? <div className="workbench-review-sources">{sources.map((source, index) => <a href={source.url} target="_blank" rel="noreferrer" key={`${source.url}-${index}`}>
           <b>{source.title || source.siteName || `来源 ${index + 1}`}</b>
@@ -1017,11 +1027,13 @@ export function TaskReviewDialog({
   const editable = taskHasAssignee && canReviewCopy && detail?.state === 'COPY_REVIEW_PENDING'
     && Boolean(revision && draft);
   const isImageRetryRework = Boolean(detail && isImageRetryExhausted(detail));
-  const isCopyRework = !['DISCARD_RESTORE', 'SECOND_ASSIGNMENT'].includes(detail?.mandatoryCopyQcOrigin ?? '') && Boolean(isImageRetryRework
+  // A later return starts rework even if full inspection came from a reset.
+  const isCopyRework = Boolean(isImageRetryRework
     || detail?.copyQaReworkPending
-    || detail?.mandatoryCopyQc
-    || ['QA_RETURN', 'FINAL_REWORK'].includes(revision?.revisionOrigin ?? '')
-    || ['QA_RETURN', 'FINAL_REWORK'].includes(revision?.reworkOrigin ?? ''));
+    || (!['DISCARD_RESTORE', 'SECOND_ASSIGNMENT'].includes(detail?.mandatoryCopyQcOrigin ?? '')
+      && (detail?.mandatoryCopyQc
+        || ['QA_RETURN', 'FINAL_REWORK'].includes(revision?.revisionOrigin ?? '')
+        || ['QA_RETURN', 'FINAL_REWORK'].includes(revision?.reworkOrigin ?? ''))));
   // Image exhaustion starts a new rework round from the current approved version.
   const reworkBaseline = isCopyRework && detail && revision
     ? (isImageRetryRework ? revision : findCopyReworkBaseline(detail.copyRevisions, revision.id)) : null;
@@ -2388,6 +2400,8 @@ export function TaskReviewDialog({
                     />
                   : <div className="notice warning" role="status"><strong>返工要求</strong><br />请按质检要求完成实际修改后提交强制复检。</div>)}
                 <TaskFailureNotice detail={detail} />
+                <SecondaryAssignmentFeedbackNotice key={`${detail.id}:${detail.secondaryAssignmentFeedback?.assignedAt ?? ''}`}
+                  feedback={detail.secondaryAssignmentFeedback} />
                 {editable && <Disclosure className={styles.panel}>
                   <DisclosureTrigger className={styles.trigger}>
                     <span><History size={16} /><strong>审核草稿</strong></span>
@@ -2512,7 +2526,7 @@ export function TaskReviewDialog({
                   originalScorePresentation={COPY_MACHINE_DRAFT_SCORE_PRESENTATION}
                   showScoreDescriptions={showCopyScoreDescriptions} showReasonOptions={showCopyDeductionReasons} />
               </section>}
-              {!imageWorkMode && !editable && <ReviewReferences detail={detail} research={research} xiaohongshuLinks={xiaohongshuLinks} />}
+              {!imageWorkMode && !editable && <ReviewReferences detail={detail} research={research} xiaohongshuLinks={xiaohongshuLinks} isAdmin={isAdmin} />}
             {!imageWorkMode && <VisualPlanSummary value={currentImageRun?.result?.visualPlan?.value} />}
             {!imageWorkMode && currentImageRun?.result?.visualPlan?.warning?.message && !currentImageRun?.result?.simulation?.enabled
               && <p className="notice warning">{currentImageRun.result.visualPlan.warning.message}</p>}
@@ -2571,6 +2585,8 @@ export function TaskReviewDialog({
                 </nav>}
               </div>
               <aside className="workbench-image-review-decision" aria-label={imageWorkMode ? '图片操作与信息' : '图片终审结论'}>
+                {imageWorkMode && <SecondaryAssignmentFeedbackNotice key={`${detail.id}:${detail.secondaryAssignmentFeedback?.assignedAt ?? ''}`}
+                  feedback={detail.secondaryAssignmentFeedback} />}
                 {imageWorkMode && <div className="workbench-image-search-provider" aria-label="联网搜索服务">
                   <strong>联网资料搜索</strong>
                   <span>{researchResultLabel(research)} · {research?.sources?.length ?? 0} 条来源</span>
@@ -2865,7 +2881,7 @@ export function TaskReviewDialog({
                   </article>})}
                 </div>
               </section>
-              {editable && <ReviewReferences detail={detail} research={research} xiaohongshuLinks={xiaohongshuLinks} />}
+              {editable && <ReviewReferences detail={detail} research={research} xiaohongshuLinks={xiaohongshuLinks} isAdmin={isAdmin} />}
               {imageSettingsPanel}
               {role === 'ADMIN' && <ModelCallTrace key={detail.id} taskId={detail.id} />}
             </div>}

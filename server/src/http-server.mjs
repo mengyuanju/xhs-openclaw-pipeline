@@ -1,6 +1,7 @@
 import { getCopyQualityQueues } from './copy-quality-control.mjs';
 import { listCopyQaCandidatesV2, createCopyQaBatchV2, listCopyQaBatchesV2, listCopyQaBatchItemsV2, decideCopyQaItemV2 } from './copy-qa-v2.mjs';
 import { loadWorkModePage } from './work-mode.mjs';
+import { normalizeReassignmentBatchInput } from './secondary-assignment.mjs';
 import { readTaskDataReport, readTaskDataReportTask, exportTaskDataReportCsv } from './task-data-report.mjs';
 import {
   listSavedTaskReportQueries, createSavedTaskReportQuery,
@@ -1331,6 +1332,12 @@ function installRoutes(
   router.get('/v1/admin/reassignment-cases', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);
     json(ctx, 200, await repository.listReassignmentCases(ctx.query, { actor }));
+  });
+  router.post('/v1/admin/reassignment-cases/batch', async (ctx) => {
+    const actor = requestActor(ctx, ['ADMIN']);
+    const input = requireJson(ctx);
+    normalizeReassignmentBatchInput(input);
+    json(ctx, 200, await repository.batchReassignmentCases(input, { actor, storageRoot }));
   });
   router.get('/v1/admin/reassignment-cases/:caseId', async (ctx) => {
     const actor = requestActor(ctx, ['ADMIN']);

@@ -36,7 +36,11 @@ export async function loadWorkModePage(repository, options, actor) {
     return { kind, kinds, total: page.total, hasMore: offset + page.items.length < page.total,
       items: page.items.map(task => ({ id: String(task.id), kind, taskId: task.id, label: task.query,
         source: task.sourceQueryPackageName ?? null,
-        rework: task.mandatoryCopyQc === true || task.state === 'IMAGE_REWORK_PENDING', state: task.state,
+        rework: kind === 'IMAGE' ? task.state === 'IMAGE_REWORK_PENDING'
+          : task.currentStage === 'IMAGE_RETRY_EXHAUSTED' || task.copyQaReworkPending === true
+            || (task.mandatoryCopyQc === true
+              && !['DISCARD_RESTORE', 'SECOND_ASSIGNMENT'].includes(task.mandatoryCopyQcOrigin)),
+        state: task.state,
         version: kind === 'COPY' ? task.currentCopyRevisionId : task.currentImageRunId })) };
   }
   if (kind === 'COPY_QA') {

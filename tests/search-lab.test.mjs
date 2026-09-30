@@ -106,6 +106,118 @@ test('Doubao adapter sends the original Query and a boolean ICP filter to Global
   }
 });
 
+test('Doubao search lab exposes safe API error codes without returning the key', async () => {
+  const key = 'private-doubao-test-key';
+  const payloads = [
+    [{ ResponseMetadata: { Error: { Code: 'InvalidApiKey', Message: `bad ${key}` } } }, 'InvalidApiKey'],
+    [{ ResponseMetadata: { Error: { CodeN: 100029, Message: `bad ${key}` } } }, '100029'],
+  ];
+  for (const [payload, expectedCode] of payloads) {
+    const output = await compareSearch({ query: '测试豆包接口', providers: [{ id: 'doubao', key }] }, {
+      search: (input) => runProviderSearch({ ...input, fetchImpl: fakeFetch(payload) }),
+    });
+    assert.equal(output.results[0].status, 'FAILED');
+    const diagnostic = output.results[0].snapshot.attempts[0].error;
+    assert.match(diagnostic, new RegExp(`API code ${expectedCode}`, 'u'));
+    assert.doesNotMatch(JSON.stringify(output), /private-doubao-test-key|bad private/u);
+  }
+});
+
+test('Doubao search lab uses the production Query length and tolerates malformed Snippet', async () => {
+  const query = '长'.repeat(130);
+  let upstreamQuery;
+  const result = await runProviderSearch({ id: 'doubao', key: 'test-key', query,
+    fetchImpl: fakeFetch({ Result: { ErrorCode: 0, Documents: [
+      { Title: '有效来源', Url: 'https://example.org/article', Snippet: 'unexpected text' },
+    ] } }, (_url, _init, body) => { upstreamQuery = body.Query; }),
+  });
+  assert.equal(upstreamQuery, '长'.repeat(100));
+  assert.equal(result.result.sources.length, 1);
+  assert.equal(result.result.sources[0].snippet, '');
+  assert.match(result.result.content, /该服务未返回逐条摘要/u);
+});
+
+test('Doubao Global 10409 explains the Custom and Global key choices', async () => {
+  const key = 'private-global-key';
+  const output = await compareSearch({ query: '测试豆包搜索', providers: [{ id: 'doubao', key }] }, {
+    search: (input) => runProviderSearch({ ...input, fetchImpl: fakeFetch({
+      ResponseMetadata: { Error: { CodeN: 10409, Message: `echo ${key}` } },
+    }) }),
+  });
+  assert.equal(output.results[0].status, 'FAILED');
+  const diagnostic = output.results[0].snapshot.attempts[0].error;
+  assert.match(diagnostic, /10409.*Custom.*Global/u);
+  assert.doesNotMatch(JSON.stringify(output), /private-global-key|echo private/u);
+});
+
+test('Doubao Custom is a separate provider and sends the official web search request', async () => {
+  const custom = providerCatalogue.find((provider) => provider.id === 'doubao-custom');
+  assert.equal(custom.label, '火山引擎豆包搜索 Custom');
+  assert.equal(custom.kind, 'search-results');
+  assert.equal(custom.fields, undefined);
+  assert.equal(providerCatalogue.length, 13);
+  assert.equal(validateCompareRequest({ query: '测试',
+    providers: providerCatalogue.map(({ id }) => ({ id, key: 'test-key',
+      ...(id === 'alibaba-opensearch' ? { options: { host: 'https://test.opensearch.aliyuncs.com', workspaceName: 'default' } } : {}),
+      ...(id === 'alibaba-bailian' ? { options: { workspaceId: 'test' } } : {}),
+    })),
+  }).selections.length, 13);
+
+  const key = 'private-custom-key';
+  let sent;
+  const result = await runProviderSearch({ id: 'doubao-custom', key, query: '长'.repeat(130),
+    fetchImpl: fakeFetch({ Result: { WebResults: [
+      { Title: '第一条', Url: 'https://example.org/a', Summary: '优先摘要', Snippet: '备用摘要', SiteName: '例站' },
+      { Title: `第二条 ${key}`, Url: 'https://example.org/b', Summary: '', Snippet: '实际备用摘要', SiteName: '例站' },
+    ] } }, (url, init, body) => { sent = { url, init, body }; }),
+  });
+  assert.equal(sent.url, 'https://open.feedcoopapi.com/search_api/web_search');
+  assert.equal(sent.init.headers.Authorization, `Bearer ${key}`);
+  assert.deepEqual(sent.body, { Query: '长'.repeat(100), SearchType: 'web', Count: 5, NeedSummary: true });
+  assert.equal(result.provider, 'doubao-custom');
+  assert.deepEqual(result.result.sources.map((item) => item.snippet), ['优先摘要', '实际备用摘要']);
+  assert.equal(result.result.sources[0].siteName, '例站');
+  assert.match(result.result.content, /服务商返回的网页摘要/u);
+  assert.doesNotMatch(result.result.content, /未由模型改写/u);
+  assert.doesNotMatch(JSON.stringify(result), /private-custom-key/u);
+
+  const comparison = await compareSearch({ query: '豆包 Custom 测试',
+    providers: [{ id: 'doubao-custom', key }],
+  }, { search: (input) => runProviderSearch({ ...input, fetchImpl: fakeFetch({ Result: { WebResults: [
+    { Title: '可用资料', Url: 'https://example.org/c', Summary: '可核查摘要', SiteName: '例站' },
+  ] } }) }) });
+  assert.equal(comparison.results[0].status, 'COMPLETED');
+  assert.equal(comparison.results[0].snapshot.provider, 'doubao-custom');
+  assert.equal(comparison.results[0].snapshot.sources[0].snippet, '可核查摘要');
+});
+
+test('Doubao Custom reports only safe metadata codes on success and HTTP errors', async () => {
+  const key = 'private-custom-key';
+  for (const [error, status, expected] of [
+    [{ Code: 'InvalidApiKey', Message: `echo ${key}` }, 200, 'InvalidApiKey'],
+    [{ CodeN: 10409, Message: `echo ${key}` }, 403, '10409'],
+  ]) {
+    const output = await compareSearch({ query: '测试豆包搜索', providers: [{ id: 'doubao-custom', key }] }, {
+      search: (input) => runProviderSearch({ ...input, fetchImpl: async () => Response.json({
+        ResponseMetadata: { Error: error },
+      }, { status }) }),
+    });
+    assert.equal(output.results[0].status, 'FAILED');
+    assert.match(output.results[0].snapshot.attempts[0].error, new RegExp(expected, 'u'));
+    assert.doesNotMatch(JSON.stringify(output), /private-custom-key|echo private/u);
+  }
+  for (const [errorCode, expected] of [[10409, '10409'], [`bad-${key}`, '业务错误码无效']]) {
+    const output = await compareSearch({ query: '测试豆包搜索', providers: [{ id: 'doubao-custom', key }] }, {
+      search: (input) => runProviderSearch({ ...input, fetchImpl: fakeFetch({
+        Result: { ErrorCode: errorCode, WebResults: [] },
+      }) }),
+    });
+    assert.equal(output.results[0].status, 'FAILED');
+    assert.match(output.results[0].snapshot.attempts[0].error, new RegExp(expected, 'u'));
+    assert.doesNotMatch(JSON.stringify(output), /private-custom-key/u);
+  }
+});
+
 test('search lab preserves Doubao scope through comparison into the HTTP request', async () => {
   const query = '绵阳到北京自驾8天行程';
   for (const [options, expected] of [[undefined, true], [{ icpHostOnly: true }, true],

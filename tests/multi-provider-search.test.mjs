@@ -34,6 +34,13 @@ function doubaoResponse() {
   ] } }));
 }
 
+function doubaoCustomResponse() {
+  return new Response(JSON.stringify({ Result: { ErrorCode: 0, WebResults: [
+    { Title: 'Custom 来源甲', Url: 'https://example.cn/a', SiteName: 'example.cn', Summary: '详细资料甲' },
+    { Title: 'Custom 来源乙', Url: 'https://example.cn/b', SiteName: 'example.cn', Summary: '详细资料乙' },
+  ] } }));
+}
+
 test('explicit order routes to Doubao first and stops after sufficient evidence', async () => {
   const calls = [];
   const client = withWebSearchProvider({}, {
@@ -56,11 +63,34 @@ test('explicit order routes to Doubao first and stops after sufficient evidence'
   assert.doesNotMatch(JSON.stringify(snapshot), /doubao-test-secret|deepseek-test-secret/u);
 });
 
-test('a failed Doubao request switches to DeepSeek without sending the Doubao key to DeepSeek', async () => {
+test('Custom mode routes the same Doubao provider to WebResults evidence', async () => {
   const calls = [];
   const client = withWebSearchProvider({}, {
     environment,
-    settings: { webSearchProviderOrder: ['DOUBAO', 'DEEPSEEK'] },
+    settings: { webSearchProviderOrder: ['DOUBAO', 'DEEPSEEK'], doubaoSearchMode: 'CUSTOM' },
+    async fetchImpl(url, init) {
+      calls.push({ url, init });
+      return doubaoCustomResponse();
+    },
+  });
+  const snapshot = await createResearchSnapshot({ client, query: '绵阳到北京自驾八天' });
+  assert.equal(snapshot.status, 'COMPLETED');
+  assert.equal(snapshot.provider, 'doubao');
+  assert.equal(snapshot.sources.length, 2);
+  assert.equal(snapshot.sources[0].snippet, '详细资料甲');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://open.feedcoopapi.com/search_api/web_search');
+  assert.equal(JSON.parse(calls[0].init.body).Count, 5);
+  assert.equal(JSON.parse(calls[0].init.body).NeedSummary, true);
+  assert.equal(calls[0].init.headers.Authorization, `Bearer ${environment.DOUBAO_SEARCH_API_KEY}`);
+  assert.doesNotMatch(JSON.stringify(snapshot), /doubao-test-secret|deepseek-test-secret/u);
+});
+
+test('a failed Custom Doubao request switches to DeepSeek without sending the Doubao key to DeepSeek', async () => {
+  const calls = [];
+  const client = withWebSearchProvider({}, {
+    environment,
+    settings: { webSearchProviderOrder: ['DOUBAO', 'DEEPSEEK'], doubaoSearchMode: 'CUSTOM' },
     async fetchImpl(url, init) {
       calls.push({ url, init });
       return url.includes('feedcoopapi') ? new Response('upstream failure', { status: 503 }) : deepseekResponse();
@@ -73,6 +103,7 @@ test('a failed Doubao request switches to DeepSeek without sending the Doubao ke
     ['doubao', 'FAILED'], ['deepseek', 'COMPLETED'],
   ]);
   assert.equal(calls.length, 2);
+  assert.equal(calls[0].url, 'https://open.feedcoopapi.com/search_api/web_search');
   assert.equal(calls[1].url, 'https://api.deepseek.com/responses');
   assert.equal(calls[1].init.headers.Authorization, `Bearer ${environment.DEEPSEEK_API_KEY}`);
   assert.doesNotMatch(calls[1].init.body + JSON.stringify(snapshot), /doubao-test-secret|deepseek-test-secret/u);
