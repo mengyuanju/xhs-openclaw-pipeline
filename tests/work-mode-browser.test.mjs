@@ -195,6 +195,11 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     await page.locator('#review-copy-title').waitFor();
     assert.equal(await page.getByRole('dialog').count(), 0, 'editor must be inline');
+    const loadedSearch = page.getByRole('textbox', { name: '筛选已加载待办', exact: true });
+    const loadedQueue = page.getByRole('complementary', { name: '待处理作业', exact: true });
+    await loadedSearch.fill('没有匹配的合成需求'); assert.equal(await loadedQueue.getByRole('button', { name: /#\d+/ }).count(), 0);
+    await loadedSearch.fill('Query 1'); await loadedQueue.getByRole('button', { name: /#1\b.*Query 1/ }).waitFor(); assert.equal(await loadedQueue.getByRole('button', { name: /#2\b.*Query 2/ }).count(), 0);
+    await loadedSearch.fill(''); await loadedQueue.getByRole('button', { name: /#2\b.*Query 2/ }).waitFor();
     const assertViewportWorkspace = async () => {
       assert.equal(await page.evaluate(() => document.documentElement.scrollHeight > innerHeight + 1), false, 'desktop must not have an outer page scrollbar');
       const submit = page.getByRole('button', { name: /^(提交并下一条|通过并下一条|打回并下一条)$/u }).first();
@@ -476,6 +481,7 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false, 'image work overflow at ' + width);
       assert.equal(await imageToolbar.getByRole('button', { name: '修改图片', exact: true }).isVisible(), true);
       if (width <= 760) await assertDocumentScroll(imagePanel);
+      await page.screenshot({ path: join(directory, `image-before-preview-${width}.png`), fullPage: true });
       await page.getByRole('button', { name: /^放大查看第 1 页/u }).click();
       await preview.waitFor();
       const bounds = await preview.boundingBox();

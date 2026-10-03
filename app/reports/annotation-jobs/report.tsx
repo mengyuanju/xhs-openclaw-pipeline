@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { apiRequest } from '../../components/api-client';
@@ -35,17 +35,19 @@ export function AnnotationJobReport({initialFilters}:{initialFilters?:{from:stri
   const [dateError,setDateError] = useState('');
   const [busy,setBusy] = useState(true);
   const [revision,setRevision] = useState(0);
+  const forceNext=useRef(false);
   const [showQualityOnly,setShowQualityOnly] = useState(false);
   const query = new URLSearchParams({period:'custom',from:filters.from,to:filters.to,
     ...(filters.accountId?{accountId:filters.accountId}:{})}).toString();
 
   useEffect(() => {
     const controller=new AbortController();
+    const forceRefresh=forceNext.current;forceNext.current=false;
     setShowQualityOnly(false);
     setBusy(true);setError('');setReport(null);
-    void apiRequest<Report>(`/api/control-plane/v1/admin/annotation-job-report?${query}`,
+    void apiRequest<Report>(`/api/control-plane/v1/admin/annotation-job-report?${query}${forceRefresh?'&refresh=true':''}`,
       {signal:controller.signal,cache:'no-store'})
-      .then(value=>setReport(value))
+      .then(value=>{if(!controller.signal.aborted)setReport(value);})
       .catch(caught=>{if(!controller.signal.aborted)setError(caught instanceof Error?caught.message:'报表读取失败');})
       .finally(()=>{if(!controller.signal.aborted)setBusy(false);});
     return ()=>controller.abort();
@@ -77,7 +79,7 @@ export function AnnotationJobReport({initialFilters}:{initialFilters?:{from:stri
   return <div className={styles.page}>
     <header className={styles.header}><div><span className={styles.kicker}>报表统计</span>
       <h1>标注作业统计报表</h1><p>按标注人汇总作业与质检打回，日期采用北京时间。</p></div>
-      <Button variant="outline" size="sm" type="button" disabled={busy} onClick={()=>setRevision(value=>value+1)}><RefreshCw size={15}/>{busy?'读取中…':'刷新'}</Button>
+      <Button variant="outline" size="sm" type="button" disabled={busy} onClick={()=>{forceNext.current=true;setRevision(value=>value+1);}}><RefreshCw size={15}/>{busy?'读取中…':'刷新'}</Button>
     </header>
     <form className={`panel ${styles.filters}`} onSubmit={apply} aria-label="报表查询条件">
       <label>开始日期<input type="date" required value={draft.from} onChange={event=>setDraft(previous=>({...previous,from:event.target.value}))}/></label>

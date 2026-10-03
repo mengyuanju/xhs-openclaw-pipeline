@@ -1,3 +1,4 @@
+import { readTaskReviewSource } from './helpers/task-review-source.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
@@ -90,7 +91,7 @@ test('a machine draft scored 1 cannot be approved', () => {
 });
 
 test('the review dialog uses the shared version-aware submission builder', async () => {
-  const source = await readFile(new URL('../app/workbench/task-review-dialog.tsx', import.meta.url), 'utf8');
+  const source = await readTaskReviewSource();
   assert.match(source, /buildCopyReviewSubmission/u);
   assert.match(source, /copyContentChangedFromMachine/u);
 });

@@ -236,7 +236,12 @@ export async function optimizeTaskStorage({
     try {
       const sourcePath = safePath(run.validOutputDir, originalName);
       const destinationPath = safePath(assetRoot, asset.relativePath);
-      const [sourceStat, destinationStat] = await Promise.all([stat(sourcePath), stat(destinationPath)]);
+      // NTFS file IDs can exceed Number.MAX_SAFE_INTEGER. Number-based inode
+      // comparisons can mistake distinct adjacent files for existing hard links.
+      const [sourceStat, destinationStat] = await Promise.all([
+        stat(sourcePath, { bigint: true }),
+        stat(destinationPath, { bigint: true }),
+      ]);
       if (sourceStat.dev === destinationStat.dev && sourceStat.ino === destinationStat.ino) continue;
       const [sourceHash, destinationHash] = await Promise.all([
         hashFile(sourcePath),
@@ -245,7 +250,7 @@ export async function optimizeTaskStorage({
       if (sourceHash !== asset.sha256 || destinationHash !== asset.sha256) {
         throw new Error('generated asset content did not match its recorded SHA-256');
       }
-      linkCandidates.push({ asset, sourcePath, destinationPath, bytes: destinationStat.size });
+      linkCandidates.push({ asset, sourcePath, destinationPath, bytes: Number(destinationStat.size) });
     } catch (error) {
       errors.push(errorDetail('plan_hard_link', asset.relativePath, error));
     }

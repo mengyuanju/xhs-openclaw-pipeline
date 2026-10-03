@@ -91,7 +91,7 @@ export function PersonalTodayOverview({ today, onTodayChange, refreshKey, canDel
   }, [today, onTodayChange]);
 
   useEffect(() => { latest.current = refresh; }, [refresh]);
-  useEffect(() => subscribeWorkspaceUpdates(() => void latest.current('change')), []);
+  useEffect(() => subscribeWorkspaceUpdates(() => void latest.current('change'), {scopes:['tasks','quality','statistics','delivery']}), []);
   useEffect(() => {
     void refresh('initial');
     const visible = () => { if (document.visibilityState === 'visible') void refresh('visible'); };

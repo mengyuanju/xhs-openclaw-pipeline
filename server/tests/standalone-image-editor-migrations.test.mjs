@@ -44,6 +44,7 @@ test('0083 repairs draft and finalized databases, preserves rows and ledger, and
       const migrations = await loadMigrations();
       const legacy = await legacyMigration();
       const canonical = migrations.find(({ id }) => id === editorId);
+      const repairMigrations = migrations.filter(({ id }) => id <= repairId);
       for (const [label, source, invalid] of [
         ['early draft', legacy, false], ['finalized 0082', canonical, false], ['invalid legacy data', legacy, true],
       ]) {
@@ -66,12 +67,12 @@ test('0083 repairs draft and finalized databases, preserves rows and ledger, and
             const before = await snapshot();
             if (invalid) {
               await client.query('SAVEPOINT repair_attempt');
-              await assert.rejects(applyMigrations(client, migrations), error => error.code === '23514');
+              await assert.rejects(applyMigrations(client, repairMigrations), error => error.code === '23514');
               await client.query('ROLLBACK TO SAVEPOINT repair_attempt');
               assert.equal((await client.query('SELECT id FROM control_plane_migrations WHERE id=$1',[repairId])).rowCount, 0);
             } else {
-              assert.deepEqual(await applyMigrations(client, migrations), [repairId]);
-              assert.deepEqual(await applyMigrations(client, migrations), []);
+              assert.deepEqual(await applyMigrations(client, repairMigrations), [repairId]);
+              assert.deepEqual(await applyMigrations(client, repairMigrations), []);
               assert.equal((await client.query("SELECT convalidated FROM pg_constraint WHERE conrelid='tasks'::regclass AND conname='standalone_image_workspace_state'")).rows[0].convalidated, true);
               for (const assignment of ["state='COPY_QUEUED'", 'mandatory_copy_qc=true', 'mandatory_image_qc=true']) {
                 await client.query('SAVEPOINT invalid_workspace');

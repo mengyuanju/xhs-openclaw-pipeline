@@ -49,18 +49,22 @@ test('personal workbench exposes completion dates, stage totals, current states 
 });
 
 test('personal statistics keeps today overview above dated activity and current jobs tabs', async () => {
-  const [workbench, controls, dashboard, activity, page, today] = await Promise.all([
+  const [workbench, controls, dashboard, activity, page, today, lazyHistory] = await Promise.all([
     source('app/workbench/creation-workbench.tsx'), source('app/workbench/personal-controls.tsx'),
     source('app/workbench/personal-statistics/personal-statistics-dashboard.tsx'),
     source('app/workbench/personal-statistics/personal-activity-dialog.tsx'),
     source('app/workbench/personal-statistics/page.tsx'),
     source('app/workbench/personal-statistics/personal-today-overview.tsx'),
+    source('app/workbench/lazy-operator-delivery-history.tsx'),
   ]);
   assert.match(page, /readServerSession/u);
   assert.match(workbench, /personal-workspace\/tasks/u);
   assert.doesNotMatch(workbench, /PersonalWorkbenchNavigation|useStatistics/u);
   assert.match(workbench, /taskPage\.counts/u);
-  assert.match(workbench, /deliveryHistoryOpen && <OperatorDeliveryHistory/u);
+  assert.match(workbench, /deliveryHistoryOpen && <LazyOperatorDeliveryHistory/u);
+  assert.doesNotMatch(workbench, /from '\.\/operator-delivery-history'/u);
+  assert.match(lazyHistory, /useEffect\([\s\S]*void import\('\.\/operator-delivery-history'\)/u);
+  assert.match(lazyHistory, /重新加载交付记录/u);
   assert.match(controls, /PERSONAL_WORK_FILTERS\.map/u);
   assert.match(controls, /onCategory\(value\)/u);
   assert.match(dashboard, /personal-workspace\/statistics/u);

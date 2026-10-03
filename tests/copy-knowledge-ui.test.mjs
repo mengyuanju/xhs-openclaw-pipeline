@@ -1,3 +1,4 @@
+import { readControlPlaneHttpSource } from './control-plane-http-source.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { describe, it } from 'node:test';
@@ -8,12 +9,13 @@ async function source(path) {
 
 describe('excellent copy analysis and classification UI', () => {
   it('opens on the copy library while retaining the temporarily hidden knowledge switcher', async () => {
-    const [page, promptsPage, tabs, workbench, library] = await Promise.all([
+    const [page, promptsPage, tabs, workbench, library, knowledgeViews] = await Promise.all([
       source('app/knowledge/page.tsx'),
       source('app/prompts/page.tsx'),
       source('app/knowledge/knowledge-tabs.tsx'),
       source('app/knowledge/copy-knowledge-workbench.tsx'),
       source('app/knowledge/copy-knowledge-library.tsx'),
+      source('app/knowledge/knowledge-views.ts'),
     ]);
 
     assert.match(page, /<KnowledgeTabs/u);
@@ -23,7 +25,10 @@ describe('excellent copy analysis and classification UI', () => {
     assert.doesNotMatch(page, /listAllKnowledge\(store, 'listCopyKnowledge'\)/u);
     assert.match(page, /listCopyKnowledgeLabels/u);
     assert.doesNotMatch(promptsPage, /CopyKnowledgeWorkbench|listCopyKnowledge/u);
-    assert.match(tabs, /SHOW_KNOWLEDGE_TYPE_SWITCHER = false/u);
+    assert.match(knowledgeViews, /SHOW_KNOWLEDGE_TYPE_SWITCHER = false/u);
+    assert.match(tabs, /import \{ SHOW_KNOWLEDGE_TYPE_SWITCHER \} from '\.\/knowledge-views'/u);
+    assert.match(page, /SHOW_KNOWLEDGE_TYPE_SWITCHER \? listAllKnowledge\(store, 'listVisualKnowledge'\) : \[\]/u);
+    assert.match(tabs, /activeView === 'VISUAL' && <KnowledgeWorkbench/u);
     assert.match(tabs, /useState<KnowledgeView>\('COPY'\)/u);
     assert.match(tabs, /role="tablist"/u);
     assert.match(tabs, /aria-label="知识库类型"/u);
@@ -66,7 +71,7 @@ describe('excellent copy analysis and classification UI', () => {
     const [workbench, centerService, centerHttp] = await Promise.all([
       source('app/knowledge/copy-knowledge-workbench.tsx'),
       source('server/src/deepseek-copy-analysis.mjs'),
-      source('server/src/http-server.mjs'),
+      readControlPlaneHttpSource(),
     ]);
     assert.match(workbench, /copy-knowledge\/analyze/u);
     assert.match(centerHttp, /router\.post\('\/v1\/copy-knowledge\/analyze'/u);
@@ -84,7 +89,7 @@ describe('excellent copy analysis and classification UI', () => {
 
   it('keeps manual layout templates restricted to administrators', async () => {
     const [centerHttp, localSettings, centralSettings] = await Promise.all([
-      source('server/src/http-server.mjs'),
+      readControlPlaneHttpSource(),
       source('app/settings/production-settings-form.tsx'),
       source('app/components/central-data-workbench.tsx'),
     ]);

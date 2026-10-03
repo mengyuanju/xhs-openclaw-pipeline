@@ -15,7 +15,7 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
   const png=await sharp({create:{width:1086,height:1448,channels:4,background:'#e6f0ec'}}).png().toBuffer();
   const workspace={id:501,title:'独立上传图片',runId:randomUUID(),copyRevisionId:91,
     assets:[{id:601,sha256:'a'.repeat(64),url:'/v1/image-editor/assets/601'}],runs:[]};
-  let server,browser,uploaded=false,edits=[],submitted,submissionCount=0,failSubmission=false,extraRows=[],batchSubmissions=0,batchPayload,acceptedBatchPayload,individualAcceptCalls=0;
+  let server,browser,uploaded=false,uploadDelay=0,releaseUpload=null,edits=[],submitted,submissionCount=0,failSubmission=false,extraRows=[],batchSubmissions=0,batchPayload,acceptedBatchPayload,individualAcceptCalls=0;
   const deleted=new Set(),deletions=[];
   try {
     await build({stdin:{contents:`import './app/globals.css';import React from 'react';import{createRoot}from'react-dom/client';import{ConfirmDialogProvider}from'./components/ui/confirm-dialog';import{ImageEditorWorkbench}from'./app/image-editor/workbench';import{BackgroundTasksProvider,BackgroundTaskNotifications}from'./app/components/background-tasks';import{Toaster}from'./components/ui/sonner';createRoot(document.getElementById('root')).render(<ConfirmDialogProvider><BackgroundTasksProvider accountKey="browser-test" accountUsername="本人" accountId={8}><ImageEditorWorkbench/><BackgroundTaskNotifications/><Toaster/></BackgroundTasksProvider></ConfirmDialogProvider>);`,resolveDir:process.cwd(),loader:'tsx'},bundle:true,outfile:join(root,'bundle.js'),jsx:'automatic',platform:'browser',conditions:['style'],alias:{'@':process.cwd()},define:{'process.env.NODE_ENV':'"test"','process.env':'{}'}});
@@ -31,7 +31,7 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
         if(path.startsWith('/v1/image-editor/assets/')){res.setHeader('content-type','image/png');if(req.url.includes('download=true'))res.setHeader('content-disposition','attachment; filename="edited.png"');res.end(png);return;}
         let result;
         if(path==='/v1/image-editor/workspaces/delete'){deletions.push(data.workspaceIds);for(const id of data.workspaceIds)deleted.add(id);result={deletedIds:data.workspaceIds};}
-        else if(path==='/v1/image-editor/workspaces'&&req.method==='POST'){uploaded=true;deleted.delete(workspace.id);assert.equal(data.images.length,workspace.assets.length);result={...workspace,status:'UPLOADED'};}
+        else if(path==='/v1/image-editor/workspaces'&&req.method==='POST'){if(uploadDelay)await new Promise(done=>{releaseUpload=done;});uploaded=true;deleted.delete(workspace.id);assert.equal(data.images.length,workspace.assets.length);result={...workspace,status:'UPLOADED'};}
         else if(path==='/v1/image-editor/workspaces'){assert.equal(new URL(req.url,'http://localhost').searchParams.get('queue'),'true');const items=[...(edits.length?[{id:501,title:workspace.title,owner:'本人',status:edits[0].status,operation:edits[0].operation,nodeId:null,error:edits[0].error}]:[]),...extraRows].filter(item=>!deleted.has(item.id));result={total:items.length,items};}
         else if(path.startsWith('/v1/image-editor/edits/')) {
           const edit=edits.find(item=>path.endsWith(item.id)||path.endsWith(`${item.id}/accept`));
@@ -82,7 +82,12 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
     assert.match(await oversizedSourceError.innerText(),/oversized-source\.png/u);
     assert.match(await oversizedSourceError.innerText(),/5[，,\s]?242[，,\s]?880\s*字节/u);
     assert.equal(uploaded,false,'oversized originals never create a workspace');
-    await page.getByLabel('上传待编辑图片',{exact:true}).setInputFiles({name:'source.png',mimeType:'image/png',buffer:png});
+    uploadDelay=1200;await page.getByLabel('上传待编辑图片',{exact:true}).setInputFiles({name:'source.png',mimeType:'image/png',buffer:png});
+    await page.waitForFunction(()=>document.querySelector('input[aria-label="上传待编辑图片"]')?.disabled===true);
+    while(!releaseUpload)await page.waitForTimeout(10);
+    await page.keyboard.press('Escape');assert.equal(await page.getByRole('dialog').count(),1,'busy upload rejects Escape instead of silently losing the request');
+    assert.equal(await page.getByRole('button',{name:'关闭弹窗',exact:true}).count(),0,'busy upload hides the close icon');
+    uploadDelay=0;releaseUpload();releaseUpload=null;
     await page.getByRole('region',{name:'图片编辑组件'}).waitFor();
     assert.equal(await page.getByRole('dialog').count(),1,'editor appears inline, not as a second modal');
     assert.equal(await page.getByRole('button',{name:'修改图片',exact:true}).count(),0);
@@ -116,6 +121,11 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
     assert.equal(await page.locator('[data-disclosure-preview] rect').getAttribute('fill'),'#F1E2D3');
     assert.equal(await page.locator('[data-disclosure-preview] text').getAttribute('fill'),'#000000');
     await badgeColorInput.fill('#111827');
+    const disclosureTextInput=page.getByLabel('人工生成标识文字',{exact:true});
+    for(const [value,valid] of [['中文AI_12-',true],['包含 空格',false],['AI@生成',false],['🙂',false]]){
+      await disclosureTextInput.fill(value);
+      assert.equal(await disclosureTextInput.evaluate(input=>input.validity.valid),valid,`native disclosure pattern: ${value}`);
+    }
     await page.getByLabel('人工生成标识文字',{exact:true}).fill('AI生成');
     failSubmission=true;
     await page.getByRole('button',{name:'保存并提交生图',exact:true}).click();
@@ -290,6 +300,7 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true);
     assert.deepEqual(errors,[]);
   } finally {
+    releaseUpload?.();
     await browser?.close();if(server)await new Promise(r=>server.close(r));
     assert.ok(resolve(root).startsWith(resolve(tmpdir())));await rm(root,{recursive:true,force:true});
   }

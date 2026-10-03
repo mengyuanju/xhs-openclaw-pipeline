@@ -108,7 +108,8 @@ async function resetContent(c, task, record, storageRoot) {
   await c.query(`DELETE FROM model_call_traces WHERE task_id=$1 AND execution_id IS DISTINCT FROM
     (SELECT execution_id FROM copy_revisions WHERE id=$2)`,[task.id,baseline.source_revision_id]);
   await c.query(`UPDATE task_executions SET status=CASE WHEN status='RUNNING' THEN 'ABANDONED' ELSE status END,
-    snapshot='{}',progress_details='{}',error=NULL,progress_message='旧标注数据已清理',content_cleared_at=clock_timestamp()
+    snapshot='{}',snapshot_prompts_hash=NULL,snapshot_knowledge_hash=NULL,snapshot_production_settings_hash=NULL,
+    progress_details='{}',error=NULL,progress_message='旧标注数据已清理',content_cleared_at=clock_timestamp()
     WHERE task_id=$1 AND id IS DISTINCT FROM (SELECT execution_id FROM copy_revisions WHERE id=$2)`,[task.id,baseline.source_revision_id]);
   await c.query(`UPDATE assets SET active=false,edit_metadata='{}',content_cleared_at=clock_timestamp()
     WHERE task_id=$1 AND NOT(id=ANY($2::bigint[])) AND content_cleared_at IS NULL`,[task.id,baseline.asset_ids]);

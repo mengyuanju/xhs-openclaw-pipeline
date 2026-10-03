@@ -477,7 +477,11 @@ export async function createQueryPackage(pool, input, rawActor) {
   });
 }
 
-const PACKAGE_SUMMARY_SQL = `
+function packageSummarySql({ paged = false } = {}) {
+  const source = paged
+    ? 'package_page AS page JOIN query_packages AS package ON package.id = page.id'
+    : 'query_packages AS package';
+  return `
   SELECT package.*,
     assignee.display_name AS assigned_to_display_name,
     assignee.role AS assigned_to_role,
@@ -499,7 +503,7 @@ const PACKAGE_SUMMARY_SQL = `
     ) AS assigned_user_count,
     COALESCE(participants.participant_count, 0) AS participant_count,
     COALESCE(participants.participant_names, ARRAY[]::varchar[]) AS participant_names
-  FROM query_packages AS package
+  FROM ${source}
   LEFT JOIN app_users AS assignee
     ON assignee.id = package.assigned_to_account_id
     AND assignee.username = package.assigned_to_username
@@ -514,6 +518,9 @@ const PACKAGE_SUMMARY_SQL = `
       AND event.assignee_account_id IS NOT NULL
   ) AS participants ON true
 `;
+}
+
+const PACKAGE_SUMMARY_SQL = packageSummarySql();
 
 async function readPackageSummary(database, packageId) {
   const result = await database.query(`${PACKAGE_SUMMARY_SQL}
@@ -664,11 +671,15 @@ export async function listQueryPackages(pool, { limit: rawLimit = 50, offset: ra
         ) AND ${ACTIVE_BLIND_PACKAGE_SQL}`,
         values: [actor.userId, actor.username],
       };
-  const result = await pool.query(`${PACKAGE_SUMMARY_SQL}
+  const result = await pool.query(`WITH package_page AS MATERIALIZED (
+    SELECT package.id FROM query_packages AS package
     ${visibility.sql}
-    GROUP BY package.id, assignee.id, participants.participant_count, participants.participant_names
     ORDER BY package.updated_at DESC, package.id DESC
     LIMIT $${visibility.values.length + 1} OFFSET $${visibility.values.length + 2}
+  )
+    ${packageSummarySql({ paged: true })}
+    GROUP BY package.id, assignee.id, participants.participant_count, participants.participant_names
+    ORDER BY package.updated_at DESC, package.id DESC
   `, [...visibility.values, limit, offset]);
   return result.rows.map(packageFrom);
 }

@@ -4,7 +4,6 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { useTextInputDialog } from '@/components/ui/text-input-dialog';
 import { apiRequest } from './api-client';
-import { notifyWorkspaceUpdated } from './workspace-updates';
 import { createRequestId } from './request-id';
 
 export function QaEscalateButton({ stage, itemId, revisionToken, disabled, onBusyChange, onCompleted }: {
@@ -31,7 +30,7 @@ export function QaEscalateButton({ stage, itemId, revisionToken, disabled, onBus
       if (mutation.current?.fingerprint !== fingerprint) mutation.current = { fingerprint, requestId: createRequestId() };
       await apiRequest(path, { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...payload, requestId: mutation.current.requestId }) });
-      draft.current = ''; notifyWorkspaceUpdated(); toast.success('已提交管理员，任务进入待二次分配。');
+      draft.current = ''; toast.success('已提交管理员，任务进入待二次分配。');
       await onCompleted();
     } catch (caught) { toast.error(caught instanceof Error ? caught.message : '提交失败，请重试。'); }
     finally { pending.current = false; setBusy(false); onBusyChange?.(false); }

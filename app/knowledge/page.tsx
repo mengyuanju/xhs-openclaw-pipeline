@@ -4,6 +4,7 @@ import { readServerSession } from '../server-session';
 import { ApiError } from '../../src/admin/http.mjs';
 import { withKnowledgeStore, listAllKnowledge } from '../../src/admin/knowledge-runtime.mjs';
 import { KnowledgeTabs } from './knowledge-tabs';
+import { SHOW_KNOWLEDGE_TYPE_SWITCHER } from './knowledge-views';
 import './knowledge.css';
 
 export const dynamic = 'force-dynamic';
@@ -50,17 +51,21 @@ export default async function KnowledgePage({
   let result: any;
   try {
     result = await withKnowledgeStore(async (store: any) => {
-      const [visualItems, copyResult, copyLabels, copyAnalysisPrompts, production] = await Promise.all([
-        listAllKnowledge(store, 'listVisualKnowledge'),
-        listCopyKnowledgePage(store, {
+      const copyOptions = {
           page: copyPage,
           pageSize: copyPageSize,
           label: copyLabel || undefined,
           query: copyQuery || undefined,
-        }),
-        store.listCopyKnowledgeLabels(), store.listCopyAnalysisPrompts(),
+      };
+      const [visualItems, copyOverview, copyAnalysisPrompts, production] = await Promise.all([
+        SHOW_KNOWLEDGE_TYPE_SWITCHER ? listAllKnowledge(store, 'listVisualKnowledge') : [],
+        store.listCopyKnowledgeOverview ? store.listCopyKnowledgeOverview(copyOptions)
+          : Promise.all([listCopyKnowledgePage(store, copyOptions), store.listCopyKnowledgeLabels()])
+            .then(([copyResult, labels]) => ({ ...copyResult, labels })),
+        store.listCopyAnalysisPrompts(),
         store.getProductionSettings(),
       ]);
+      const { labels: copyLabels, ...copyResult } = copyOverview;
       return { visualItems, copyResult, copyLabels, copyAnalysisPrompts,
         knowledgeEnabled: production.settings.knowledgeEnabled !== false, remote: Boolean(store.remote) };
     }, session);

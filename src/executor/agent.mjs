@@ -18,6 +18,7 @@ import { generateStandaloneImages, normalizeStandaloneImageSource, retryStandalo
 import { plannedForStandaloneRecovery } from '../standalone-image-recovery.mjs';
 import { findImageRecoveryRun, imageRecoveryRunIds, loadUploadedImages, readCheckpoint, saveCheckpoint } from './image-checkpoints.mjs';
 import { executorConcurrency } from './config.mjs';
+import { createExecutorSettingsReader } from './settings-cache.mjs';
 import { reprocessStandaloneImages } from '../standalone-image-generation.mjs';
 import { IMAGE_ARTIFACT_FILE } from '../image-artifacts.mjs';
 import { guardExecutionCalls, runWithExecutionSignal } from './execution-signal.mjs';
@@ -386,6 +387,7 @@ export function createExecutorAgent({
   availabilityCheck = checkModelAvailability,
   environment = process.env,
   now = Date.now,
+  settingsCacheMs = 15_000,
 }) {
   if (!controlPlane) throw new TypeError('controlPlane client is required');
   if (typeof imageWorkerEnabled !== 'boolean') throw new TypeError('imageWorkerEnabled must be a boolean');
@@ -396,6 +398,14 @@ export function createExecutorAgent({
   if (codexImageConcurrency > codexTotalConcurrency) {
     throw new RangeError('codexImageConcurrency cannot exceed codexTotalConcurrency');
   }
+  const readSettings = createExecutorSettingsReader(() => controlPlane.listSettings?.(), { ttlMs: settingsCacheMs, now });
+  const readinessControlPlane = new Proxy(controlPlane, {
+    get(target, key) {
+      if (key === 'listSettings') return readSettings;
+      const value = Reflect.get(target, key, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
   const registration = () => ({ nodeId, name: nodeName, imageWorkerEnabled,
     copyConcurrency, imageConcurrency, codexPoolId, codexTotalConcurrency, codexImageConcurrency,
     imageEditExecutorVersion: imageWorkerEnabled ? 13 : 0,
@@ -468,9 +478,14 @@ export function createExecutorAgent({
 
   async function availability(kind) {
     if (!ready) throw new Error('executor is not ready; call prepare before claiming work');
-    try { await availabilityCheck({ environment, controlPlane, kind }); }
+    try { await availabilityCheck({ environment, controlPlane: readinessControlPlane, kind }); }
     catch (error) {
-      if (!codexErrorCode(error)) throw error;
+      if (!codexErrorCode(error)) {
+        // A failed preflight has not sent a claim. It must refresh settings on
+        // retry instead of being treated as a possibly committed receipt.
+        throw Object.assign(new Error(error instanceof Error ? error.message : String(error), { cause: error }),
+          { code: error?.code, claimRequestNotSent: true });
+      }
       return { kind, status: 'PAUSED', code: codexErrorCode(error), retryAt: error.retryAt ?? null };
     }
     return null;
@@ -544,7 +559,7 @@ export function createExecutorAgent({
   return {
     async prepare() {
       const result = await readinessCheck({
-        controlPlane,
+        controlPlane: readinessControlPlane,
         nodeId,
         nodeName,
         imageWorkerEnabled,
@@ -595,6 +610,11 @@ export function createExecutorAgent({
         ? controlPlane.claimCopyBatch({ nodeId, limit, requestId })
         : controlPlane.claimImageBatch({ nodeId, limit, requestId });
     },
+    waitForWorkNotifications(cursor, { signal } = {}) {
+      if (!ready) throw new Error('executor is not ready; call prepare before waiting for work');
+      return controlPlane.waitForWorkNotifications({ nodeId, ...cursor }, { signal });
+    },
+    invalidateSettings() { readSettings.invalidate(); },
     executeClaim,
 
     runCopyOnce: () => claimAndExecute('COPY'),

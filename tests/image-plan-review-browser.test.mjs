@@ -82,6 +82,10 @@ test('browser: image plan comparison allows equivalent formatting and identifies
       if (path.endsWith('/image-capabilities')) { reply({ version: 1, reviewImagePlanEdits: true }); return; }
       if (path.endsWith('/copy-review-drafts')) { reply({ baseCopyRevisionId: 101, drafts: [] }); return; }
       if (path.endsWith('/approve-copy')) {
+        if (body.decision === 'SAVE_PLAN') {
+          task.copyRevisions[0].content.imagePlan = body.edits.imagePlan;
+          reply(task); return;
+        }
         if (body.decision !== 'APPROVE' || body.edits) { reply('Only unchanged copy approval is expected', 400); return; }
         task.state = 'COPY_QC_PENDING'; reply(task); return;
       }
@@ -166,6 +170,47 @@ test('browser: image plan comparison allows equivalent formatting and identifies
       await page.waitForFunction(() => document.activeElement?.id === 'review-plan-bullets-1');
       assert.equal(requests.filter(request => request.path.endsWith('/approve-copy')).length, 1,
         'invalid plan was rejected in the browser');
+      await context.close();
+    }
+    // Every visible layout field changes the actual saved image plan.
+    resetTask();
+    {
+      const { context, page } = await newPage();
+      assert.equal(await page.locator('#review-plan-kind-0').isDisabled(), true, 'cover page type is fixed');
+      await page.getByRole('button', { name: '下一页', exact: true }).click();
+      await page.locator('#review-plan-kind-1').click();
+      const kinds = await page.getByRole('option').allTextContents();
+      assert.ok(kinds.length >= 3);
+      await page.getByRole('option').last().click();
+      await page.getByRole('button', { name: '画面生成指令', exact: true }).click();
+      await page.locator('#review-plan-prompt-1').fill('具体画面生成指令：保留清晰文字与整理后的桌面。');
+      await page.getByRole('button', { name: /^页面排版/ }).click();
+      await page.locator('#review-plan-layout-mode-1').click();
+      await page.getByRole('option', { name: '自定义排版', exact: true }).click();
+      const choices = { '标题位置': '底部', '主体位置': '右侧', '文字区域': '左侧', '文字对齐': '居中', '留白': '宽松' };
+      for (const [label, name] of Object.entries(choices)) {
+        await page.getByRole('combobox', { name: label, exact: true }).click();
+        await page.getByRole('option', { name, exact: true }).click();
+        assert.equal(await page.getByRole('combobox', { name: label, exact: true }).textContent(), name);
+      }
+      const share = page.getByRole('slider', { name: /主体占比/ });
+      await share.focus(); await page.keyboard.press('Home'); assert.equal(await share.inputValue(), '20');
+      await page.keyboard.press('End'); assert.equal(await share.inputValue(), '90');
+      await page.getByLabel('补充布局要求', { exact: true }).fill('主体靠右，左侧留给文字。');
+      const schematic = page.getByLabel('布局意图示意，非成品预览', { exact: true });
+      assert.equal(await schematic.getAttribute('data-subject'), 'right');
+      assert.equal(await schematic.getAttribute('data-title'), 'bottom');
+      const savedPlan = page.waitForResponse(response => response.request().method() === 'POST' && response.url().endsWith('/approve-copy'));
+      await page.getByRole('button', { name: '单独保存图片规划', exact: true }).click();
+      assert.equal((await savedPlan).status(), 200);
+      const saved = requests.findLast(request => request.body?.decision === 'SAVE_PLAN').body.edits.imagePlan[1];
+      assert.equal(saved.prompt, '具体画面生成指令：保留清晰文字与整理后的桌面。');
+      assert.equal(saved.layout.mode, 'CUSTOM'); assert.equal(saved.layout.imageShare, 90);
+      assert.equal(saved.layout.direction, '主体靠右，左侧留给文字。');
+      assert.equal(saved.layout.subjectPosition, 'right'); assert.equal(saved.layout.alignment, 'center');
+      await page.locator('#review-plan-layout-mode-1').click();
+      await page.getByRole('option', { name: '自动匹配版式', exact: true }).click();
+      assert.equal(await page.getByLabel('补充布局要求', { exact: true }).count(), 0);
       await context.close();
     }
     assert.deepEqual(errors, []);

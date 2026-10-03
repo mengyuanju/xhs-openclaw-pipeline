@@ -27,6 +27,9 @@ test('personal workspace PostgreSQL: exact pending counts, planning result, rech
       await pool.query('UPDATE tasks SET current_copy_revision_id=$2 WHERE id=$1',[id,revision]);
     }
     let report=await repository.personalWorkspace(actor,{},true);
+    const compareCurrentCounts=async()=>assert.deepEqual((await repository.personalWorkspace(actor,{pageSize:'1'})).counts,
+      report.counts,'optimized current count SQL matches complete legacy report classification');
+    await compareCurrentCounts();
     assert.deepEqual(report.notices,[],'all report SQL must execute on the migrated schema');
     assert.equal(report.counts.copyInitial,3);
     assert.equal(report.counts.actionable,3);
@@ -41,6 +44,7 @@ test('personal workspace PostgreSQL: exact pending counts, planning result, rech
     await pool.query(`UPDATE tasks SET current_copy_revision_id=$2,mandatory_copy_qc=true,mandatory_copy_qc_origin='QA_RETURN',queue_entered_at=now()-interval '25 hours' WHERE id=$1`,[tasks[0],returned]);
     await pool.query("UPDATE tasks SET personal_stage_entered_at=now()-interval '25 hours' WHERE id=$1",[tasks[0]]);
     report=await repository.personalWorkspace(actor,{},true);
+    await compareCurrentCounts();
     assert.equal(report.counts.rework,1); assert.equal(report.rework.longWaiting,1);
     assert.equal(report.period.returned,0,'a legacy repair revision without a verdict is not an inspected failure'); assert.equal(report.period.copy,1);
     const waitingBefore=(await pool.query('SELECT personal_stage_entered_at FROM tasks WHERE id=$1',[tasks[0]])).rows[0].personal_stage_entered_at;
@@ -50,18 +54,22 @@ test('personal workspace PostgreSQL: exact pending counts, planning result, rech
     await pool.query(`INSERT INTO copy_image_plan_regeneration_jobs(id,request_id,task_id,copy_revision_id,requested_by_account_id,requested_by_username,copy_payload,status)
       VALUES ($1,$2,$3,$4,$5,'personal-a','{}','RUNNING')`,[job,randomUUID(),tasks[0],returned,actor.userId]);
     report=await repository.personalWorkspace(actor,{},true);
+    await compareCurrentCounts();
     assert.equal(report.rework.processing,1); assert.equal(report.counts.actionable,2);
     await pool.query("UPDATE copy_image_plan_regeneration_jobs SET status='SUCCEEDED',finished_at=now() WHERE id=$1",[job]);
     report=await repository.personalWorkspace(actor,{},true);
+    await compareCurrentCounts();
     assert.equal(report.rework.confirm,1); assert.equal(report.background.previews,1); assert.equal(report.rework.longWaiting,0);
     await pool.query(`INSERT INTO copy_approval_events(task_id,copy_revision_id,approval_mode,approved_by_account_id,approved_by_username,content_sha256)
       VALUES ($1,$2,'MANUAL',$3,'personal-a',$4)`,[tasks[0],returned,actor.userId,'a'.repeat(64)]);
     await pool.query("UPDATE tasks SET state='COPY_QC_PENDING' WHERE id=$1",[tasks[0]]);
     report=await repository.personalWorkspace(actor,{},true);
+    await compareCurrentCounts();
     assert.equal(report.counts.rework,0); assert.equal(report.counts.recheck,1); assert.equal(report.background.previews,0);
     assert.equal(report.period.reworked,1); assert.equal(report.period.reworkRounds,1);
     await pool.query("UPDATE tasks SET created_by_user_id='personal-b',assigned_to_user_id='personal-b',assigned_at=now() WHERE id=$1",[tasks[0]]);
     report=await repository.personalWorkspace(actor,{},true);
+    await compareCurrentCounts();
     assert.equal(report.counts.ALL,2); assert.equal(report.period.copy,1);
     const history=await repository.personalWorkspace(actor,{mode:'COMPLETED'});
     assert.equal(history.total,1); assert.equal(history.items[0].canOpen,false); assert.equal(history.items[0].currentCopyRevisionId,null);
@@ -84,6 +92,7 @@ test('personal workspace PostgreSQL: exact pending counts, planning result, rech
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'personal-a',$7,true,'SUPERSEDED',ARRAY['TEXT_ERROR'],'图片文字有误','BOTH',now()) RETURNING id`,[randomUUID(),freeze,imageTask,imageApproval,imageRevision,imageRun,'e'.repeat(64),actor.userId])).rows[0].id);
     await pool.query(`INSERT INTO image_sampling_events(freeze_id,sampling_item_id,action,actor_username,request_id) VALUES ($1,$2,'RETURN_SINGLE','admin',$3)`,[freeze,sample,randomUUID()]);
     report=await repository.personalWorkspace(actor,{},true);
+    await compareCurrentCounts();
     assert.deepEqual(report.notices,[]);assert.equal(report.period.returned,1);
     assert.equal(report.quality.IMAGE.samples,1);assert.equal(report.quality.IMAGE.passed,0);
     assert.equal(report.rework.both,1);
@@ -91,8 +100,30 @@ test('personal workspace PostgreSQL: exact pending counts, planning result, rech
     await pool.query(`INSERT INTO image_edit_requests(id,task_id,request_id,source_image_run_id,source_asset_id,copy_revision_id,source_sha256,target_page,operation,config,status,created_by)
       VALUES ($1,$2,$3,$4,$5,$6,$7,1,'TEXT','{}','PREVIEW_READY','personal-a')`,[randomUUID(),imageTask,randomUUID(),imageRun,asset,imageRevision,'f'.repeat(64)]);
     report=await repository.personalWorkspace(actor,{},true);
+    await compareCurrentCounts();
     assert.equal(report.rework.confirm,1);assert.equal(report.background.previews,1);
     const previews=await repository.personalWorkspace(actor,{category:'previews'});
     assert.equal(previews.total,1);assert.equal(previews.items[0].id,imageTask);
+
+    // A final rework can have its target only in the current revision JSON,
+    // without a matching historical return row. The narrow origin join must
+    // still resolve that fallback when classifying the current task.
+    const finalTask=tasks[2];
+    const finalRevision=Number((await pool.query(`INSERT INTO copy_revisions(task_id,revision,content,revision_origin,parent_revision_id)
+      VALUES ($1,2,'{"finalRework":{"target":"BOTH"}}','FINAL_REWORK',$2) RETURNING id`,[finalTask,revisions[2]])).rows[0].id);
+    await pool.query("UPDATE tasks SET current_copy_revision_id=$2,mandatory_copy_qc=true,mandatory_copy_qc_origin='FINAL_REWORK' WHERE id=$1",
+      [finalTask,finalRevision]);
+    report=await repository.personalWorkspace(actor,{},true);
+    await compareCurrentCounts();
+    assert.equal(report.rework.both,2);
+    const finalFallback=await repository.personalWorkspace(actor,{category:'bothRework',query:`#${finalTask}`});
+    assert.equal(finalFallback.total,1);assert.equal(finalFallback.items[0].personalWork.reworkType,'BOTH');
+
+    // Other accounts can retain live editing requests. An empty edit scope for
+    // this immutable assignee must stay empty even if they created that task.
+    await pool.query("UPDATE tasks SET assigned_to_user_id='personal-b',assigned_at=now() WHERE id=$1",[imageTask]);
+    report=await repository.personalWorkspace(actor,{},true);
+    await compareCurrentCounts();
+    assert.equal(report.background.previews,0);
   } finally { await repository.pool.end(); await database.stop(); }
 });

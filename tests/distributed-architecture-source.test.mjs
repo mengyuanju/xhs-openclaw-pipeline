@@ -1,3 +1,5 @@
+import { readRepositorySource } from '../server/tests/helpers/repository-source.mjs';
+import { readControlPlaneHttpSource } from './control-plane-http-source.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
@@ -29,7 +31,7 @@ test('distributed mode routes copy creation and global data through the control 
 test('image worker polling is opt-in and model edits share the executor image lane', async () => {
   const [executor, repository, readme,centerCli] = await Promise.all([
     source('src/executor/agent.mjs'),
-    source('server/src/postgres-repository.mjs'),
+    readRepositorySource(),
     source('README.md'),
     source('server/src/cli.mjs'),
   ]);
@@ -56,9 +58,9 @@ test('image worker polling is opt-in and model edits share the executor image la
 
 test('review image-plan regeneration runs on the copy executor instead of the center', async () => {
   const [center, executor, repository, recovery, migration] = await Promise.all([
-    source('server/src/http-server.mjs'),
+    readControlPlaneHttpSource(),
     source('src/executor/agent.mjs'),
-    source('server/src/postgres-repository.mjs'),
+    readRepositorySource(),
     source('server/src/execution-recovery.mjs'),
     source('server/migrations/0068_distributed_copy_image_plan_regeneration.sql'),
   ]);
@@ -77,7 +79,7 @@ test('review image-plan regeneration runs on the copy executor instead of the ce
 test('remote control plane is an independently installable Koa package', async () => {
   const [serverPackageSource, serverSource, rootPackageSource] = await Promise.all([
     source('server/package.json'),
-    source('server/src/http-server.mjs'),
+    readControlPlaneHttpSource(),
     source('package.json'),
   ]);
   const serverPackage = JSON.parse(serverPackageSource);

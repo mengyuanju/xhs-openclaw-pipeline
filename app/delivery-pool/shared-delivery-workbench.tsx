@@ -163,7 +163,7 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
     const refresh = () => { if (document.visibilityState === 'visible' && !busy) { void load(true); if (showJobs) void loadJobs(); } };
     const tick = () => { refresh(); timer = setTimeout(tick, failures.current ? 60_000 : 15_000); };
     timer = setTimeout(tick, 15_000);
-    const unsubscribe = subscribeWorkspaceUpdates(refresh);
+    const unsubscribe = subscribeWorkspaceUpdates(refresh, {scopes:['delivery']});
     window.addEventListener('focus', refresh); document.addEventListener('visibilitychange', refresh);
     return () => { clearTimeout(timer); unsubscribe(); window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', refresh); };
   }, [initialized, load, loadJobs, showJobs, busy]);

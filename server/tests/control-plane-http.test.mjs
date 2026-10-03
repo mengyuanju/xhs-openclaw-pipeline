@@ -29,6 +29,7 @@ async function withServer(repository, action, {
     return await action(`http://127.0.0.1:${address.port}`);
   } finally {
     await new Promise((resolve) => server.close(resolve));
+    await app.context.disposeControlPlaneResources();
   }
 }
 
@@ -730,6 +731,8 @@ test('task listing forwards server-side pagination, states, Query and package-na
       cursor: undefined,
       lastPage: false,
       includeTotal: true,
+      refreshTotal: false,
+      countCacheIdentity: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 },
     }],
     ['counts', { nodeId: 'node-a' }],
   ]);
@@ -1069,6 +1072,7 @@ test('administrator batch archive returns one outer ZIP for selected deliverable
   const storageRoot = await mkdtemp(join(tmpdir(), 'xhs-task-batch-archive-http-'));
   const tasks = new Map();
   const assets = new Map();
+  const narrowReads = [];
   try {
     for (const id of [12, 13]) {
       const storagePath = join(storageRoot, 'tasks', String(id), 'image-runs', `run-${id}`, 'image.png');
@@ -1083,7 +1087,13 @@ test('administrator batch archive returns one outer ZIP for selected deliverable
       assets.set(id, { id, taskId: id, mediaType: 'image/png', originalName: '图片.png', storagePath });
     }
     await withServer({
-      getTask: async (id) => tasks.get(Number(id)),
+      getTask: async () => assert.fail('batch archive must avoid loading complete task history'),
+      getTaskForDelivery: async (id) => {
+        narrowReads.push(Number(id));
+        return { task: tasks.get(Number(id)), binding: {
+          taskId: Number(id), copyRevisionId: 1, imageRunId: `run-${id}`,
+        } };
+      },
       assertTaskReadyForDelivery: async (id) => ({
         taskId: Number(id), copyRevisionId: 1, imageRunId: `run-${id}`,
       }),
@@ -1104,6 +1114,7 @@ test('administrator batch archive returns one outer ZIP for selected deliverable
       ]);
       assert.equal(await zip.file('未归属甲方批次/任务-12-资源包/01-图片.png').async('string'), 'image-12');
     }, { storageRoot });
+    assert.deepEqual(narrowReads.sort((left, right) => left - right), [12, 13]);
   } finally {
     await rm(storageRoot, { recursive: true, force: true });
   }
@@ -1175,6 +1186,87 @@ test('batch actions stop and return 401 when the actor becomes stale', async () 
     });
   });
   assert.deepEqual(calls, [['read', 1], ['retry', 1]]);
+});
+
+test('administrator batch discard accepts ordinary pending copy review and queued tasks only', async () => {
+  const calls = [];
+  const tasks = new Map([
+    [1, { id: 1, state: 'COPY_REVIEW_PENDING', mandatoryCopyQc: false }],
+    [2, { id: 2, state: 'COPY_QUEUED' }],
+    [3, { id: 3, state: 'IMAGE_QUEUED' }],
+    [4, { id: 4, state: 'COPY_QC_PENDING' }],
+    [5, { id: 5, state: 'COPY_REVIEW_PENDING', mandatoryCopyQc: true, mandatoryCopyQcOrigin: 'QA_RETURN' }],
+    [6, { id: 6, state: 'COPY_REVIEW_PENDING', copyQaReworkPending: true }],
+    [7, { id: 7, state: 'COPY_REVIEW_PENDING', mandatoryCopyQc: false, mandatoryCopyQcOrigin: 'QA_RETURN' }],
+    [8, { id: 8, state: 'COPY_RUNNING' }],
+  ]);
+  await withServer({
+    getTaskActionSummary: async (taskId) => tasks.get(taskId),
+    cancelTask: async (...args) => { calls.push(args); },
+  }, async (root) => {
+    const response = await fetch(`${root}/v1/tasks/batch-actions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'DISCARD', taskIds: [...tasks.keys()] }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual((await response.json()).data, {
+      action: 'DISCARD', succeeded: [1, 2, 3],
+      failed: [4, 5, 6, 7, 8].map((id) => ({
+        id, code: 'INVALID_TASK_STATE', message: '仅排队或普通待文案审核任务可批量废弃',
+      })),
+    });
+  });
+  assert.deepEqual(calls, [1, 2, 3].map((id) => [id, {
+    adminDiscardOnly: true,
+    actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 },
+  }]));
+});
+
+test('administrator batch discard reports a conflict when eligible work changes before locking', async () => {
+  await withServer({
+    getTaskActionSummary: async (taskId) => ({ id: taskId, state: 'COPY_REVIEW_PENDING' }),
+    cancelTask: async (taskId, options) => {
+      assert.equal(options.adminDiscardOnly, true);
+      if (taskId === 1) throw new ControlPlaneConflictError('INVALID_TASK_STATE', 'task state changed');
+    },
+  }, async (root) => {
+    const response = await fetch(`${root}/v1/tasks/batch-actions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'DISCARD', taskIds: [1, 2] }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual((await response.json()).data, {
+      action: 'DISCARD', succeeded: [2],
+      failed: [{ id: 1, code: 'INVALID_TASK_STATE', message: 'task state changed' }],
+    });
+  });
+});
+
+test('batch discard rejects non-administrators before reading or mutating tasks', async () => {
+  const roles = { reviewer: 'REVIEWER', user: 'USER' };
+  const ids = { reviewer: 2, user: 3 };
+  let taskReads = 0;
+  let cancellations = 0;
+  await withServer({
+    getUserByUsername: async (username) => ({
+      id: ids[username], username, role: roles[username], status: 'ACTIVE', credentialVersion: 1,
+    }),
+    getTaskActionSummary: async () => { taskReads++; return { state: 'COPY_REVIEW_PENDING' }; },
+    cancelTask: async () => { cancellations++; },
+  }, async (root) => {
+    for (const [username, role] of Object.entries(roles)) {
+      const response = await fetch(`${root}/v1/tasks/batch-actions`, {
+        method: 'POST', headers: {
+          'content-type': 'application/json', 'X-Actor-User-Id': String(ids[username]),
+          'X-Actor-Username': username, 'X-Actor-Role': role, 'X-Actor-Credential-Version': '1',
+        }, body: JSON.stringify({ action: 'DISCARD', taskIds: [1] }),
+      });
+      assert.equal(response.status, 403);
+      assert.equal((await response.json()).error.code, 'FORBIDDEN');
+    }
+  }, { enforceUserAuth: true });
+  assert.equal(taskReads, 0);
+  assert.equal(cancellations, 0);
 });
 
 test('administrator batch permanent deletion removes eligible task storage and reports skipped tasks', async () => {
@@ -1271,7 +1363,7 @@ test('an in-flight batch archive is rejected when the administrator account is r
   }
 });
 
-test('only administrators can directly pass one pending copy QA task', async () => {
+test('retired direct copy QA approval cannot bypass V2 inspection for any role', async () => {
   const calls = [];
   const users = {
     admin: { id: 1, username: 'admin', role: 'ADMIN', status: 'ACTIVE', credentialVersion: 1 },
@@ -1303,20 +1395,16 @@ test('only administrators can directly pass one pending copy QA task', async () 
       const denied = await fetch(`${root}/v1/tasks/7/admin-direct-copy-qa`, {
         method: 'POST', headers: headers(username), body: JSON.stringify(input),
       });
-      assert.equal(denied.status, 403);
-      assert.equal((await denied.json()).error.code, 'FORBIDDEN');
+      assert.equal(denied.status, 410);
+      assert.equal((await denied.json()).error.code, 'LEGACY_COPY_QA_RETIRED');
     }
     const allowed = await fetch(`${root}/v1/tasks/7/admin-direct-copy-qa`, {
       method: 'POST', headers: headers('admin'), body: JSON.stringify(input),
     });
-    assert.equal(allowed.status, 200);
-    assert.equal((await allowed.json()).data.state, 'IMAGE_QUEUED');
+    assert.equal(allowed.status, 410);
+    assert.equal((await allowed.json()).error.code, 'LEGACY_COPY_QA_RETIRED');
   }, { enforceUserAuth: true });
-  assert.deepEqual(calls, [{
-    taskId: '7',
-    input,
-    options: { actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 } },
-  }]);
+  assert.deepEqual(calls, [], 'retired approval must never call the repository');
 });
 
 test('task listing forwards cursor navigation and rejects an invalid tail-page flag', async () => {
@@ -1360,7 +1448,7 @@ test('delivery listing forwards an exact package name and returns package facets
   });
 });
 
-test('copy QA listing forwards package-name and personnel search through the administrator route', async () => {
+test('retired copy QA listing cannot read legacy items', async () => {
   let received;
   await withServer({
     listCopyQaItems: async (options) => {
@@ -1369,11 +1457,38 @@ test('copy QA listing forwards package-name and personnel search through the adm
     },
   }, async (root) => {
     const response = await fetch(`${root}/v1/copy-qa/items?status=PENDING&taskId=69&queryPackageName=%E4%B9%9D%E6%9C%88%E9%80%89%E9%A2%98&personName=%E8%B4%A8%E6%A3%80%E7%94%B2&limit=20&offset=0`);
+    assert.equal(response.status, 410);
+    assert.equal((await response.json()).error.code, 'LEGACY_COPY_QA_RETIRED');
+  });
+  assert.equal(received, undefined);
+});
+
+test('V2 copy QA candidates bind the administrator account filter and return current approver summaries', async () => {
+  const queries = [];
+  const user = { id: 1, username: 'admin', role: 'ADMIN', status: 'ACTIVE', credentialVersion: 1 };
+  await withServer({
+    getUserByUsername: async () => user,
+    pool: { async query(sql, values = []) {
+      queries.push({ sql, values });
+      if (sql.includes('SELECT * FROM app_users')) return { rows: [{ ...user, credential_version: 1 }] };
+      if (sql.includes('FROM app_users ORDER BY')) return { rows: [{ id: 41, username: 'reviewer', display_name: '质检甲', status: 'ACTIVE' }] };
+      if (sql.includes('count(*) AS pending_count')) return { rows: [{ account_id: 41, pending_count: '1' }] };
+      if (sql.startsWith('SELECT task.id AS task_id')) return { rows: [{ task_id: 69, query: '待成批稿', account_id: 41,
+        username: 'reviewer', copy_revision_id: 901, approved_at: '2026-10-02T00:00:00Z' }] };
+      throw new Error(`Unexpected SQL: ${sql}`);
+    } },
+  }, async root => {
+    const response = await fetch(`${root}/v2/copy-qa/candidates?accountId=41`, { headers: {
+      'X-Actor-User-Id': '1', 'X-Actor-Username': 'admin', 'X-Actor-Role': 'ADMIN', 'X-Actor-Credential-Version': '1',
+    } });
     assert.equal(response.status, 200);
-  });
-  assert.deepEqual(received, {
-    status: 'PENDING', taskId: '69', queryPackageName: '九月选题', personName: '质检甲', limit: '20', offset: '0',
-  });
+    const data = (await response.json()).data;
+    assert.equal(data.users[0].pendingCount, 1);
+    assert.equal(data.tasks[0].approverAccountId, 41);
+    assert.equal(data.tasks[0].copyRevisionId, 901);
+    assert.equal(data.truncated, false);
+  }, { enforceUserAuth: true });
+  assert.deepEqual(queries.find(({ sql }) => sql.startsWith('SELECT task.id AS task_id')).values, [41]);
 });
 
 test('image QA listing forwards personnel search through the administrator route', async () => {

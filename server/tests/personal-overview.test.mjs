@@ -13,12 +13,18 @@ function overviewFake({ ready = 3, verdicts = [], failure = '' } = {}) {
     calls.push({ sql, values });
     if (failure && sql.includes(failure)) throw new Error('overview facts unavailable');
     if (sql.startsWith('SELECT count(DISTINCT task_id)')) return { rows: [{ ready: String(ready) }] };
+    if(sql.includes('SELECT stage,count(*) FILTER(WHERE outcome')) {
+      const selected=verdicts.filter(row=>row.account_id===values[0] && row.action==='PASS' && !row.data?.exclusion
+        && Date.parse(row.occurred_at)>=Date.parse(values[1]) && Date.parse(row.occurred_at)<Date.parse(values[2]));
+      return {rows:['COPY','IMAGE'].map(stage=>({stage,passed:selected.filter(row=>row.stage===stage).length}))};
+    }
     if (sql.startsWith('SELECT r.*,EXISTS')) return { rows: [{ id: 1, task_id: 20, stage: 'COPY',
       operator_account_id: actor.userId, first_qa_at: '2026-09-29T02:00:00Z',
       current_bucket: 'FIRST_PASS', data: { outcome: 'PASS' } }] };
     if (sql.startsWith('WITH decisions AS')) return { rows: verdicts.filter(row => row.account_id === values[2]
       && Date.parse(row.occurred_at) >= Date.parse(values[0]) && Date.parse(row.occurred_at) < Date.parse(values[1])) };
-    if (['BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY', 'COMMIT', 'ROLLBACK'].includes(sql)) return { rows: [] };
+    if (['BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY', 'COMMIT', 'ROLLBACK'].includes(sql)
+      || sql.startsWith('SET LOCAL')) return { rows: [] };
     throw new Error(`Unexpected overview query: ${sql.slice(0, 80)}`);
   } };
   return { pool: { async connect() { return client; } }, calls, get released() { return released; } };
@@ -44,8 +50,8 @@ test('top overview stays on Beijing today and counts actual annotator pass verdi
   assert.equal(db.calls[0].sql, 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
   assert.equal(db.calls.at(-1).sql, 'COMMIT');
   assert.equal(db.released, true);
-  assert.deepEqual(db.calls.find(call => call.sql.startsWith('WITH decisions AS')).values.slice(0, 3),
-    ['2026-09-28T16:00:00.000Z', '2026-09-29T16:00:00.000Z', actor.userId]);
+  assert.deepEqual(db.calls.find(call => call.sql.includes('personal_annotation')).values.slice(0, 3),
+    [actor.userId,'2026-09-28T16:00:00.000Z', '2026-09-29T16:00:00.000Z']);
   assert.doesNotMatch(JSON.stringify(report), /taskId|query|username|COPY_REVIEW_PENDING/u);
 });
 
@@ -82,7 +88,7 @@ test('refreshing across Beijing midnight resets pass totals without resetting th
 
 test('overview failures roll back and release instead of presenting unavailable counts as zero', async t => {
   t.mock.method(Date, 'now', () => now);
-  for (const failure of ['SELECT count(DISTINCT task_id)', 'WITH decisions AS']) {
+  for (const failure of ['SELECT count(DISTINCT task_id)', 'personal_annotation']) {
     const db = overviewFake({ failure });
     await assert.rejects(readPersonalWorkspace(db.pool, actor, { section: 'overview' }, { report: true }),
       /overview facts unavailable/u);

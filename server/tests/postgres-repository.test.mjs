@@ -472,7 +472,7 @@ test('task pages filter multiple states and Query text while returning a total',
 
   assert.equal(page.total, 31);
   assert.equal(page.items[0].state, 'COPY_FAILED');
-  const pageQuery = queries.find((item) => item.sql.includes('SELECT * FROM tasks'));
+  const pageQuery = queries.find((item) => item.sql.includes('FROM tasks') && !item.sql.includes('COUNT(*) AS total'));
   assert.deepEqual(pageQuery.values, [
     ['COPY_QUEUED', 'COPY_FAILED'],
     'node-b',
@@ -502,9 +502,10 @@ test('task pages can de-duplicate normalized Query values before pagination', as
   const page = await repository.listTasks({ deduplicateQuery: true, includeTotal: true });
   assert.equal(page.total, 3);
   const pageQuery = queries.find((item) => item.sql.includes('SELECT DISTINCT ON'));
-  assert.match(pageQuery.sql, /DISTINCT ON \(lower\(regexp_replace\(btrim\(query\), '\\s\+', ' ', 'g'\)\)\)/u);
+  assert.match(pageQuery.sql, /DISTINCT ON \(query_identity\)/u);
+  assert.match(pageQuery.sql, /lower\(regexp_replace\(btrim\(query\), '\\s\+', ' ', 'g'\)\) AS query_identity/u);
   assert.match(pageQuery.sql, /ORDER BY lower\(regexp_replace\(btrim\(query\), '\\s\+', ' ', 'g'\)\), created_at DESC, id DESC/u);
-  assert.match(queries.find((item) => item.sql.includes('COUNT(DISTINCT')).sql, /COUNT\(DISTINCT lower\(regexp_replace/u);
+  assert.match(queries.find((item) => item.sql.includes('COUNT(DISTINCT')).sql, /COUNT\(DISTINCT query_identity\)/u);
   await assert.rejects(repository.listTasks({ deduplicateQuery: 'true' }), /deduplicateQuery/u);
 });
 
@@ -928,11 +929,10 @@ test('copy approval submits reviewed copy to the image queue', async () => {
   }, copyReviewActor);
 
   assert.equal(approved.state, 'IMAGE_QUEUED');
-  const taskUpdate = queries.find((item) => item.sql.includes('UPDATE tasks SET') && item.values?.[1] === 'IMAGE_QUEUED');
+  const taskUpdate = queries.find((item) => item.sql.includes("UPDATE tasks SET state='IMAGE_QUEUED'"));
   assert.ok(taskUpdate);
-  assert.match(taskUpdate.sql, /state = \$2/u);
-  assert.match(taskUpdate.sql, /ai_disclosure_enabled = \$4/u);
-  assert.equal(taskUpdate.values[3], false);
+  assert.match(taskUpdate.sql, /ai_disclosure_enabled=\$3/u);
+  assert.deepEqual(taskUpdate.values, [41, 12, false]);
 });
 
 test('non-admin approval without edits creates an automatic-layout revision instead of preserving manual layouts', async () => {
@@ -1065,7 +1065,7 @@ test('task pages partially match a normalized package name and expose its source
 
   assert.equal(page.total, 1);
   assert.equal(page.items[0].sourceQueryPackageName, '九月 秋季选题');
-  const pageQuery = queries.find((item) => item.sql.includes('SELECT * FROM tasks'));
+  const pageQuery = queries.find((item) => item.sql.includes('FROM tasks') && !item.sql.includes('COUNT(*) AS total'));
   const countQuery = queries.find((item) => item.sql.includes('COUNT(*) AS total'));
   assert.deepEqual(pageQuery.values, ['九月 秋季', 21, 20]);
   assert.deepEqual(countQuery.values, ['九月 秋季']);
@@ -1334,6 +1334,136 @@ test('bulk queue cancellation rechecks queued state inside the task lock', async
   await assert.rejects(repository.cancelTask(41, { queuedOnly: true }), { code: 'INVALID_TASK_STATE' });
   assert.equal(queries.some((sql) => sql.includes('UPDATE tasks SET')), false);
   assert.equal(queries.at(-1), 'ROLLBACK');
+});
+
+test('administrator bulk discard preserves copy history while cancelling ordinary pending review or queued work', async (t) => {
+  for (const state of ['COPY_REVIEW_PENDING', 'COPY_QUEUED', 'IMAGE_QUEUED']) {
+    await t.test(state, async () => {
+      const queries = [];
+      const client = {
+        async query(sql, values) {
+          const source = String(sql);
+          queries.push({ sql: source, values });
+          if (source.includes('SELECT * FROM app_users')) return { rows: [{
+            id: 1, username: 'admin', role: 'ADMIN', status: 'ACTIVE', credential_version: 1,
+          }] };
+          if (source === 'SELECT * FROM tasks WHERE id = $1 FOR UPDATE') {
+            return { rows: [taskRow({ state, current_copy_revision_id: 12 })] };
+          }
+          if (source.includes('UPDATE tasks SET')) return { rows: [taskRow({
+            state: 'CANCELLED', cancelled_from_state: state, current_copy_revision_id: 12,
+          })] };
+          return { rows: [] };
+        },
+        release() {},
+      };
+      const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
+      const cancelled = await repository.cancelTask(41, {
+        adminDiscardOnly: true, actor: executorManagementActor,
+      });
+      assert.equal(cancelled.state, 'CANCELLED');
+      assert.equal(cancelled.cancelledFromState, state);
+      assert.equal(cancelled.currentCopyRevisionId, 12);
+      assert.ok(queries.some(({ sql }) => sql.includes('cancelled_from_state = state')));
+      assert.equal(queries.some(({ sql }) => sql.includes('DELETE FROM')), false);
+      assert.equal(queries.at(-1).sql, 'COMMIT');
+    });
+  }
+});
+
+test('administrator bulk discard validates the role and option before accessing the database', async () => {
+  let connections = 0;
+  const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => {
+    connections++;
+    throw new Error('must not connect');
+  } } });
+  for (const actor of [null, { userId: 2, username: 'alice', role: 'USER', credentialVersion: 1 },
+    { userId: 3, username: 'reviewer', role: 'REVIEWER', credentialVersion: 1 }]) {
+    await assert.rejects(repository.cancelTask(41, { adminDiscardOnly: true, actor }), { code: 'FORBIDDEN' });
+  }
+  await assert.rejects(repository.cancelTask(41, {
+    adminDiscardOnly: 'true', actor: executorManagementActor,
+  }), /adminDiscardOnly must be a boolean/u);
+  assert.equal(connections, 0);
+});
+
+test('administrator bulk discard rechecks locked state and protects returned or frozen copy work', async (t) => {
+  const cases = [
+    { state: 'COPY_RUNNING', code: 'INVALID_TASK_STATE' },
+    { state: 'IMAGE_RUNNING', code: 'INVALID_TASK_STATE' },
+    { state: 'CANCELLED', code: 'INVALID_TASK_STATE' },
+    { state: 'COPY_QC_PENDING', code: 'COPY_QC_CANCEL_FORBIDDEN' },
+    { state: 'COPY_REVIEW_PENDING', mandatory_copy_qc: true, mandatory_copy_qc_origin: 'QA_RETURN',
+      code: 'RETURNED_COPY_DISCARD_REQUIRES_DISPOSITION' },
+    { state: 'COPY_REVIEW_PENDING', mandatory_copy_qc: false, mandatory_copy_qc_origin: 'QA_RETURN',
+      code: 'INVALID_TASK_STATE' },
+    { state: 'COPY_REVIEW_PENDING', copy_qa_rework_pending: true, code: 'INVALID_TASK_STATE' },
+  ];
+  for (const [index, { code, ...row }] of cases.entries()) {
+    await t.test(`${index}: ${row.state}`, async () => {
+      const queries = [];
+      const client = {
+        async query(sql) {
+          const source = String(sql);
+          queries.push(source);
+          if (source.includes('SELECT * FROM app_users')) return { rows: [{
+            id: 1, username: 'admin', role: 'ADMIN', status: 'ACTIVE', credential_version: 1,
+          }] };
+          if (source === 'SELECT * FROM tasks WHERE id = $1 FOR UPDATE') return { rows: [taskRow(row)] };
+          return { rows: [] };
+        },
+        release() {},
+      };
+      const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
+      await assert.rejects(repository.cancelTask(41, {
+        adminDiscardOnly: true, actor: executorManagementActor,
+      }), { code });
+      assert.equal(queries.some((sql) => /UPDATE\s+(?:tasks|task_executions|image_runs|delivery_entries)/u.test(sql)), false);
+      assert.equal(queries.at(-1), 'ROLLBACK');
+    });
+  }
+});
+
+test('administrator bulk discard revalidates the current actor before locking work', async () => {
+  const queries = [];
+  const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => ({
+    async query(sql) { queries.push(String(sql)); return { rows: [] }; }, release() {},
+  }) } });
+  await assert.rejects(repository.cancelTask(41, {
+    adminDiscardOnly: true, actor: executorManagementActor,
+  }), { code: 'SESSION_STALE' });
+  assert.equal(queries.some((sql) => sql.includes('SELECT * FROM tasks')), false);
+  assert.equal(queries.at(-1), 'ROLLBACK');
+});
+
+test('administrator bulk discard rejects a running image-plan regeneration before any task mutation', async () => {
+  const queries = [];
+  const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => ({
+    async query(sql, values) {
+      const source = String(sql);
+      queries.push({ sql: source, values });
+      if (source.includes('SELECT * FROM app_users')) return { rows: [{
+        id: 1, username: 'admin', role: 'ADMIN', status: 'ACTIVE', credential_version: 1,
+      }] };
+      if (source === 'SELECT * FROM tasks WHERE id = $1 FOR UPDATE') {
+        return { rows: [taskRow({ state: 'COPY_REVIEW_PENDING', current_execution_id: null })] };
+      }
+      if (source.includes('FROM copy_image_plan_regeneration_jobs')) return { rows: [{ id: 'running-plan' }] };
+      return { rows: [] };
+    },
+    release() {},
+  }) } });
+  await assert.rejects(repository.cancelTask(41, {
+    adminDiscardOnly: true, actor: executorManagementActor,
+  }), { code: 'TASK_EXECUTION_ACTIVE', message: '图片规划正在生成，请等待完成后再废弃' });
+  const planQuery = queries.find(({ sql }) => sql.includes('FROM copy_image_plan_regeneration_jobs'));
+  assert.deepEqual(planQuery.values, [41]);
+  assert.match(planQuery.sql, /status = 'RUNNING'/u);
+  assert.match(planQuery.sql, /FOR UPDATE/u);
+  assert.ok(queries.findIndex(({ sql }) => sql === 'SELECT * FROM tasks WHERE id = $1 FOR UPDATE')
+    < queries.indexOf(planQuery));
+  assert.equal(queries.some(({ sql }) => /UPDATE\s+(?:tasks|task_executions|image_runs|delivery_entries)/u.test(sql)), false);
+  assert.equal(queries.at(-1).sql, 'ROLLBACK');
 });
 
 test('a cancelled queued task returns to its original queue exactly once', async () => {

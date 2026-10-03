@@ -4,7 +4,7 @@ import test from 'node:test';
 import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 import { hashUserPassword } from '../src/user-auth.mjs';
 
-test('batch permanent deletion closes original production batches after every task row is detached', async () => {
+test('batch permanent deletion detaches all task rows without reviving retired legacy copy freezes', async () => {
   const passwordHash = await hashUserPassword('delete-secret');
   const calls = [];
   const deleted = [];
@@ -82,10 +82,11 @@ test('batch permanent deletion closes original production batches after every ta
 
   assert.deepEqual(result, { succeeded: [41, 42, 43], failed: [] });
   assert.deepEqual(deleted, [41, 42, 43]);
-  assert.deepEqual(closedBatches, [60, 70], 'original production batches close once in numeric order');
+  assert.deepEqual(closedBatches, [], 'copy QA V2 never closes or redraws legacy production-batch sampling');
   const firstBatchLock = calls.findIndex(({ sql }) => sql === 'SELECT * FROM production_batches WHERE id = $1 FOR UPDATE');
   const lastDelete = calls.findLastIndex(({ sql }) => sql === 'DELETE FROM tasks WHERE id = $1');
-  assert.ok(firstBatchLock > lastDelete, 'all task deletions complete before any batch closure is evaluated');
+  assert.equal(firstBatchLock, -1, 'permanent deletion must not lock legacy sampling batches');
+  assert.ok(lastDelete > 0);
   assert.equal(calls.some(({ sql }) => sql.startsWith('INSERT INTO copy_sampling_freezes')), false,
     'an empty live population ends the batch without manufacturing a QA freeze');
   assert.equal(calls.at(-1).sql, 'COMMIT');

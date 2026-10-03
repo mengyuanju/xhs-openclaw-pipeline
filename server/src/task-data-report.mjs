@@ -1,5 +1,6 @@
 import { ControlPlaneAuthorizationError } from './domain.mjs';
 import { readTaskActivityOverview } from './task-activity-overview.mjs';
+import { readCachedReportAggregate, runLimitedReportExport, readReportFactVersion, TASK_REPORT_SOURCES } from './report-query-cache.mjs';
 
 const TIME_FIELDS = new Set([
   'FIRST_MANUAL_COPY_ASSIGNMENT', 'FIRST_COPY_ASSIGNMENT', 'FIRST_COPY_REVIEW_ACTION', 'CREATED_AT',
@@ -614,7 +615,12 @@ export async function readTaskDataReport(pool, actor, input = {}, { now = new Da
   try {
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
     await client.query(exportAll ? "SET LOCAL statement_timeout='60s'" : "SET LOCAL statement_timeout='20s'");
-    const asOf = iso((await client.query('SELECT clock_timestamp() AS at')).rows[0].at);
+    const snapshot = (await client.query('SELECT clock_timestamp() AS at')).rows[0];
+    const snapshotVersion = await readReportFactVersion(client,TASK_REPORT_SOURCES);
+    let asOf = iso(snapshot.at);
+    const { page, pageSize, sort, order, ...aggregateFilters } = query;
+    const aggregates = await readCachedReportAggregate(pool, 'task-data', actor, aggregateFilters,
+      snapshotVersion, async () => {
     const poolOverview = await readTaskPoolOverview(client, asOf);
     const delivery = await readTaskDeliveryOverview(client,query);
     const releases = await readTaskImageReleaseOverview(client,query);
@@ -707,6 +713,10 @@ export async function readTaskDataReport(pool, actor, input = {}, { now = new Da
         (SELECT count(*)::integer FROM filtered f WHERE NOT EXISTS(SELECT 1 FROM task_assignment_events e
           WHERE e.task_id=f.id AND e.source='MANUAL' AND e.assignee_user_id IS NOT NULL)) AS missing_first_manual_assignment_count
       FROM filtered`, filter.params)).rows[0];
+    return { poolOverview, overview, activityOverview, activityPeople, summaryRows, asOf };
+    });
+    const { poolOverview, overview, activityOverview, activityPeople, summaryRows } = aggregates;
+    asOf = aggregates.asOf;
     if (exportAll && Number(summaryRows.total) > 10_000) {
       throw new RangeError('导出任务超过 10,000 条，请缩小时间区间或增加筛选条件');
     }
@@ -912,16 +922,87 @@ function csvValue(value) {
   return `"${safe.replaceAll('"', '""')}"`;
 }
 
-export async function exportTaskDataReportCsv(pool, actor, input = {}) {
-  const report = await readTaskDataReport(pool, actor, input, { exportAll: true });
-  const lines = [CSV_COLUMNS.map(([key, label]) => csvValue(
-    CSV_DATE_COLUMNS.has(key) ? `${label}（北京时间）` : label)).join(',')];
-  for (const item of report.items) lines.push(CSV_COLUMNS.map(([key]) => {
-    const value = CSV_DATE_COLUMNS.has(key) && item[key]
+function taskReportCsvHeader() {
+  return CSV_COLUMNS.map(([key,label])=>csvValue(CSV_DATE_COLUMNS.has(key)
+    ? `${label}（北京时间）` : label)).join(',');
+}
+
+function taskReportCsvLine(item) {
+  return CSV_COLUMNS.map(([key])=>{
+    const value=CSV_DATE_COLUMNS.has(key) && item[key]
       ? BEIJING_CSV_TIME.format(new Date(item[key]))
-      : key.endsWith('ReleaseMode') ? CSV_RELEASE_MODE_LABELS[item[key]] ?? item[key]
-        : item[key];
+      : key.endsWith('ReleaseMode') ? CSV_RELEASE_MODE_LABELS[item[key]] ?? item[key] : item[key];
     return csvValue(value);
-  }).join(','));
-  return `\uFEFF${lines.join('\r\n')}\r\n`;
+  }).join(',');
+}
+
+// The async export worker supplies its own small pool. A server-side cursor
+// keeps memory proportional to one batch, regardless of the report's total.
+export async function* streamTaskDataReportCsv(pool,actor,input={},{signal}={}) {
+  signal?.throwIfAborted();
+  assertAdmin(actor);
+  const query=normalizeTaskDataReportQuery({...input,page:1,pageSize:200});
+  const filter=buildTaskDataReportFilter(query);
+  const sortSql=query.sort==='TASK_ID' ? 't.id' : TIME_SQL[query.sort];
+  const client=await pool.connect();
+  let transaction=false;
+  try {
+    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    transaction=true;
+    await client.query("SET LOCAL statement_timeout='60s'");
+    await client.query("SET LOCAL idle_in_transaction_session_timeout='60s'");
+    await client.query('SELECT clock_timestamp() AS at');
+    await client.query(`DECLARE task_report_export NO SCROLL CURSOR FOR
+      SELECT t.id FROM tasks t WHERE ${filter.sql}
+      ORDER BY ${sortSql} ${query.order} NULLS LAST,t.id ${query.order}`,filter.params);
+    yield {csv:`\uFEFF${taskReportCsvHeader()}\r\n`,rows:0};
+    while(true) {
+      signal?.throwIfAborted();
+      const ids=(await client.query('FETCH FORWARD 250 FROM task_report_export')).rows.map(row=>Number(row.id));
+      signal?.throwIfAborted();
+      if(!ids.length)break;
+      const items=await readDetailRows(client,ids);
+      signal?.throwIfAborted();
+      yield {csv:`${items.map(taskReportCsvLine).join('\r\n')}\r\n`,rows:items.length};
+    }
+    await client.query('CLOSE task_report_export');
+    await client.query('COMMIT');
+    transaction=false;
+  } finally {
+    // for-await cancellation also reaches this path; no idle transaction or
+    // database connection survives an aborted download/job.
+    if(transaction)await client.query('ROLLBACK').catch(()=>{});
+    client.release();
+  }
+}
+
+export async function exportTaskDataReportCsv(pool, actor, input = {}) {
+  assertAdmin(actor);
+  return runLimitedReportExport(pool, async () => {
+  const query = normalizeTaskDataReportQuery({ ...input, page:1, pageSize:200 });
+  const filter = buildTaskDataReportFilter(query);
+  const sortSql = query.sort === 'TASK_ID' ? 't.id' : TIME_SQL[query.sort];
+  const lines = [taskReportCsvHeader()];
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    await client.query("SET LOCAL statement_timeout='60s'");
+    const total = Number((await client.query(`WITH filtered AS MATERIALIZED (
+      SELECT t.id FROM tasks t WHERE ${filter.sql} LIMIT 10001
+    ) SELECT count(*)::integer AS total FROM filtered`,filter.params)).rows[0].total);
+    if (total > 10_000) throw new RangeError('导出任务超过 10,000 条，请缩小时间区间或增加筛选条件');
+    // All chunks belong to one source snapshot; pages cannot drift while a
+    // worker advances or reassigns a task. Only one chunk of details is retained.
+    for (let offset = 0; offset < total; offset += 250) {
+      const values = [...filter.params,250,offset];
+      const ids = (await client.query(`SELECT t.id FROM tasks t WHERE ${filter.sql}
+        ORDER BY ${sortSql} ${query.order} NULLS LAST,t.id ${query.order}
+        LIMIT $${values.length-1}::integer OFFSET $${values.length}::integer`,values)).rows.map(row=>Number(row.id));
+      for (const item of await readDetailRows(client,ids)) lines.push(taskReportCsvLine(item));
+    }
+    await client.query('COMMIT');
+    return `\uFEFF${lines.join('\r\n')}\r\n`;
+  } catch(error) { await client.query('ROLLBACK').catch(()=>{}); throw error; }
+  finally { client.release(); }
+  });
 }

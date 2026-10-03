@@ -7,7 +7,7 @@ import { Checkbox, Textarea } from '@/components/ui/input';
 import { SearchInput } from '@/components/ui/search-input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { CheckCircle2, EyeOff, ImageOff, Images, ListChecks, LoaderCircle, Maximize2, RefreshCw, RotateCcw, ShieldCheck } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
 import { apiRequest } from '../components/api-client';
@@ -15,8 +15,10 @@ import { ImageDiscardButton } from '../components/image-discard-button';
 import { ImageCarouselNavigation } from '../components/image-carousel-navigation';
 import { ImageManualModificationNote } from '../components/image-manual-modification-note';
 import { ImagePreview } from '../components/image-preview';
+import { AssetThumbnail } from '../components/asset-thumbnail';
 import { createRequestId } from '../components/request-id';
 import { DEFAULT_SETTINGS, useHumanQualitySettings } from '../workbench/human-quality-settings';
+import { useStableEventHandlers } from '../workbench/stable-event-handlers';
 import { orderedImageFileName } from '../../src/image-file-name.mjs';
 import styles from '../copy-qa/copy-qa.module.css';
 import qaStyles from './image-qa.module.css';
@@ -25,6 +27,8 @@ import { normalizeImageQaItem, type ImageQaAsset, type ImageQaItem } from './typ
 const apiPath = (path: string) => `/api/control-plane${path}`;
 const IMAGE_QA_LOAD_TOAST_ID = 'image-qa-load';
 const IMAGE_QA_ACTION_TOAST_ID = 'image-qa-action';
+const IMAGE_QA_PAGE_SIZE = 50;
+type ImageQaSummary = { total: number; mandatoryCount: number; assetCount: number };
 
 type ImageQaStatus = 'PENDING' | 'PASSED' | 'RETURNED' | 'DISCARDED' | 'ADMIN_ESCALATED' | 'ALL';
 
@@ -78,6 +82,8 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
   const { settings: loadedSettings, loading: settingsLoading, error: settingsError } = useHumanQualitySettings();
   const settings = loadedSettings ?? DEFAULT_SETTINGS;
   const [items, setItems] = useState<ImageQaItem[]>([]);
+  const [offset, setOffset] = useState(0);
+  const [summary, setSummary] = useState<ImageQaSummary>({ total: 0, mandatoryCount: 0, assetCount: 0 });
   const [status, setStatus] = useState<ImageQaStatus>('PENDING');
   const [personSearchInput, setPersonSearchInput] = useState('');
   const [personName, setPersonName] = useState('');
@@ -97,42 +103,58 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
   const detailTriggerRef = useRef<HTMLButtonElement | null>(null);
   const previewTriggerRef = useRef<HTMLButtonElement | null>(null);
   const loadSequenceRef = useRef(0);
+  const loadControllerRef = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
     const sequence = loadSequenceRef.current + 1;
     loadSequenceRef.current = sequence;
+    loadControllerRef.current?.abort();
+    const controller = new AbortController();
+    loadControllerRef.current = controller;
     setLoading(true);
     setError('');
     try {
-      const params = new URLSearchParams({ status, limit: '200', offset: '0' });
+      const params = new URLSearchParams({ status, limit: String(IMAGE_QA_PAGE_SIZE), offset: String(offset), includeSummary: 'true' });
       if (role === 'ADMIN' && personName) params.set('personName', personName);
-      const payload = await apiRequest<unknown>(apiPath(`/v1/image-qa/items?${params.toString()}`));
-      const rows = payload && typeof payload === 'object' && Array.isArray((payload as { items?: unknown[] }).items)
-        ? (payload as { items: unknown[] }).items : [];
-      if (sequence !== loadSequenceRef.current) return;
+      const payload = await apiRequest<{ items: unknown[]; offset: number; summary: ImageQaSummary }>(
+        apiPath(`/v1/image-qa/items?${params.toString()}`), { signal: controller.signal });
+      if (sequence !== loadSequenceRef.current || controller.signal.aborted) return;
+      if (!Array.isArray(payload.items) || !payload.summary
+          || ![payload.summary.total, payload.summary.mandatoryCount, payload.summary.assetCount, payload.offset]
+            .every(value => Number.isSafeInteger(value) && value >= 0)) {
+        throw new Error('图片质检分页统计读取失败，请刷新重试');
+      }
+      // An action can remove the last page. The server returns the last remaining page.
+      if (payload.offset !== offset) { setOffset(payload.offset); return; }
       toast.dismiss(IMAGE_QA_LOAD_TOAST_ID);
-      setItems(rows.map((item) => normalizeImageQaItem(item, role))
+      setSummary(payload.summary);
+      setItems(payload.items.map((item) => normalizeImageQaItem(item, role))
         .filter((item): item is ImageQaItem => item !== null));
     } catch (caught) {
-      if (sequence !== loadSequenceRef.current) return;
+      if (sequence !== loadSequenceRef.current || controller.signal.aborted) return;
       toast.error(caught instanceof Error ? caught.message : '图片质检队列读取失败', {
         id: IMAGE_QA_LOAD_TOAST_ID,
         duration: Infinity,
       });
     } finally {
-      if (sequence === loadSequenceRef.current) setLoading(false);
+      if (sequence === loadSequenceRef.current && !controller.signal.aborted) setLoading(false);
     }
-  }, [personName, role, status]);
+  }, [offset, personName, role, status]);
+  const { refreshCurrentPage } = useStableEventHandlers({ refreshCurrentPage: load });
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); return () => { loadControllerRef.current?.abort(); }; }, [load]);
 
   useEffect(() => {
     if (detail && selectedAssetIndex >= detail.assets.length) setSelectedAssetIndex(0);
   }, [detail, selectedAssetIndex]);
 
-  const mandatoryCount = useMemo(() => items.filter((item) => item.sampleKind === 'MANDATORY_RECHECK').length, [items]);
-  const pageCount = useMemo(() => items.reduce((total, item) => total + item.assets.length, 0), [items]);
+  const mandatoryCount = summary.mandatoryCount;
+  const pageCount = summary.assetCount;
+  const currentPage = Math.floor(offset / IMAGE_QA_PAGE_SIZE) + 1;
+  const totalPages = Math.max(1, Math.ceil(summary.total / IMAGE_QA_PAGE_SIZE));
   const activeStatus = STATUS_OPTIONS.find((option) => option.value === status) ?? STATUS_OPTIONS[0];
+
+  function changeStatus(next: ImageQaStatus) { setOffset(0); setStatus(next); }
 
   function openDetail(item: ImageQaItem, trigger?: HTMLButtonElement) {
     if (trigger) detailTriggerRef.current = trigger;
@@ -180,7 +202,7 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
         id: IMAGE_QA_ACTION_TOAST_ID,
       });
       if (detail?.id === item.id) setDetail(null);
-      await load();
+      await refreshCurrentPage();
     } catch (caught) {
       toast.error(caught instanceof Error ? caught.message : '图片质检通过失败', {
         id: IMAGE_QA_ACTION_TOAST_ID,
@@ -224,7 +246,7 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
       });
       setReturning(false);
       setDetail(null);
-      await load();
+      await refreshCurrentPage();
     } catch (caught) {
       toast.error(caught instanceof Error ? caught.message : '图片质检打回失败', {
         id: IMAGE_QA_ACTION_TOAST_ID,
@@ -265,7 +287,7 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
       });
       setReturning(false);
       setDetail(null);
-      await load();
+      await refreshCurrentPage();
     } catch (caught) {
       toast.error(caught instanceof Error ? caught.message : '图片整批打回失败', {
         id: IMAGE_QA_ACTION_TOAST_ID,
@@ -282,7 +304,7 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
     <section className={qaStyles.overview} aria-label="图片质检概况">
       <article className={qaStyles.primaryMetric}>
         <span className={qaStyles.metricIcon}><ListChecks size={18} aria-hidden="true" /></span>
-        <div><strong>{items.length}</strong><span>当前筛选结果</span><small>{activeStatus.label}范围内的质检记录</small></div>
+        <div><strong>{summary.total}</strong><span>当前筛选结果</span><small>{activeStatus.label}范围内的已冻结质检记录</small></div>
       </article>
       <article>
         <span className={qaStyles.metricIcon}><RotateCcw size={18} aria-hidden="true" /></span>
@@ -305,7 +327,7 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
           <p>先逐页检查完整成品图，再通过或填写可执行的返工要求。</p>
         </div>
         <div className={qaStyles.queueHeaderActions}>
-          <span className={qaStyles.resultCount} aria-live="polite">{loading ? '正在更新' : `${items.length} 条结果`}</span>
+          <span className={qaStyles.resultCount} aria-live="polite">{loading ? '正在更新' : `共 ${summary.total} 条 · 本页 ${items.length} 条`}</span>
           <Button unstyled className="button" type="button" disabled={loading} onClick={() => { void load(); }}><RefreshCw className={loading ? 'animate-spin' : ''} size={15} />刷新队列</Button>
         </div>
       </header>
@@ -313,17 +335,19 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
         <nav className={qaStyles.statusTabs} role="tablist" aria-label="图片质检处理状态">
           {STATUS_OPTIONS.map((option) => <Button unstyled id={`image-qa-${option.value.toLowerCase()}-tab`} key={option.value}
             type="button" role="tab" aria-selected={status === option.value} aria-controls="image-qa-results"
-            data-active={status === option.value} onClick={() => setStatus(option.value)}>{option.label}</Button>)}
+            data-active={status === option.value} onClick={() => changeStatus(option.value)}>{option.label}</Button>)}
         </nav>
         <div className={qaStyles.filterActions}>
           {role === 'ADMIN' && <form className={qaStyles.personSearch} onSubmit={(event) => {
             event.preventDefault();
+            setOffset(0);
             setPersonName(personSearchInput.replace(/\s+/gu, ' ').trim());
           }}>
             <SearchInput aria-label="按人员姓名筛选全部图片质检项" maxLength={80} value={personSearchInput} onValueChange={setPersonSearchInput} placeholder="按图片提交人姓名或账号筛选" />
             <Button unstyled className="button small" type="submit">应用人员</Button>
             {personName && <Button unstyled className="button small" type="button" onClick={() => {
               setPersonSearchInput('');
+              setOffset(0);
               setPersonName('');
             }}>清除人员</Button>}
           </form>}
@@ -340,7 +364,7 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
             <p>{activeStatus.emptyDescription}</p>
             <div className={qaStyles.emptyActions}>
               <Button unstyled className="button primary" type="button" onClick={() => { void load(); }}><RefreshCw size={15} />重新检查</Button>
-              {status !== 'PENDING' && <Button unstyled className="button" type="button" onClick={() => setStatus('PENDING')}>查看待质检</Button>}
+              {status !== 'PENDING' && <Button unstyled className="button" type="button" onClick={() => changeStatus('PENDING')}>查看待质检</Button>}
             </div>
             <small>标注的图片初审不会进入此队列。</small>
           </div>
@@ -360,11 +384,18 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
                 <Button unstyled className="button small" type="button" onClick={(event) => openDetail(item, event.currentTarget)}>查看图片</Button>
                 {item.capabilities.canReturnSingle && <Button unstyled className="button small" type="button" disabled={Boolean(action)} onClick={(event) => openReturn(item, undefined, event.currentTarget)}><RotateCcw size={14} />打回</Button>}
                 {item.capabilities.canDiscard && <ImageDiscardButton target={{ samplingItemId: item.id }} disabled={Boolean(action)}
-                  onBusyChange={busy => setAction(busy ? item.id : '')} onCompleted={load} />}
+                  onBusyChange={busy => setAction(busy ? item.id : '')} onCompleted={refreshCurrentPage} />}
                 {item.capabilities.canPass && <Button unstyled className="button small primary" type="button" disabled={Boolean(action)} onClick={() => { void pass(item); }}><CheckCircle2 size={14} />通过</Button>}
               </div></td>
             </tr>)}</tbody></table></div>}
       </div>
+      <nav className={styles.actions} aria-label="图片质检分页">
+        <Button unstyled className="button small" type="button" disabled={loading || Boolean(action) || offset === 0}
+          onClick={() => setOffset(Math.max(0, offset - IMAGE_QA_PAGE_SIZE))}>上一页</Button>
+        <span aria-live="polite">第 {currentPage} / {totalPages} 页 · 共 {summary.total} 条</span>
+        <Button unstyled className="button small" type="button" disabled={loading || Boolean(action) || offset + IMAGE_QA_PAGE_SIZE >= summary.total}
+          onClick={() => setOffset(offset + IMAGE_QA_PAGE_SIZE)}>下一页</Button>
+      </nav>
     </section>
 
     <Dialog open={detail !== null} onOpenChange={(open) => { if (!open) closeDetail(); }}>
@@ -396,7 +427,7 @@ export function ImageQaWorkbench({ role }: { role: 'ADMIN' | 'REVIEWER' }) {
               {detail.assets.map((asset, index) => <Button unstyled className={qaStyles.thumbnail} type="button" key={`${asset.pageIndex}-${asset.id}`}
                 data-selected={selectedAssetIndex === index} aria-pressed={selectedAssetIndex === index}
                 aria-label={`选择第 ${asset.pageIndex} 页：${displayAssetName(asset, index)}`} onClick={() => setSelectedAssetIndex(index)}>
-                <img src={apiPath(asset.url)} alt="" loading={index === 0 ? 'eager' : 'lazy'} decoding="async" />
+                <AssetThumbnail src={apiPath(asset.url)} alt="" loading={index === 0 ? 'eager' : 'lazy'} />
                 <span><strong>{String(asset.pageIndex).padStart(2, '0')}</strong><small>{displayAssetName(asset, index)}</small></span>
               </Button>)}
             </nav>

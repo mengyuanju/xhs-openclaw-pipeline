@@ -3,9 +3,9 @@ import test from 'node:test';
 import { createServer } from 'node:http';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 
-test('annotation job trend uses one chart and switches four metric tabs', {
+test('annotation job report toggles quality-only records, explains statistics and switches one chart across four metrics', {
   skip: process.env.RUN_ANNOTATION_JOB_REPORT_BROWSER !== '1', timeout: 120_000,
 }, async () => {
   const { build } = await import('esbuild');
@@ -13,6 +13,8 @@ test('annotation job trend uses one chart and switches four metric tabs', {
   const root = await mkdtemp(join(tmpdir(), 'annotation-job-report-browser-'));
   let server;
   let browser;
+  const requests=[];
+  const unexpected=[];
   try {
     await build({
       stdin: { contents: `import './app/globals.css';import React from 'react';import{createRoot}from'react-dom/client';
@@ -50,8 +52,9 @@ test('annotation job trend uses one chart and switches four metric tabs', {
     });
     const report = {
       range: { from: '2026-09-28', to: '2026-10-01' }, asOf: '2026-10-01T12:00:00Z',
-      summary: { workers: 2, totalJobs: 5, returned: 0 },
-      people: [person(11, '标注甲', 3, 2, 1, 1, 2), person(22, '标注乙', 2, 1, 0, 0, 1)],
+      summary: { workers: 2, totalJobs: 5, returned: 2 },
+      people: [person(11, '标注甲', 3, 2, 1, 1, 2), person(22, '标注乙', 2, 1, 0, 0, 1),
+        { ...person(33, '仅质检记录夹具', 0, 0, 0, 0, 2), returned: 2 }],
       trend: { dates: ['2026-09-28', '2026-09-29', '2026-09-30', '2026-10-01'], rows: [
         { date: '2026-09-28', accountId: 11, totalJobs: 1, copyReview: 1, imageFirstReview: 0,
           copyFirstPassed: 1, copyDecided: 1, copyFirstPassRate: 1 },
@@ -69,6 +72,10 @@ test('annotation job trend uses one chart and switches four metric tabs', {
       if (request.url === '/bundle.js') { response.setHeader('Content-Type', 'application/javascript'); response.end(bundle); return; }
       if (request.url === '/bundle.css') { response.setHeader('Content-Type', 'text/css'); response.end(css); return; }
       if (request.url?.startsWith('/api/')) {
+        requests.push(request.url);
+        if(request.method!=='GET'||!['/api/control-plane/v1/users','/api/control-plane/v1/admin/annotation-job-report'].includes(new URL(request.url,'http://fixture').pathname)){
+          unexpected.push(`${request.method} ${request.url}`);response.statusCode=400;response.end('{}');return;
+        }
         const data = request.url.includes('/users') ? report.people.map(({ accountId, username, displayName }) =>
           ({ id: accountId, username, displayName })) : report;
         response.setHeader('Content-Type', 'application/json');
@@ -90,11 +97,48 @@ test('annotation job trend uses one chart and switches four metric tabs', {
     const panel = page.getByRole('region', { name: '标注作业图形统计' });
     const tabs = panel.getByRole('tablist', { name: '图形统计分类' }).getByRole('tab');
     await tabs.first().waitFor();
+    const results=page.getByRole('region',{name:'标注人作业列表',exact:true});
+    const qualityOnly=results.getByRole('row').filter({hasText:'仅质检记录夹具'});
+    const showQuality=results.getByRole('button',{name:'查看仅有质检记录（1）',exact:true});
+    assert.equal(await showQuality.getAttribute('aria-expanded'),'false');
+    assert.equal(await qualityOnly.count(),0,'quality-only people are omitted from the initial working-person table');
+    await results.getByText('2 位有作业 · 1 位仅有质检记录',{exact:false}).waitFor();
+    await showQuality.click();
+    await qualityOnly.waitFor();
+    assert.equal(await results.getByRole('button',{name:'隐藏仅有质检记录',exact:true}).getAttribute('aria-expanded'),'true');
+    assert.equal(await qualityOnly.getByRole('cell').nth(1).textContent(),'0');
+    await qualityOnly.getByText('本期无作业 · 仅质检记录',{exact:true}).waitFor();
+    assert.equal(await panel.getByText('2 位有作业的标注人',{exact:true}).count(),1,'quality-only table disclosure does not add a trend line');
+    await results.getByRole('button',{name:'隐藏仅有质检记录',exact:true}).click();
+    assert.equal(await qualityOnly.count(),0);
+    const methods=results.locator('details');
+    assert.equal(await methods.getAttribute('open'),null);
+    await methods.getByText('统计口径',{exact:true}).click();
+    assert.equal(await methods.evaluate(element=>element.open),true);
+    await methods.getByText(/仅有质检结论、没有本期作业/u).waitFor();
+    await methods.getByText(/文案一次通过率按所选日期内首次文案作业对应/u).waitFor();
+    if (process.env.ANNOTATION_JOB_REPORT_SCREENSHOT) {
+      await showQuality.click(); await qualityOnly.waitFor();
+      await page.screenshot({ path: process.env.ANNOTATION_JOB_REPORT_SCREENSHOT.replace(/\.png$/iu,'-quality-only.png'), fullPage:true });
+      await results.getByRole('button',{name:'隐藏仅有质检记录',exact:true}).click();
+      assert.equal(await qualityOnly.count(),0);
+    }
+    await methods.getByText('统计口径',{exact:true}).click();
+    assert.equal(await methods.evaluate(element=>element.open),false);
     assert.deepEqual(await tabs.allTextContents(),
       ['总作业', '首次文案审核', '文案一次通过率', '首次图片审核']);
     await page.waitForFunction(() => document.querySelectorAll('canvas').length === 1);
     assert.equal(await panel.locator('canvas').count(), 1);
     assert.ok(await panel.locator('canvas').first().evaluate(canvas => canvas.width > 0 && canvas.height > 0));
+    assert.ok(requests.filter(path=>path.includes('/annotation-job-report')).every(path=>!new URL(path,'http://fixture').searchParams.has('refresh')),'initial annotation reads use shared cache');
+    await showQuality.click();
+    await qualityOnly.waitFor();
+    await Promise.all([page.waitForResponse(response=>new URL(response.url()).searchParams.get('refresh')==='true'),
+      page.getByRole('button',{name:'刷新',exact:true}).click()]);
+    await page.getByRole('button',{name:'刷新',exact:true}).waitFor();
+    await showQuality.waitFor();
+    assert.equal(await showQuality.getAttribute('aria-expanded'),'false','refresh resets the optional quality-only disclosure');
+    assert.equal(await qualityOnly.count(),0);
     const valueToggle = panel.getByRole('button', { name: '显示数值' });
     assert.equal(await valueToggle.getAttribute('aria-pressed'), 'true');
     const initialLabels = await page.evaluate(() => {
@@ -116,6 +160,7 @@ test('annotation job trend uses one chart and switches four metric tabs', {
     assert.deepEqual(await page.evaluate(() => window.__annotationTrendChart().getOption().xAxis[0].data),
       ['2026-09-28', '2026-09-30', '2026-10-01'],
       'the default view should fold the all-person idle date');
+    await panel.getByText('显示 3 天，折叠 1 天无作业日期',{exact:true}).waitFor();
     const metrics = [
       ['总作业', '5 次'], ['首次文案审核', '3 次'],
       ['文案一次通过率', '33.33%'], ['首次图片审核', '1 次'],
@@ -206,6 +251,7 @@ test('annotation job trend uses one chart and switches four metric tabs', {
     assert.deepEqual(await page.evaluate(() => window.__annotationTrendChart().getOption().xAxis[0].data),
       ['2026-09-28', '2026-09-29', '2026-09-30', '2026-10-01'],
       'the calendar view should restore the all-person idle date');
+    await panel.getByText('显示全部 4 天，保留无作业日的零值',{exact:true}).waitFor();
     await panel.getByText('图中显示 1 / 2 人').waitFor();
     assert.equal(await page.evaluate(() => window.__annotationTrendChart()
       .getOption().legend[0].selected['标注乙 · #22']), false,
@@ -237,9 +283,15 @@ test('annotation job trend uses one chart and switches four metric tabs', {
       await page.screenshot({ path, fullPage: true });
     }
     assert.deepEqual(errors, []);
+    assert.deepEqual(unexpected, []);
+    assert.equal(new URL(requests.filter(path=>path.includes('/annotation-job-report')).at(-1),'http://fixture').searchParams.has('refresh'),false,'reload returns to ordinary cached report reads');
+    console.log(JSON.stringify({scopeIds:['F-ANNOT-002','F-ANNOT-003','F-ANNOT-004'],qualityOnlyDisclosure:true,
+      numericLabelsActuallyClicked:true,dateFoldingActuallyClicked:true,statisticsDisclosureActuallyClicked:true,
+      httpWrites:0,paidModelCalls:0,originalHundredRowDatasetModified:false}));
   } finally {
     await browser?.close();
     await new Promise(resolve => server?.close(resolve) ?? resolve());
+    assert.ok(resolve(root).startsWith(`${resolve(tmpdir())}${sep}`),'only remove verified temporary test directory');
     await rm(root, { recursive: true, force: true });
   }
 });

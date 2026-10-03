@@ -1,6 +1,7 @@
 import { readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { standaloneImageRunDirectory } from '../standalone-image-generation.mjs';
+import { IMAGE_ARTIFACT_FILE } from '../image-artifacts.mjs';
 
 export async function readCheckpoint(path) {
   try {
@@ -49,7 +50,7 @@ export async function loadUploadedImages(taskRoot, runIds) {
   for (const id of [...runIds].reverse()) {
     const value = await readCheckpoint(join(standaloneImageRunDirectory(taskRoot, id), 'uploads.json'));
     for (const [file, entry] of Object.entries(value ?? {})) {
-      if (/^\d{2}-[a-z][a-z0-9-]{0,30}\.png$/u.test(file)
+      if (IMAGE_ARTIFACT_FILE.test(file)
         && /^[a-f0-9]{64}$/u.test(entry?.sha256 ?? '')
         && Number.isSafeInteger(entry?.asset?.id) && entry.asset.id > 0
         && entry.asset.url === `/v1/assets/${entry.asset.id}`) uploads[file] = entry;

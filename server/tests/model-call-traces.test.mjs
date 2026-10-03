@@ -30,13 +30,13 @@ test('model calls derive task ownership from execution and final records cannot 
 test('trace list is paginated metadata only; detail lookup is scoped to task', async () => {
   const queries = [];
   const pool = { query: async (sql, params) => {
-    queries.push({ sql, params }); return { rows: sql.includes('count(*)') ? [{ total: 3 }] : [{ id }] };
+    queries.push({ sql, params }); return { rows: sql.includes('jsonb_agg(row_to_json(page))') ? [{ total: 3, items: [{ id }], cleanup: null }] : [{ id }] };
   } };
   assert.equal((await listModelCalls(pool, 5, { limit: '2', offset: '1' })).total, 3);
   assert.doesNotMatch(queries[0].sql, /c\.prompt|c\.response|c\.request/);
   assert.deepEqual(queries[0].params, [5, 2, 1]);
   await getModelCall(pool, 5, id);
-  assert.match(queries[2].sql, /c\.task_id = \$1 AND c\.id = \$2/);
+  assert.match(queries[1].sql, /c\.task_id = \$1 AND c\.id = \$2/);
   await assert.rejects(listModelCalls(pool, 5, { limit: 1000 }), /pagination/);
   await assert.rejects(getModelCall({ query: async () => ({ rows: [] }) }, 5, id), /not found/);
 });

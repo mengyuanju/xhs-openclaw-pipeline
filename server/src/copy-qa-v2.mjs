@@ -62,15 +62,17 @@ const CANDIDATE_SQL = `SELECT task.id AS task_id,task.query,task.current_copy_re
     AND NOT EXISTS (SELECT 1 FROM copy_qa_batch_members_v2 AS member
       WHERE member.task_id=task.id AND member.copy_revision_id=task.current_copy_revision_id)`;
 
-export async function listCopyQaCandidatesV2(pool, actor, accountId = null) {
+export async function listCopyQaCandidatesV2(pool, actor, accountId = null, { summaryOnly = false } = {}) {
+  if (typeof summaryOnly !== 'boolean') throw new TypeError('summaryOnly must be a boolean');
   const id = accountId == null ? null : normalizeTaskId(accountId);
   await activeActor(pool, actor, { admin: true });
   const [users, tasks, counts] = await Promise.all([
     pool.query(`SELECT id,username,display_name,status,auto_copy_batch_enabled,
       auto_copy_batch_size,copy_full_inspection,copy_sampling_rate_bps_override
       FROM app_users ORDER BY display_name,id`),
-    pool.query(`${CANDIDATE_SQL} AND ($1::bigint IS NULL OR approval.approved_by_account_id=$1)
-      ORDER BY approval.approved_at,task.id LIMIT 5000`, [id]),
+    summaryOnly ? Promise.resolve({ rows: [] })
+      : pool.query(`${CANDIDATE_SQL} AND ($1::bigint IS NULL OR approval.approved_by_account_id=$1)
+        ORDER BY approval.approved_at,task.id LIMIT 5000`, [id]),
     pool.query(`SELECT approval.approved_by_account_id AS account_id,count(*) AS pending_count
       FROM tasks AS task JOIN copy_approval_events AS approval
         ON approval.task_id=task.id AND approval.copy_revision_id=task.current_copy_revision_id
@@ -268,10 +270,32 @@ export async function routeCopyApprovalV2(client,{task,revision,approval,actor,a
   return {task:result.rows[0],approval};
 }
 
-export async function listCopyQaBatchesV2(pool,actor,view='PENDING') {
+function qaPagination(options) {
+  if (options == null) return null;
+  const limit=Number(options.limit??20),offset=Number(options.offset??0);
+  if(!Number.isSafeInteger(limit)||limit<1||limit>100||!Number.isSafeInteger(offset)||offset<0||offset>1_000_000){
+    throw new TypeError('质检分页参数无效');
+  }
+  return {limit,offset};
+}
+
+function lastPageOffset(total,limit,offset) {
+  return Math.min(offset,Math.max(0,Math.ceil(total/limit)-1)*limit);
+}
+
+export async function listCopyQaBatchesV2(pool,actor,view='PENDING',options) {
   if(!['PENDING','FINISHED'].includes(view))throw new TypeError('view is invalid');
+  const pagination=qaPagination(options);
   const sortDirection=view==='PENDING'?'ASC':'DESC';
   await activeActor(pool,actor,{qc:true});
+  let total;
+  if(pagination){
+    total=Number((await pool.query(`SELECT count(*) AS total FROM copy_qa_batches_v2 AS batch
+      WHERE (($1='PENDING' AND batch.status='INSPECTING')
+        OR ($1='FINISHED' AND batch.status IN ('COMPLETED','AUTO_RETURNED')))
+        AND EXISTS(SELECT 1 FROM copy_qa_batch_members_v2 member WHERE member.batch_id=batch.id)`,[view])).rows[0].total);
+    pagination.offset=lastPageOffset(total,pagination.limit,pagination.offset);
+  }
   const result=await pool.query(`SELECT batch.*,
     count(*) FILTER(WHERE member.status='PENDING' AND member.selected) AS pending_count,
     count(*) FILTER(WHERE member.status='PASSED') AS passed_count,
@@ -282,13 +306,15 @@ export async function listCopyQaBatchesV2(pool,actor,view='PENDING') {
     JOIN copy_qa_batch_members_v2 AS member ON member.batch_id=batch.id
     WHERE (($1='PENDING' AND batch.status='INSPECTING')
       OR ($1='FINISHED' AND batch.status IN ('COMPLETED','AUTO_RETURNED')))
-    GROUP BY batch.id ORDER BY batch.created_at ${sortDirection},batch.id ${sortDirection}`,[view]);
-  return result.rows.map(row=>({id:row.public_id,displayName:row.display_name,mode:row.mode,status:row.status,
+    GROUP BY batch.id ORDER BY batch.created_at ${sortDirection},batch.id ${sortDirection}
+    ${pagination?'LIMIT $2 OFFSET $3':''}`,pagination?[view,pagination.limit,pagination.offset]:[view]);
+  const items=result.rows.map(row=>({id:row.public_id,displayName:row.display_name,mode:row.mode,status:row.status,
     accountId:row.account_id==null?null:Number(row.account_id),
     fullInspection:row.full_inspection,memberCount:row.member_count,sampleCount:row.sample_count,
     pendingCount:Number(row.pending_count),passedCount:Number(row.passed_count),
     returnedCount:Number(row.returned_count),discardedCount:Number(row.discarded_count),affectedCount:Number(row.affected_count),
     returnTriggerCount:row.return_trigger_count,createdAt:row.created_at}));
+  return pagination?{items,total,...pagination}:items;
 }
 
 // The verdict belongs to the preceding quality cycle member, rather than to
@@ -458,11 +484,25 @@ export async function listCopyQaWorkItemsV2(pool,{
     total:hasMore?null:Number(offset)+page.length};
 }
 
-export async function listCopyQaBatchItemsV2(pool,batchId,actor) {
+export async function listCopyQaBatchItemsV2(pool,batchId,actor,options) {
   const id=normalizeUuid(batchId,'batchId');
+  const pagination=qaPagination(options);
   await activeActor(pool,actor,{qc:true});
   const batch=(await pool.query('SELECT * FROM copy_qa_batches_v2 WHERE public_id=$1',[id])).rows[0];
   if(!batch)throw new ControlPlaneNotFoundError('质检批次不存在');
+  let counts;
+  if(pagination){
+    const row=(await pool.query(`SELECT count(*) FILTER(WHERE selected) AS total,
+      count(*) FILTER(WHERE selected AND status='PENDING') AS pending_count,
+      count(*) FILTER(WHERE status='PASSED') AS passed_count,
+      count(*) FILTER(WHERE status='RETURNED') AS returned_count,
+      count(*) FILTER(WHERE status='DISCARDED') AS discarded_count,
+      count(*) FILTER(WHERE status='BATCH_AFFECTED') AS affected_count
+      FROM copy_qa_batch_members_v2 WHERE batch_id=$1`,[batch.id])).rows[0];
+    counts={total:Number(row.total),pendingCount:Number(row.pending_count),passedCount:Number(row.passed_count),
+      returnedCount:Number(row.returned_count),discardedCount:Number(row.discarded_count),affectedCount:Number(row.affected_count)};
+    pagination.offset=lastPageOffset(counts.total,pagination.limit,pagination.offset);
+  }
   const rows=(await pool.query(`SELECT member.*,task.query,task.mandatory_copy_qc,revision.content,
       approval.approved_by_username AS approver_username,
       ${PREVIOUS_RETURN_SELECT}
@@ -472,11 +512,14 @@ export async function listCopyQaBatchItemsV2(pool,batchId,actor) {
     JOIN copy_approval_events AS approval ON approval.id=member.approval_event_id
     ${PREVIOUS_RETURN_JOINS}
     WHERE member.batch_id=$1 AND member.selected
-    ORDER BY member.id`,[batch.id])).rows;
+    ORDER BY member.id ${pagination?'LIMIT $2 OFFSET $3':''}`,pagination?[batch.id,pagination.limit,pagination.offset]:[batch.id])).rows;
   const blind=batch.blind_review_enabled&&actor.role!=='ADMIN';
   return {batch:{id:batch.public_id,displayName:batch.display_name,mode:batch.mode,status:batch.status,
     memberCount:batch.member_count,sampleCount:batch.sample_count,fullInspection:batch.full_inspection,
-    returnTriggerCount:batch.return_trigger_count},items:rows.map(row=>({
+    returnTriggerCount:batch.return_trigger_count,...(counts?{
+      pendingCount:counts.pendingCount,passedCount:counts.passedCount,returnedCount:counts.returnedCount,
+      discardedCount:counts.discardedCount,affectedCount:counts.affectedCount}: {})},
+    ...(pagination?{pagination:{total:counts.total,...pagination}}:{}),items:rows.map(row=>({
       id:row.public_id,taskId:blind?null:Number(row.task_id),
       query:blind?null:row.query,content:blind?blindContent(row.content):row.content,status:row.status,
       approverUsername:blind?null:row.approver_username,revisionToken:row.content_sha256,

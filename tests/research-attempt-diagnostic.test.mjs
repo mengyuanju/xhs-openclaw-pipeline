@@ -1,3 +1,4 @@
+import { readTaskReviewSource } from './helpers/task-review-source.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
@@ -25,7 +26,7 @@ test('admin Doubao diagnostics never echo arbitrary upstream text or credential-
 });
 
 test('task details gate Doubao diagnostics on admin role and provider', async () => {
-  const source = await readFile(new URL('../app/workbench/task-review-dialog.tsx', import.meta.url), 'utf8');
+  const source = await readTaskReviewSource();
   assert.match(source, /isAdmin && attempt\.status === 'FAILED'[\s\S]*attempt\.provider\.toLowerCase\(\) === 'doubao'/u);
   assert.match(source, /safeDoubaoSearchDiagnostic\(attempt\.error\)/u);
   assert.doesNotMatch(source, /\$\{attempt\.error\}/u);

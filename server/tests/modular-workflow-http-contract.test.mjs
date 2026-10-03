@@ -61,7 +61,7 @@ test('workflow list endpoints reject invalid pagination before database access',
   await withServer(repository, async (root) => {
     const requests = [
       fetch(`${root}/v1/query-packages?limit=1.5`, { headers: headers('admin') }),
-      fetch(`${root}/v1/copy-qa/items?offset=-1`, { headers: headers('reviewer') }),
+      fetch(`${root}/v2/copy-qa/batches?offset=-1`, { headers: headers('reviewer') }),
       fetch(`${root}/v1/delivery-pool?limit=NaN`, { headers: headers('admin') }),
     ];
     for (const response of await Promise.all(requests)) {
@@ -180,7 +180,7 @@ test('Query package HTTP routes separate delegated screening from administrator 
   });
 });
 
-test('workflow quality settings are administrator-only and batch readiness excludes ordinary users', async () => {
+test('workflow quality settings are administrator-only and legacy batch readiness is retired', async () => {
   let settingsReads = 0;
   const readinessCalls = [];
   const repository = {
@@ -213,21 +213,18 @@ test('workflow quality settings are administrator-only and batch readiness exclu
       `${root}/v1/production-batches/301/copy-sampling-readiness`,
       { headers: headers('worker') },
     );
-    assert.equal(workerReadiness.status, 403);
-    assert.equal((await workerReadiness.json()).error.code, 'FORBIDDEN');
+    assert.equal(workerReadiness.status, 410);
+    assert.equal((await workerReadiness.json()).error.code, 'LEGACY_COPY_QA_RETIRED');
     assert.equal(readinessCalls.length, 0, 'ordinary-user readiness reads must stop before repository access');
 
     for (const username of ['reviewer', 'admin']) {
       const response = await fetch(`${root}/v1/production-batches/301/copy-sampling-readiness`, {
         headers: headers(username),
       });
-      assert.equal(response.status, 200, username);
-      assert.equal((await response.json()).data.ready, true);
+      assert.equal(response.status, 410, username);
+      assert.equal((await response.json()).error.code, 'LEGACY_COPY_QA_RETIRED');
     }
-    assert.deepEqual(readinessCalls, [
-      ['301', { actor: { userId: 91, username: 'reviewer', role: 'REVIEWER', credentialVersion: 1 } }],
-      ['301', { actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 } }],
-    ]);
+    assert.deepEqual(readinessCalls, [], 'retired readiness must not access the repository');
   });
 });
 
@@ -349,78 +346,92 @@ test('ordinary task responses remove package, delivery and Xiaohongshu search me
   });
 });
 
-test('QA HTTP routes use opaque ids and tokens while statistics remain administrator-only', async () => {
+test('V2 QA HTTP lists use opaque identities and blind content while statistics remain administrator-only', async () => {
   const itemId = '71717171-7171-4717-8717-717171717171';
-  const freezePublicId = '81818181-8181-4818-8818-818181818181';
+  const batchId = '81818181-8181-4818-8818-818181818181';
   const revisionToken = 'a'.repeat(64);
-  const calls = [];
-  const safeItem = {
-    id: itemId,
-    freezePublicId,
-    anonymousCode: 'QCI-A8B12C',
-    blindReview: true,
-    status: 'PENDING',
-    sampleKind: 'RANDOM',
-    query: '匿名抽检 Query',
-    approvedRevision: { content: { copy: { title: '最终稿', body: '正文', tags: [] } }, contentSha256: revisionToken, revisionToken },
-    productionBatch: { anonymousCode: 'QCB-B81A2C' },
-    capabilities: { canPass: true, canReturnSingle: true, canReturnBatch: false },
-  };
+  const queries = [];
+  let statisticsReads = 0;
+  const batch = { id: 18, public_id: batchId, display_name: '新质检批次', mode: 'PERSONAL_AUTO',
+    status: 'INSPECTING', member_count: 2, sample_count: 1, full_inspection: false,
+    blind_review_enabled: true, return_trigger_count: 1 };
   const repository = {
-    listCopyQaItems: async (...args) => { calls.push(['list', ...args]); return [safeItem]; },
-    getCopyQaItem: async (...args) => { calls.push(['detail', ...args]); return safeItem; },
-    passCopyQaItem: async (...args) => { calls.push(['pass', ...args]); return { id: itemId, status: 'PASSED', releasedCount: 0 }; },
-    returnCopyQaItem: async (...args) => { calls.push(['return', ...args]); return { id: itemId, status: 'RETURNED' }; },
-    getCopyQaBatchReturnPreview: async (...args) => { calls.push(['preview', ...args]); return { freezePublicId, confirmedCount: 1, items: [{ id: itemId }] }; },
-    batchReturnCopyQa: async (...args) => { calls.push(['batch', ...args]); return { freezePublicId, status: 'BATCH_RETURNED' }; },
-    getCopyQaStatistics: async (...args) => { calls.push(['stats', ...args]); return { random: [], mandatory: { passed: 0, returned: 0, pending: 0 }, batchAffectedCount: 0 }; },
+    getCopyQaStatistics: async () => { statisticsReads++; return { random: [], mandatory: {} }; },
+    pool: { async query(sql, values = []) {
+      queries.push({ sql, values });
+      if (sql.includes('SELECT * FROM app_users')) return { rows: [{ id: values[0], role: values[2], copy_qc_enabled: true }] };
+      if (sql.startsWith('SELECT count(*) AS total')) return { rows: [{ total: '1' }] };
+      if (sql.includes('SELECT batch.*')) return { rows: [{ ...batch, pending_count: 1, passed_count: 0,
+        returned_count: 0, discarded_count: 0, affected_count: 0 }] };
+      if (sql.startsWith('SELECT * FROM copy_qa_batches_v2')) return { rows: [batch] };
+      if (sql.startsWith('SELECT count(*) FILTER')) return { rows: [{ total: 1, pending_count: 1,
+        passed_count: 0, returned_count: 0, discarded_count: 0, affected_count: 0 }] };
+      if (sql.startsWith('SELECT member.*')) return { rows: [{ public_id: itemId, task_id: 991,
+        query: 'PRIVATE-QUERY', approver_username: 'PRIVATE-APPROVER', status: 'PENDING',
+        content: { copy: { title: '最终稿', body: '正文', tags: [] }, qualityReturn: { returnedByUsername: 'PRIVATE-RETURNER' } },
+        content_sha256: revisionToken, selected: true }] };
+      throw new Error(`Unexpected SQL: ${sql}`);
+    } },
   };
-  await withServer(repository, async (root) => {
-    const listed = await fetch(`${root}/v1/copy-qa/items?status=PENDING&limit=20&offset=0`, { headers: headers('reviewer') });
-    assert.equal(listed.status, 200);
-    assert.deepEqual((await listed.json()).data, [safeItem]);
-
-    const detail = await fetch(`${root}/v1/copy-qa/items/${itemId}`, { headers: headers('reviewer') });
-    assert.equal(detail.status, 200);
-
-    const passInput = { expectedRevisionToken: revisionToken, requestId: '33333333-3333-4333-8333-333333333333' };
-    const passed = await fetch(`${root}/v1/copy-qa/items/${itemId}/pass`, {
-      method: 'POST', headers: headers('reviewer', true), body: JSON.stringify(passInput),
+  await withServer(repository, async root => {
+    for (const username of ['reviewer', 'worker', 'admin']) {
+      const listed = await fetch(`${root}/v2/copy-qa/batches?view=PENDING&limit=20&offset=0`, { headers: headers(username) });
+      assert.equal(listed.status, 200, username);
+      const list = (await listed.json()).data;
+      assert.equal(list.items[0].id, batchId);
+      assert.equal(list.total, 1);
+      const detail = await fetch(`${root}/v2/copy-qa/batches/${batchId}?limit=20&offset=0`, { headers: headers(username) });
+      assert.equal(detail.status, 200, username);
+      const data = (await detail.json()).data;
+      assert.equal(data.items[0].id, itemId);
+      assert.equal(data.items[0].revisionToken, revisionToken);
+      assert.equal(data.items[0].content.copy.title, '最终稿');
+      if (username !== 'admin') {
+        assert.equal(data.items[0].taskId, null);
+        for (const secret of ['PRIVATE-QUERY', 'PRIVATE-APPROVER', 'PRIVATE-RETURNER']) {
+          assert.equal(JSON.stringify(data).includes(secret), false, secret);
+        }
+      } else assert.equal(data.items[0].taskId, 991);
+    }
+    for (const username of ['worker', 'reviewer']) {
+      const denied = await fetch(`${root}/v2/copy-qa/candidates`, { headers: headers(username) });
+      assert.equal(denied.status, 403);
+      const stats = await fetch(`${root}/v1/copy-qa/statistics`, { headers: headers(username) });
+      assert.equal(stats.status, 403);
+    }
+    const statistics = await fetch(`${root}/v1/copy-qa/statistics`, { headers: headers('admin') });
+    assert.equal(statistics.status, 200);
+    const queryCount = queries.length;
+    const invalidDecision = await fetch(`${root}/v2/copy-qa/items/${itemId}/decision`, {
+      method: 'POST', headers: headers('reviewer', true), body: JSON.stringify({
+        decision: 'RETURN', revisionToken, requestId: '33333333-3333-4333-8333-333333333333',
+      }),
     });
-    assert.equal(passed.status, 200);
-    assert.deepEqual((await passed.json()).data, { id: itemId, status: 'PASSED', releasedCount: 0 });
-
-    const preview = await fetch(`${root}/v1/copy-qa/freezes/${freezePublicId}/batch-return-preview`, { headers: headers('reviewer') });
-    assert.equal(preview.status, 200);
-
-    const batchInput = {
-      freezePublicId,
-      triggerSamplingItemId: itemId,
-      itemIds: [itemId],
-      reasonCodes: ['FACT_ERROR'],
-      note: '预检后整批打回',
-      confirmedCount: 1,
-      requestId: '44444444-4444-4444-8444-444444444444',
-    };
-    const batch = await fetch(`${root}/v1/copy-qa/batch-return`, {
-      method: 'POST', headers: headers('reviewer', true), body: JSON.stringify(batchInput),
-    });
-    assert.equal(batch.status, 200);
-
-    const reviewerStats = await fetch(`${root}/v1/copy-qa/statistics`, { headers: headers('reviewer') });
-    assert.equal(reviewerStats.status, 403);
-    const adminStats = await fetch(`${root}/v1/copy-qa/statistics`, { headers: headers('admin') });
-    assert.equal(adminStats.status, 200);
-
-    assert.deepEqual(calls.find(([kind]) => kind === 'pass').slice(1), [itemId, passInput, {
-      actor: { userId: 91, username: 'reviewer', role: 'REVIEWER', credentialVersion: 1 },
-    }]);
-    assert.deepEqual(calls.find(([kind]) => kind === 'batch').slice(1), [batchInput, {
-      actor: { userId: 91, username: 'reviewer', role: 'REVIEWER', credentialVersion: 1 },
-    }]);
-    assert.equal(calls.filter(([kind]) => kind === 'stats').length, 1,
-      'a denied reviewer statistics request must not reach the repository');
+    assert.equal(invalidDecision.status, 400, 'a return must include a reason');
+    assert.equal(queries.length, queryCount, 'invalid V2 decisions stop before database access');
   });
+  assert.equal(statisticsReads, 1);
+});
+
+test('all retired copy QA mutation routes stop before repository access', async () => {
+  let calls = 0;
+  const retired = () => { calls++; assert.fail('retired copy QA must not reach repository'); };
+  await withServer({ getCopyQaItem: retired, passCopyQaItem: retired, returnCopyQaItem: retired,
+    getCopyQaBatchReturnPreview: retired, batchReturnCopyQa: retired }, async root => {
+    for (const [path, method] of [
+      ['/v1/copy-qa/items', 'GET'], ['/v1/copy-qa/items/71717171-7171-4717-8717-717171717171', 'GET'],
+      ['/v1/copy-qa/items/71717171-7171-4717-8717-717171717171/pass', 'POST'],
+      ['/v1/copy-qa/items/71717171-7171-4717-8717-717171717171/return', 'POST'],
+      ['/v1/copy-qa/freezes/81818181-8181-4818-8818-818181818181/batch-return-preview', 'GET'],
+      ['/v1/copy-qa/batch-return', 'POST'],
+    ]) {
+      const response = await fetch(`${root}${path}`, { method, headers: headers('admin', true),
+        ...(method === 'POST' ? { body: '{}' } : {}) });
+      assert.equal(response.status, 410, path);
+      assert.equal((await response.json()).error.code, 'LEGACY_COPY_QA_RETIRED');
+    }
+  });
+  assert.equal(calls, 0);
 });
 
 test('active blind QA tasks disappear from generic reviewer task APIs, including guessed ids', async () => {

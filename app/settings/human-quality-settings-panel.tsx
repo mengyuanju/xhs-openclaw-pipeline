@@ -7,6 +7,7 @@ import { ToastFeedback } from '@/components/ui/sonner';
 import { Input, Switch, Textarea } from '@/components/ui/input';
 
 import { apiRequest } from '../components/api-client';
+import { invalidateHumanQualitySettings } from '../workbench/human-quality-settings';
 import type {
   HumanQualityReasonOption,
   HumanQualitySettings,
@@ -150,6 +151,7 @@ export function HumanQualitySettingsPanel({
         }),
       });
       applySettings(settings);
+      invalidateHumanQualitySettings();
       setMessage('人工评分标准已保存；新打开的审核页面将使用最新说明与原因。');
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : '扣分原因保存失败');

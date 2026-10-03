@@ -653,6 +653,24 @@ export function createImageEditingService({ pool, storageRoot, onProgrammaticRea
       await this.fail(e,error);
       return get(e.id);
     },
+    async state(taskId, { ids = [] } = {}) {
+      if (!Array.isArray(ids) || ids.length > 100) throw new TypeError('最多查询 100 条图片修改状态');
+      const requested = [...new Set(ids.map(id => normalizeUuid(id, 'editId')))];
+      const row = (await pool.query(`WITH selected AS (
+          (SELECT id FROM image_edit_requests WHERE task_id=$1 ORDER BY created_at DESC,id LIMIT 100)
+          UNION SELECT id FROM image_edit_requests WHERE task_id=$1 AND id=ANY($2::uuid[])
+        ), compact AS (SELECT e.id,e.task_id,e.target_page,e.status,e.version,e.error,e.created_by,e.created_at,
+          ${IMAGE_EDIT_CREATOR_ACCOUNT_SQL} AS created_by_account_id
+        FROM selected JOIN image_edit_requests e ON e.id=selected.id)
+        SELECT coalesce((SELECT status FROM image_edit_requests WHERE task_id=$1
+          ORDER BY CASE status WHEN 'RUNNING' THEN 0 WHEN 'QUEUED' THEN 1 WHEN 'DRAFT' THEN 3 ELSE 2 END,
+            created_at DESC,id DESC LIMIT 1),'UPLOADED') AS status,
+          coalesce((SELECT json_agg(to_jsonb(compact)-'created_at' ORDER BY created_at DESC,id) FROM compact),'[]') AS items`,
+        [normalizeTaskId(taskId), requested])).rows[0];
+      const items = (row?.items ?? []).map(imageEditWithCreator);
+      return { status: row?.status ?? 'UPLOADED', items,
+        signature: JSON.stringify(items.map(item => [item.id,item.version,item.status,item.error])) };
+    },
     async list(taskId, { pendingOnly = false } = {}) {
       return (await pool.query(`SELECT e.*,${IMAGE_EDIT_CREATOR_ACCOUNT_SQL} AS created_by_account_id,row_to_json(r) AS result,
         (SELECT json_agg(a ORDER BY a.id) FROM image_edit_events a WHERE a.edit_id=e.id) AS events

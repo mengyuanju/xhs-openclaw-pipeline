@@ -5,7 +5,7 @@ import test from 'node:test';
 import pg from 'pg';
 
 import { copyQualityImageGate } from '../src/copy-quality-flow.mjs';
-import { passCopyQaItem, routeManualCopyApproval } from '../src/copy-quality-control.mjs';
+import { insertCopyApprovalEvent } from '../src/copy-quality-control.mjs';
 import { applyMigrations, loadMigrations } from '../src/database-migrations.mjs';
 import { startTemporaryPostgres18 } from './temporary-postgres18.mjs';
 
@@ -72,18 +72,15 @@ test('0067 repairs image-plan revisions stranded behind copy mandatory recheck',
   await pool.query(`INSERT INTO production_batch_items(production_batch_id, task_id, query_snapshot)
     VALUES ($1, $2, 'image plan retry')`, [batch.id, task.id]);
 
-  const taskForApproval = (await pool.query('SELECT * FROM tasks WHERE id = $1', [task.id])).rows[0];
+  // This is a migration test on the historical 0066 schema. Seed its released
+  // legacy QA evidence explicitly; the current approval router requires V2.
   const approvalClient = await pool.connect();
+  let approval;
   try {
     await approvalClient.query('BEGIN');
-    await routeManualCopyApproval(approvalClient, {
-      task: taskForApproval,
-      revision: source,
-      assessment: null,
-      actor: author,
-      reviewSessionId: randomUUID(),
-      aiDisclosureEnabled: false,
-    });
+    approval = await insertCopyApprovalEvent(approvalClient, { taskId: Number(task.id),
+      copyRevisionId: Number(source.id), content: source.content, actor: author,
+      reviewSessionId: randomUUID() });
     await approvalClient.query('COMMIT');
   } catch (error) {
     await approvalClient.query('ROLLBACK');
@@ -91,16 +88,26 @@ test('0067 repairs image-plan revisions stranded behind copy mandatory recheck',
   } finally {
     approvalClient.release();
   }
-  const pendingItem = (await pool.query(`SELECT * FROM copy_sampling_items
-    WHERE task_id = $1 AND copy_revision_id = $2 AND selected = true
-    ORDER BY id DESC LIMIT 1`, [task.id, source.id])).rows[0];
-  assert.ok(pendingItem);
-  await passCopyQaItem(pool, pendingItem.public_id, {
-    requestId: randomUUID(),
-    expectedCopyRevisionId: Number(source.id),
-  }, inspector);
-  await pool.query(`UPDATE tasks SET state = 'MANUAL_ARCHIVE', current_stage = 'MANUAL_ARCHIVE'
-    WHERE id = $1`, [task.id]);
+  const freeze = (await pool.query(`INSERT INTO copy_sampling_freezes(
+    public_id,production_batch_id,policy_version,rate_bps,seed,algorithm_version,
+    blind_review_enabled,population_count,sample_count,snapshot_sha256,
+    frozen_by_username,request_id,request_fingerprint,status,final_approver_account_id)
+    VALUES($1,$2,1,10000,'migration-fixture','historical',false,1,1,$3,
+      'author',$4,$3,'RELEASED',$5) RETURNING *`,
+  [randomUUID(),batch.id,approval.content_sha256,randomUUID(),author.userId])).rows[0];
+  const pendingItem = (await pool.query(`INSERT INTO copy_sampling_items(
+    public_id,freeze_id,task_id,approval_event_id,copy_revision_id,content_sha256,
+    final_approver_account_id,final_approver_username,rank_hash,selected,status,
+    reviewed_by_account_id,reviewed_by_username,reviewed_at)
+    VALUES($1,$2,$3,$4,$5,$6,$7,'author',$6,true,'PASSED',$8,'inspector',now()) RETURNING *`,
+  [randomUUID(),freeze.id,task.id,approval.id,source.id,approval.content_sha256,
+    author.userId,inspector.userId])).rows[0];
+  await pool.query(`INSERT INTO copy_sampling_events(freeze_id,sampling_item_id,action,
+    actor_account_id,actor_username,request_id,details)
+    VALUES($1,$2,'PASS',$3,'inspector',$4,'{}'::jsonb)`,
+  [freeze.id,pendingItem.id,inspector.userId,randomUUID()]);
+  await pool.query(`UPDATE tasks SET state = 'MANUAL_ARCHIVE', current_stage = 'MANUAL_ARCHIVE',
+    copy_qc_released_revision_id=$2 WHERE id = $1`, [task.id,source.id]);
 
   const targetContent = {
     ...sourceContent,

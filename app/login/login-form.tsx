@@ -4,7 +4,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { ToastFeedback } from '@/components/ui/sonner';
 
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 
 import { apiRequest } from '../components/api-client';
 import { resolveLoginReturnPath } from './return-path';
@@ -12,6 +12,9 @@ import { resolveLoginReturnPath } from './return-path';
 export function LoginForm({ nextPath, passwordChanged = false }: { nextPath: string; passwordChanged?: boolean }) {
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState('');
+  const [isHydrated, setIsHydrated] = useState(false);
+
+  useEffect(() => { setIsHydrated(true); }, []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -49,7 +52,7 @@ export function LoginForm({ nextPath, passwordChanged = false }: { nextPath: str
   }
 
   return (
-    <form className="login-form" onSubmit={submit}>
+    <form className="login-form" method="post" onSubmit={submit}>
       <div className="field">
         <label htmlFor="account-username">账号</label>
         <Input
@@ -61,6 +64,7 @@ export function LoginForm({ nextPath, passwordChanged = false }: { nextPath: str
           minLength={3}
           maxLength={50}
           required
+          disabled={!isHydrated}
           autoFocus
         />
       </div>
@@ -75,11 +79,12 @@ export function LoginForm({ nextPath, passwordChanged = false }: { nextPath: str
           minLength={6}
           maxLength={1_024}
           required
+          disabled={!isHydrated}
         />
       </div>
       <ToastFeedback id="login-password-changed" message={passwordChanged ? '密码已修改，请使用新密码重新登录。' : ''} />
       {error && <div className="notice error" role="alert">{error}</div>}
-      <Button unstyled className="button primary login-submit" type="submit" disabled={isBusy}>
+      <Button unstyled className="button primary login-submit" type="submit" disabled={isBusy || !isHydrated}>
         {isBusy ? '正在验证…' : '进入后台'}
       </Button>
     </form>

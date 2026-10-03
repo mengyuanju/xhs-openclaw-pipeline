@@ -40,3 +40,19 @@ test('both executor entries share flags and preserve simulation identity and onc
   assert.equal(config.pollMs, 1000);
   assert.throws(() => executorConfig(environment, ['--enable-image-worker', '--disable-image-worker']), /cannot/);
 });
+
+test('idle polling and settings transport cache have bounded, independently configurable defaults', () => {
+  const defaults = executorConfig(environment, []);
+  assert.equal(defaults.idleMaxPollMs, 20000);
+  assert.equal(defaults.settingsCacheMs, 15_000);
+  assert.equal(executorConfig(environment, ['--poll-ms=60000']).idleMaxPollMs, 60_000);
+  const custom = executorConfig(environment, ['--idle-max-poll-ms=10000', '--settings-cache-ms=0']);
+  assert.equal(custom.idleMaxPollMs, 10_000);
+  assert.equal(custom.settingsCacheMs, 0);
+  for (const value of ['4999', '60001', 'NaN']) {
+    assert.throws(() => executorConfig(environment, [`--idle-max-poll-ms=${value}`]), /idle maximum/);
+  }
+  for (const value of ['-1', '60001', '1.5']) {
+    assert.throws(() => executorConfig(environment, [`--settings-cache-ms=${value}`]), /settings cache/);
+  }
+});

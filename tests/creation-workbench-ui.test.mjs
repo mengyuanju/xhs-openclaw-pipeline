@@ -1,3 +1,4 @@
+import { readTaskReviewSource } from './helpers/task-review-source.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
@@ -57,7 +58,7 @@ test('new creation workbench owns the root route and exposes lifecycle views', a
 test('ordinary workbench rows hide Query provenance and keep delivery downloads in the delivery pool', async () => {
   const [workbench, reviewDialog, navigation] = await Promise.all([
     readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
-    readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
+    readTaskReviewSource(),
     readFile(projectFile('app/components/side-nav.tsx'), 'utf8'),
   ]);
 
@@ -127,7 +128,10 @@ test('ordinary operators create auditable delivery batches and confirm handoff f
   assert.match(workbench, /isTaskAssignee\(task, creatorUserId, creatorAccountId\)/u);
   assert.match(workbench, /scope: 'SELECTED', taskIds: exportableTasks\.map/u);
   assert.match(workbench, /\/v1\/delivery-pool\/archive/u);
-  assert.match(workbench, /<OperatorDeliveryHistory refreshKey=\{deliveryHistoryVersion\}/u);
+  assert.match(workbench, /deliveryHistoryOpen && <LazyOperatorDeliveryHistory refreshKey=\{deliveryHistoryVersion\}/u);
+  const lazyHistory = await readFile(projectFile('app/workbench/lazy-operator-delivery-history.tsx'), 'utf8');
+  assert.match(lazyHistory, /import\('\.\/operator-delivery-history'\)/u);
+  assert.doesNotMatch(workbench, /from '\.\/operator-delivery-history'/u);
   assert.match(history, /<SharedDeliveryWorkbench role="USER" historyOnly/u);
   assert.match(shared, /\/v1\/delivery-items\?/u);
   assert.match(shared, /<WorkbenchPagination/u);
@@ -143,14 +147,14 @@ test('ordinary operators create auditable delivery batches and confirm handoff f
 
 test('all distributed task status displays distinguish exhausted image retries from normal copy review', async () => {
   for (const path of ['app/workbench/creation-workbench.tsx', 'app/workbench/task-review-dialog.tsx']) {
-    const source = await readFile(projectFile(path), 'utf8');
+    const source = await (path === 'app/workbench/task-review-dialog.tsx' ? readTaskReviewSource() : readFile(projectFile(path), 'utf8'));
     assert.match(source, /isImageRetryExhausted/u);
     assert.match(source, /IMAGE_RETRY_EXHAUSTED_LABEL/u);
   }
 });
 
 test('exhausted image retry details show each recorded failure and identify the first root cause', async () => {
-  const source = await readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8');
+  const source = await readTaskReviewSource();
   assert.match(source, /imageRetryFailures/u);
   assert.match(source, /生图失败详情/u);
   assert.match(source, /首个根因/u);
@@ -160,7 +164,7 @@ test('exhausted image retry details show each recorded failure and identify the 
 test('mandatory copy rechecks have a dedicated workbench status and next-step explanation', async () => {
   const [workbench, reviewDialog] = await Promise.all([
     readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
-    readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
+    readTaskReviewSource(),
   ]);
 
   assert.match(workbench, /QC_MANDATORY_RECHECK: '待强制复检'/u);
@@ -171,7 +175,7 @@ test('mandatory copy rechecks have a dedicated workbench status and next-step ex
 test('running and failed copy tasks expose retry in personal, all-copy and all-jobs lists', async () => {
   const [source, reviewDialog] = await Promise.all([
     readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
-    readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
+    readTaskReviewSource(),
   ]);
   assert.match(source, /activeView === 'PERSONAL' && canRetryCopy && <Button[^>]*disabled=\{busy\}[^>]*onClick=\{\(\) => \{ void retryCopy\(task\); \}\}[^>]*><RotateCcw[^>]*\/>重试<\/Button>/u);
   assert.match(source, /const canRetryCopy = \(hasOwnerControl \|\| creatorCanControlMachineCopy\)[\s\S]*\['COPY_RUNNING', 'COPY_FAILED'\]\.includes\(task.state\)/u);
@@ -198,20 +202,21 @@ test('personal and image-work rows expose safe image requeue controls', async ()
   assert.match(source, />重试生图<\/Button>/u);
 });
 
-test('admin queued tasks expose a direct discard then permanent-delete workflow', async () => {
+test('admin queued and pending review tasks expose a direct discard then permanent-delete workflow', async () => {
   const [source, rowActions, styles] = await Promise.all([
     readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
     readFile(projectFile('app/workbench/task-row-actions.tsx'), 'utf8'),
     readFile(projectFile('app/globals.css'), 'utf8'),
   ]);
-  assert.match(source, /async function discardQueuedTask\(task: DistributedTask\)/u);
-  assert.match(source, /已废弃；管理员可从废弃池恢复任务/u);
-  assert.match(source, /canDiscard && !canDiscardQueue/u);
+  assert.match(source, /async function runBatchAction\(action: 'RETRY' \| 'DISCARD'/u);
+  assert.match(source, /管理员之后可以永久删除或从废弃池恢复/u);
+  assert.match(source, /canDiscard && !canAdminDiscard/u);
   assert.match(source, /creatorCanControlMachineCopy[\s\S]*\['COPY_QUEUED', 'COPY_RUNNING', 'COPY_FAILED'\]\.includes\(task\.state\)/u);
   assert.match(source, /visibleActionCount=\{visibleActionCount\}/u);
   assert.match(source, /const visibleActionCount = role === 'ADMIN' && activeView !== 'UNASSIGNED' \? 2 : 1/u);
   assert.match(styles, /\.workbench-col-actions \{ width: 216px; min-width: 216px; max-width: 216px; \}/u);
-  assert.match(source, /queued && <Button[^>]*onClick=\{\(\) => \{ void discardQueuedTask\(task\); \}\}[^>]*><Trash2[^>]*\/>废弃<\/Button>/u);
+  assert.match(source, /const canAdminDiscard = role === 'ADMIN' && canAdminDiscardTask\(task\)/u);
+  assert.match(source, /onClick=\{\(\) => \{ void runBatchAction\('DISCARD', \[task\]\); \}\}[^>]*><Trash2[^>]*\/>废弃<\/Button>/u);
   assert.match(source, /const restoreButton = role === 'ADMIN' && task\.state === 'CANCELLED'/u);
   assert.match(source, /\{restoreButton\}[\s\S]*\{permanentDeleteButton\}/u);
   assert.match(source, /expectedUpdatedAt: task.updatedAt/u);
@@ -231,7 +236,7 @@ test('admin queued tasks expose a direct discard then permanent-delete workflow'
   assert.match(source, /const permanentlyDeletableTasks = selectedTasks\.filter\(isPermanentlyDeletableTask\)/u);
   assert.match(source, /\/v1\/tasks\/batch-permanent-delete/u);
   assert.match(source, /批量永久删除 \{tasks\.length\} 条任务/u);
-  assert.match(source, /废弃排队中 \{queuedTasks\.length\}/u);
+  assert.match(source, /废弃 \{discardableTasks\.length\}/u);
   assert.match(source, /单次最多永久删除 20 条/u);
 });
 
@@ -257,7 +262,7 @@ test('permanent deletion rejects repeated submits and unlocks before refreshing 
   const source = await readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8');
   const singleStart = source.indexOf('async function permanentlyDeleteTask()');
   const batchStart = source.indexOf('async function permanentlyDeleteSelectedTasks()');
-  const actionsStart = source.indexOf('function taskActions(', batchStart);
+  const actionsStart = source.indexOf('const selectedTaskIdSet = ', batchStart);
   const singleDelete = source.slice(singleStart, batchStart);
   const batchDelete = source.slice(batchStart, actionsStart);
 
@@ -286,7 +291,9 @@ test('list state, saved views and centralized batch handling are available to ad
   assert.match(page, /parseWorkbenchListState/u);
   assert.match(page, /initialListState=\{initialListState\}/u);
   assert.match(workbench, /workbenchListSearch/u);
-  assert.match(workbench, /router\.replace\(href, \{ scroll: false \}\)/u);
+  assert.match(workbench, /window\.history\.replaceState\(null, '', href\)/u);
+  assert.doesNotMatch(workbench, /router\.replace\(href/u, 'same-view filters must not request another server-rendered route');
+  assert.match(workbench, /window\.addEventListener\('popstate',restore\)/u);
   assert.match(listState, /queryPackageName/u);
   assert.match(listState, /createdByAccountId|createdByUserId|deduplicateQuery|attention|taskId/u);
   assert.match(workbench, /<SelectItem value=\{DEFAULT_TASK_VIEW_VALUE\}>默认视图<\/SelectItem>/u);
@@ -348,7 +355,7 @@ test('task sorting controls keep usable widths and stack on narrow screens', asy
 test('creation dialog accepts a single batch textarea and creates one remote batch', async () => {
   const [workbench, reviewDialog, styles] = await Promise.all([
     readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
-    readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
+    readTaskReviewSource(),
     readFile(projectFile('app/globals.css'), 'utf8'),
   ]);
 
@@ -514,7 +521,7 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
 
 test('task detail elevates the image workspace during operator image review and rework', async () => {
   const [source, styles] = await Promise.all([
-    readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
+    readTaskReviewSource(),
     readFile(projectFile('app/globals.css'), 'utf8'),
   ]);
   assert.match(source, /isImageReviewView \? detail\.state === 'IMAGE_REWORK_PENDING' \? '图片返修' : '图片初审' : '图片审核'/u);
@@ -528,7 +535,7 @@ test('task detail elevates the image workspace during operator image review and 
 
 test('image review fits the complete image, supports exterior controls, and presents saved visual planning as structured cards', async () => {
   const [reviewDialog, carouselNavigation, preview, backdropControl, currentImageEditor, visualPlan, styles] = await Promise.all([
-    readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
+    readTaskReviewSource(),
     readFile(projectFile('app/components/image-carousel-navigation.tsx'), 'utf8'),
     readFile(projectFile('app/components/image-preview.tsx'), 'utf8'),
     readFile(projectFile('app/components/image-preview-background-control.tsx'), 'utf8'),
@@ -624,7 +631,7 @@ test('executor CLI gates registration and polling behind readiness', async () =>
 test('administrators can directly pass a pending copy QA item from list and detail views', async () => {
   const [workbench, reviewDialog] = await Promise.all([
     readFile(projectFile('app/workbench/creation-workbench.tsx'), 'utf8'),
-    readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
+    readTaskReviewSource(),
   ]);
   for (const source of [workbench, reviewDialog]) {
     assert.match(source, /role === 'ADMIN'[\s\S]{0,160}detail\.state === 'COPY_QC_PENDING'|role === 'ADMIN'[\s\S]{0,160}task\.state === 'COPY_QC_PENDING'/u);

@@ -8,6 +8,7 @@ outputs/
 server/server-storage/
 server/backups/
 server/logs/
+server/reports/
 service-logs/
 server/reports/repair-backups/
 preview-service/backups/
@@ -22,7 +23,17 @@ preview-service/backups/
 *.key
 npm-debug.log*
 .next/
+.next-dev-4311/
+.next-scaling-e2e/
+.next-image-editor-before/
+.next-image-editor-e2e/
 .next-local/
+.next-speed-optimized/
+.next-remaining-optimized/
+.next-followup-optimized/
+.next-functional-build/
+.next-functional-final-validation/
+.next-functional-100*/
 .next-blue/
 .next-green/
 server/test-storage/

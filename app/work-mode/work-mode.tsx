@@ -8,11 +8,12 @@ import { Input } from '@/components/ui/input';
 import { apiRequest } from '../components/api-client';
 import { useBackgroundTasks } from '../components/background-tasks';
 import { backgroundTaskGroup, backgroundTaskStatus, type BackgroundTask } from '../components/background-task-store';
-import { subscribeWorkspaceUpdates } from '../components/workspace-updates';
-import { TaskReviewDialog } from '../workbench/task-review-dialog';
+import { subscribeWorkspaceUpdates, workspaceUpdateRevision } from '../components/workspace-updates';
+import { createListRefreshCoordinator } from '../workbench/list-refresh-coordinator';
+import { TaskReviewDialog } from '../workbench/lazy-task-review-dialog';
 import { normalizeCopyQaItem, copyRevisionView } from '../copy-qa/types';
 import { normalizeImageQaItem } from '../image-qa/types';
-import { WorkQualityEditor } from './work-quality-editor';
+import { WorkQualityEditor } from './lazy-work-quality-editor';
 import { WORK_LABELS, isTaskPending, workItemKey, type WorkItem, type WorkKind, type WorkPage } from './types';
 import styles from './work-mode.module.css';
 
@@ -49,6 +50,10 @@ export function WorkMode({ kinds: initialKinds, role, nodeId, username, accountI
   const copyQaKindRef = useRef(copyQaKind);
   const itemsRef = useRef(items);
   const requestId = useRef(0);
+  const activeRequest = useRef<AbortController | null>(null);
+  const appending = useRef(false);
+  const [refreshCoordinator] = useState(createListRefreshCoordinator);
+  const loadScope = useRef('');
   const completedKeys = useRef(new Set<string>());
   const navigationGuardRef = useRef<(() => Promise<boolean>) | null>(null);
   const navigatingRef = useRef(false);
@@ -76,8 +81,11 @@ export function WorkMode({ kinds: initialKinds, role, nodeId, username, accountI
   }, [positionKey]);
   const updateItems = useCallback((next: WorkItem[]) => { itemsRef.current = next; setItems(next); }, []);
 
-  const fetchPage = useCallback(async (requestedKind: WorkKind, offset = 0, itemId?: string, requestedCopyQaKind: CopyQaKindFilter = copyQaKindRef.current) => {
-      const page = await apiRequest<WorkPage>(apiPath(`/v1/work-mode/items?kind=${requestedKind}&limit=${PAGE_SIZE}&offset=${offset}${requestedKind === 'COPY_QA' ? `&sampleKind=${requestedCopyQaKind}` : ''}${itemId ? `&itemId=${encodeURIComponent(itemId)}` : ''}`));
+  const fetchPage = useCallback(async (requestedKind: WorkKind, offset = 0, itemId?: string, requestedCopyQaKind: CopyQaKindFilter = copyQaKindRef.current, signal?: AbortSignal) => {
+      const timeout = AbortSignal.timeout(25_000);
+      const page = await apiRequest<WorkPage>(apiPath(`/v1/work-mode/items?kind=${requestedKind}&limit=${PAGE_SIZE}&offset=${offset}${requestedKind === 'COPY_QA' ? `&sampleKind=${requestedCopyQaKind}` : ''}${itemId ? `&itemId=${encodeURIComponent(itemId)}` : ''}`), {
+        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+      });
       if (!page || page.kind !== requestedKind || !Array.isArray(page.items) || !Array.isArray(page.kinds)) throw new Error('中心返回的作业数据不完整，请更新中心服务后重试。');
       const rows = page.items.map(item => {
         if (item.kind !== requestedKind) throw new Error('中心返回了不同类型的作业，请刷新后重试。');
@@ -97,16 +105,21 @@ export function WorkMode({ kinds: initialKinds, role, nodeId, username, accountI
       return { ...page, items: rows };
   }, [role]);
 
-  const load = useCallback(async (requestedKind: WorkKind, { append = false, autoSelect = false, selectId }: { append?: boolean; autoSelect?: boolean; selectId?: string } = {}) => {
+  type LoadOptions = { append?: boolean; autoSelect?: boolean; selectId?: string; invalidation?: boolean };
+  const loadPage = useCallback(async (requestedKind: WorkKind, { append = false, autoSelect = false, selectId }: LoadOptions = {}) => {
     const sequence = ++requestId.current;
+    activeRequest.current?.abort();
+    const controller = new AbortController();
+    activeRequest.current = controller;
+    appending.current = append;
     const requestedCopyQaKind = copyQaKindRef.current;
     const offset = append ? itemsRef.current.length : 0;
     setLoading(true); setError('');
     try {
-      const page = await fetchPage(requestedKind, offset, undefined, requestedCopyQaKind);
+      const page = await fetchPage(requestedKind, offset, undefined, requestedCopyQaKind, controller.signal);
       const rows = page.items;
       const restored = selectId ? rows.find(row => row.id === selectId)
-        ?? (await fetchPage(requestedKind, 0, selectId, requestedCopyQaKind)).items.find(row => row.id === selectId) : undefined;
+        ?? (await fetchPage(requestedKind, 0, selectId, requestedCopyQaKind, controller.signal)).items.find(row => row.id === selectId) : undefined;
       if (sequence !== requestId.current || kindRef.current !== requestedKind || (requestedKind === 'COPY_QA' && copyQaKindRef.current !== requestedCopyQaKind)) return;
       const merged = append ? [...itemsRef.current, ...rows.filter(row => !itemsRef.current.some(old => workItemKey(old) === workItemKey(row)))] : rows;
       updateItems(merged); setHasMore(page.hasMore); setKinds(page.kinds);
@@ -120,8 +133,17 @@ export function WorkMode({ kinds: initialKinds, role, nodeId, username, accountI
       }
     } catch (caught) {
       if (sequence === requestId.current) setError(caught instanceof Error ? caught.message : '待办读取失败，请重试');
-    } finally { if (sequence === requestId.current) setLoading(false); }
+    } finally { if (sequence === requestId.current) { activeRequest.current = null; appending.current = false; setLoading(false); } }
   }, [fetchPage, select, updateItems]);
+  const load = useCallback((requestedKind: WorkKind, options: LoadOptions = {}) => {
+    const scope = JSON.stringify([requestedKind, copyQaKindRef.current]);
+    if (scope !== loadScope.current) {
+      loadScope.current = scope; refreshCoordinator.reset(); activeRequest.current?.abort(); requestId.current += 1;
+    }
+    return refreshCoordinator.request(() => loadPage(requestedKind, options), {
+      revision: workspaceUpdateRevision(), invalidation: options.invalidation,
+    });
+  }, [loadPage, refreshCoordinator]);
 
   useEffect(() => {
     let preferred = initialKinds[0];
@@ -137,17 +159,22 @@ export function WorkMode({ kinds: initialKinds, role, nodeId, username, accountI
       }
     } catch { /* Ignore invalid saved positions. */ }
     kindRef.current = preferred; setKind(preferred); void load(preferred, { autoSelect: true, selectId });
-    return () => { requestId.current += 1; };
+    return () => { requestId.current += 1; refreshCoordinator.reset(); activeRequest.current?.abort(); };
   }, [initialKinds, load, preferenceKey, positionKey]);
 
   useEffect(() => {
     const refresh = () => {
-      if (document.visibilityState === 'visible' && !loading && !navigatingRef.current && itemsRef.current.length <= PAGE_SIZE) void load(kindRef.current);
+      if (document.visibilityState === 'visible' && !navigatingRef.current && !appending.current && itemsRef.current.length <= PAGE_SIZE) void load(kindRef.current);
     };
     const timer = window.setInterval(refresh, 30_000);
-    const unsubscribe = subscribeWorkspaceUpdates(refresh);
-    return () => { window.clearInterval(timer); unsubscribe(); };
-  }, [load, loading]);
+    const unsubscribe = subscribeWorkspaceUpdates(() => {
+      if (document.visibilityState === 'visible' && !navigatingRef.current && !appending.current && itemsRef.current.length <= PAGE_SIZE) {
+        void load(kindRef.current, { invalidation: true });
+      }
+    }, {scopes:['tasks','quality']});
+    document.addEventListener('visibilitychange', refresh);
+    return () => { window.clearInterval(timer); unsubscribe(); document.removeEventListener('visibilitychange', refresh); };
+  }, [load]);
 
   const navigate = useCallback(async (action: () => void, prepare?: () => Promise<boolean>) => {
     if (navigatingRef.current) return false;

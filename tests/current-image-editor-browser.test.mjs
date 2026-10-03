@@ -9,14 +9,14 @@ import sharp from 'sharp';
 import { decodeReference } from '../src/image-edit-pixels.mjs';
 import { localEditAlternatives } from '../src/local-edit-alternatives.mjs';
 
-test('image editor browser: prompt-localized edit, multi-page product replacement, preview and explicit acceptance',{skip:process.env.RUN_IMAGE_EDIT_BROWSER!=='1',timeout:75000},async()=>{
+test('image editor browser: prompt-localized edit, multi-page product replacement, preview and explicit acceptance',{skip:process.env.RUN_IMAGE_EDIT_BROWSER!=='1',timeout:150000},async()=>{
   const {build}=await import('esbuild'),{chromium}=await import('playwright-core');
   const root=await mkdtemp(join(tmpdir(),'image-edit-browser-')),bundle=join(root,'bundle.js'),stylesheet=join(root,'bundle.css');
-  const runId=randomUUID(),editId=randomUUID(),failedEditId=randomUUID();let edits=[],submitted=null,submissions=[],actions=[],batchRequests=[];
+  const runId=randomUUID(),editId=randomUUID(),failedEditId=randomUUID(),historyRunId=randomUUID();let edits=[],submitted=null,submissions=[],actions=[],batchRequests=[];
   const png=await sharp({create:{width:1086,height:1448,channels:4,background:'#eeeeee'}}).png().toBuffer();
   let browser,server;
   try{
-    await build({stdin:{contents:`import './app/globals.css';import React from 'react';import{createRoot}from'react-dom/client';import{ConfirmDialogProvider}from'./components/ui/confirm-dialog';import{CurrentImageEditor}from'./app/components/current-image-editor';const assets=[1,2,3].map(id=>({id,sha256:String.fromCharCode(96+id).repeat(64),url:'/v1/assets/'+id}));createRoot(document.getElementById('root')).render(<ConfirmDialogProvider><CurrentImageEditor taskId={1} runId="${runId}" copyRevisionId={1} asset={assets[0]} assets={assets} page={1} runs={[]} onChanged={async()=>{}}/></ConfirmDialogProvider>);`,resolveDir:process.cwd(),loader:'tsx'},bundle:true,outfile:bundle,jsx:'automatic',platform:'browser',conditions:['style'],alias:{'@':process.cwd()},define:{'process.env.NODE_ENV':'"test"'}});
+    await build({stdin:{contents:`import './app/globals.css';import React from 'react';import{createRoot}from'react-dom/client';import{ConfirmDialogProvider}from'./components/ui/confirm-dialog';import{CurrentImageEditor}from'./app/components/current-image-editor';const assets=[1,2,3].map(id=>({id,sha256:String.fromCharCode(96+id).repeat(64),url:'/v1/assets/'+id}));createRoot(document.getElementById('root')).render(<ConfirmDialogProvider><CurrentImageEditor taskId={1} runId="${runId}" copyRevisionId={1} asset={assets[0]} assets={assets} page={1} runs={[{id:'${historyRunId}',result:{processing:{type:'REPROCESS'}}}]} onChanged={async()=>{}}/></ConfirmDialogProvider>);`,resolveDir:process.cwd(),loader:'tsx'},bundle:true,outfile:bundle,jsx:'automatic',platform:'browser',conditions:['style'],alias:{'@':process.cwd()},define:{'process.env.NODE_ENV':'"test"'}});
     const [js,rawCss]=await Promise.all([readFile(bundle),readFile(stylesheet,'utf8')]);
     const {default:postcss}=await import('postcss'), {default:tailwind}=await import('@tailwindcss/postcss');
     const {css}=await postcss([tailwind()]).process(rawCss,{from:join(process.cwd(),'app/globals.css')});
@@ -25,7 +25,7 @@ test('image editor browser: prompt-localized edit, multi-page product replacemen
       if(req.url==='/bundle.css'){res.setHeader('content-type','text/css');res.end(css);return;}
       if(req.url?.includes('/assets/')){res.setHeader('content-type','image/png');res.end(png);return;}
       if(req.url==='/inject-rejected'&&req.method==='POST'){
-        edits=[{id:failedEditId,version:3,status:'FAILED',operation:'AI_LOCAL',source_asset_id:1,target_page:1,created_by:'operator',
+        edits=[{id:failedEditId,version:(edits.find(edit=>edit.id===failedEditId)?.version??2)+1,status:'FAILED',operation:'AI_LOCAL',source_asset_id:1,target_page:1,created_by:'operator',
           config:{instruction:'把右下角汤勺移动到锅的左侧，并保持少量老抽倒入锅内',confirmation:'LIVE_IMAGE_COST_ACCEPTED'},
           error:'局部修改结果未通过验收：汤勺被删除但没有在左侧重新出现',
           result:{asset_id:17,image_run_id:randomUUID(),validation:{stage:'LOCAL_EDIT_RESULT',passed:false,billedImageGeneration:true,
@@ -36,6 +36,10 @@ test('image editor browser: prompt-localized edit, multi-page product replacemen
         res.setHeader('content-type','application/json');res.end(JSON.stringify({ok:true}));return;
       }
       if(req.url?.startsWith('/api/')){
+        if(req.method==='GET'&&new URL(req.url,'http://fixture').pathname.endsWith('/image-edits/state')){
+          const items=edits.map(({id,target_page,status,version,error,created_by,created_by_account_id})=>({id,task_id:1,target_page,status,version,error,created_by,created_by_account_id}));
+          res.setHeader('content-type','application/json');res.end(JSON.stringify({data:{status:items.find(item=>item.status==='RUNNING')?.status??items.find(item=>item.status==='QUEUED')?.status??items[0]?.status??'UPLOADED',signature:JSON.stringify(items.map(item=>[item.id,item.version,item.status,item.error??null])),items}}));return;
+        }
         let body='';for await(const chunk of req)body+=chunk;
         const data=body?JSON.parse(body):null;
         if(req.method==='POST'&&req.url.endsWith('/image-edit-references')){res.setHeader('content-type','application/json');res.end(JSON.stringify({data:{id:9,sha256:'b'.repeat(64),url:'/v1/assets/9'}}));return;}
@@ -53,7 +57,8 @@ test('image editor browser: prompt-localized edit, multi-page product replacemen
           edits=edits.map(edit=>acceptedIds.has(edit.id)?{...edit,status:'ACCEPTED',version:edit.version+1}:edit);
           response=edits.filter(edit=>acceptedIds.has(edit.id));
         }
-        else if(req.method==='POST'){actions.push({url:req.url,data});const targetId=req.url.split('/').at(-2);edits=edits.map(e=>e.id===targetId?{...e,status:req.url.endsWith('/accept')?'ACCEPTED':req.url.endsWith('/apply-suggestion')||req.url.endsWith('/retry')?'QUEUED':'CANCELLED',version:e.version+1,...(req.url.endsWith('/apply-suggestion')?{config:{...e.config,instruction:localEditAlternatives(e).find(option=>option.id===data.suggestionId).instruction}}:{})}:e);response=edits.find(e=>e.id===targetId);}
+        else if(req.method==='POST'&&req.url.includes('/image-versions/')&&req.url.endsWith('/restore')){actions.push({url:req.url,data});const restored=createEdit({...data,operation:'RESTORE',instruction:'恢复历史图片版本'});edits=[restored];response=restored;}
+        else if(req.method==='POST'){actions.push({url:req.url,data});const targetId=req.url.split('/').at(-2);edits=edits.map(e=>e.id===targetId?{...e,status:req.url.endsWith('/accept')?'ACCEPTED':req.url.endsWith('/reject')?'REJECTED':req.url.endsWith('/apply-suggestion')||req.url.endsWith('/retry')?'QUEUED':'CANCELLED',version:e.version+1,...(req.url.endsWith('/apply-suggestion')?{config:{...e.config,instruction:localEditAlternatives(e).find(option=>option.id===data.suggestionId).instruction}}:{})}:e);response=edits.find(e=>e.id===targetId);}
         res.setHeader('content-type','application/json');res.end(JSON.stringify({data:req.method==='GET'?edits:response}));return;
       }
       res.setHeader('content-type','text/html');res.end('<html><meta charset="utf-8"><link rel="stylesheet" href="/bundle.css"><style>[data-slot="dialog-content"]{translate:-50% -50%}</style><body><div id="root"></div><script src="/bundle.js"></script></body></html>');
@@ -93,6 +98,12 @@ test('image editor browser: prompt-localized edit, multi-page product replacemen
     ]);
     assert.match(previewGutter,/stable/u);
     assert.equal(await page.getByLabel('人工生成标识文字',{exact:true}).inputValue(),'该人物形象由AI生成');
+    const disclosureTextInput=page.getByLabel('人工生成标识文字',{exact:true});
+    for(const [value,valid] of [['中文AI_12-',true],['包含 空格',false],['AI@生成',false],['🙂',false]]){
+      await disclosureTextInput.fill(value);
+      assert.equal(await disclosureTextInput.evaluate(input=>input.validity.valid),valid,`native disclosure pattern: ${value}`);
+    }
+    await disclosureTextInput.fill('该人物形象由AI生成');
     assert.equal(await page.getByLabel('最近常用标识文字').getByText('成功提交后会在这里保留最近使用的 5 条。',{exact:true}).count(),1);
     await page.getByLabel('人工生成标识文字',{exact:true}).fill('人工生成');
     assert.equal(await livePreview.locator('svg text').textContent(),'人工生成');
@@ -187,6 +198,9 @@ test('image editor browser: prompt-localized edit, multi-page product replacemen
     await page.setViewportSize({width:1010,height:878});
     await page.getByRole('button',{name:'生成已选 1 张程序标识预览',exact:true}).click();
     await page.getByRole('heading',{name:'修改前后滑动对比'}).waitFor();
+    const comparisonSlider=page.getByRole('slider',{name:'修改前后对比滑块',exact:true});
+    await comparisonSlider.focus();await page.keyboard.press('Home');assert.equal(await comparisonSlider.inputValue(),'0');
+    await page.keyboard.press('End');assert.equal(await comparisonSlider.inputValue(),'100');
     assert.equal(submitted.operation,'SVG_DISCLOSURE');assert.equal(submitted.confirmation,undefined);
     assert.equal(submitted.overlay.badgeVariant,'solid-pill');
     assert.equal(submitted.overlay.badgeColor,'#102938');
@@ -498,6 +512,28 @@ test('image editor browser: prompt-localized edit, multi-page product replacemen
     await deleteConfirmation.getByRole('button',{name:'确认直接删除',exact:true}).click();
     await page.getByText('局部修改 · 已取消',{exact:true}).waitFor();
     assert.equal(actions.at(-1).url.endsWith('/cancel'),true);
+    const reusedInstruction=edits[0].config.instruction;
+    await page.getByRole('button',{name:'复用说明并修改',exact:true}).first().click();
+    assert.equal(await page.getByLabel('图片修改要求').inputValue(),reusedInstruction);
+    assert.equal(await feeCheckbox.isChecked(),false,'reusing a description requires fresh cost consent');
+    await page.getByRole('button',{name:'当前图',exact:true}).click();
+    await page.getByRole('slider',{name:'预览缩放',exact:true}).focus();await page.keyboard.press('End');
+    assert.equal(await page.getByRole('slider',{name:'预览缩放',exact:true}).inputValue(),'3');
+    await page.getByRole('slider',{name:'预览缩放',exact:true}).focus();await page.keyboard.press('Home');
+    assert.equal(await page.getByRole('slider',{name:'预览缩放',exact:true}).inputValue(),'1');
+    await page.getByLabel('图片修改要求').fill('将桌面背景改为浅绿色，保持现有主体和文字不变');
+    await feeCheckbox.check();await page.getByRole('button',{name:'生成修改预览',exact:true}).click();
+    await page.getByRole('tab',{name:/任务记录/u}).click();await page.getByRole('button',{name:'拒绝',exact:true}).click();
+    const rejectActionsBefore=actions.length;
+    await page.getByRole('button',{name:'确认拒绝',exact:true}).click();await page.getByRole('alert').getByText('请先填写“操作原因”，再拒绝。',{exact:true}).waitFor();
+    assert.equal(actions.length,rejectActionsBefore);
+    await page.getByRole('button',{name:'取消',exact:true}).click();assert.equal(await page.getByLabel('拒绝操作原因').count(),0);
+    await page.getByRole('button',{name:'拒绝',exact:true}).click();await page.getByLabel('拒绝操作原因').fill('效果不符合要求');
+    await page.getByRole('button',{name:'确认拒绝',exact:true}).click();await page.getByText('局部修改 · 已拒绝',{exact:true}).waitFor();
+    assert.ok(actions.at(-1).url.endsWith('/reject'));assert.equal(actions.at(-1).data.reason,'效果不符合要求');
+    await page.getByRole('combobox',{name:'历史图片版本',exact:true}).click();await page.getByRole('option').first().click();
+    await page.getByRole('button',{name:'生成恢复预览',exact:true}).click();await page.getByText('恢复版本 · 预览待确认',{exact:true}).waitFor();
+    assert.ok(actions.at(-1).url.endsWith(`/image-versions/${historyRunId}/restore`));
     await page.getByRole('button',{name:'关闭弹窗',exact:true}).click();
     await dialog.waitFor({state:'hidden'});
     assert.equal(await page.getByRole('button',{name:'修改图片',exact:true}).isVisible(),true);
@@ -506,7 +542,7 @@ test('image editor browser: prompt-localized edit, multi-page product replacemen
 });
 
 test('image editor browser: reference upload errors explain size and actual format, and allow corrected files',
- {skip:process.env.RUN_IMAGE_EDIT_BROWSER!=='1',timeout:45000},async()=>{
+ {skip:process.env.RUN_IMAGE_EDIT_BROWSER!=='1',timeout:90000},async()=>{
   const {build}=await import('esbuild'),{chromium}=await import('playwright-core');
   const root=await mkdtemp(join(tmpdir(),'image-reference-errors-'));
   const png=await sharp({create:{width:1086,height:1448,channels:3,background:'#eeeeee'}}).png().toBuffer();

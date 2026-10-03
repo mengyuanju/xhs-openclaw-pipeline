@@ -10,6 +10,8 @@ import { UploadCloud, X } from 'lucide-react';
 import { ApiRequestError, apiRequest } from './api-client';
 import { createRequestId } from './request-id';
 import { useBackgroundTasks } from './background-tasks';
+import { useImageEditState } from './use-image-edit-state';
+import { readImageEditState, type ImageEditState } from './image-edit-state';
 import { isBackgroundTaskRunning } from './background-task-store';
 import { ImageDisclosureColorControl, DISCLOSURE_COLOR_ERROR, normalizeDisclosureBadgeColor, type DisclosureColorMode } from './image-disclosure-color-control';
 import { AI_DISCLOSURE_DEFAULT_COLOR, AI_DISCLOSURE_FALLBACK_COLOR, resolveAiDisclosureTextColor } from '../../src/ai-disclosure-badge.mjs';
@@ -289,16 +291,15 @@ export function StandaloneImageEditor({taskId,runId,copyRevisionId,asset,assets,
     // Each new model submission still requires a fresh cost confirmation.
     setConfirmed(false);
   },[page,imageAssets.length]);
-  const refresh=useCallback(async()=>{
-    const [items,state]=await Promise.all([
-      apiRequest<Edit[]>(path(`/v1/tasks/${taskId}/image-edits`)),
-      apiRequest<{status:string}>(path(`/v1/tasks/${taskId}`)),
-    ]);
+  const refresh=useCallback(async(snapshot?:ImageEditState,isCurrent:()=>boolean=()=>true)=>{
+    const state=snapshot??await readImageEditState({taskId,standalone:true,fresh:true});
+    const items=(state.legacyItems??await apiRequest<Edit[]>(path(`/v1/tasks/${taskId}/image-edits`))) as Edit[];
+    if(!isCurrent())return;
     setObservedStatus(state.status);
     setEdits(items);hydrate(items);setLoaded(true);
     for(const edit of items)if(isBackgroundTaskRunning(edit))backgroundStore?.track({id:edit.id,kind:'STANDALONE_IMAGE_EDIT',taskId,page:edit.target_page,status:edit.status,ownerUsername:edit.created_by,ownerAccountId:edit.created_by_account_id});
   },[backgroundStore,taskId,hydrate]);
-  useEffect(()=>{let active=true;const poll=()=>{if(active)void refresh().catch(e=>setError(e.message));};poll();const timer=setInterval(poll,4000);return()=>{active=false;clearInterval(timer);};},[refresh]);
+  useImageEditState({taskId,standalone:true,refresh,onState:state=>setObservedStatus(state.status),onError:error=>setError(error.message)});
   useEffect(()=>{setRecentDisclosureTexts(loadRecentDisclosureTexts(window.localStorage));},[]);
   useEffect(()=>{onBusyChange(busy);return()=>onBusyChange(false);},[busy,onBusyChange]);
   useEffect(()=>{if(!notice||busy)return;const timer=window.setTimeout(()=>setNotice(''),NOTICE_DURATION_MS);return()=>window.clearTimeout(timer);},[notice,busy]);
@@ -692,7 +693,7 @@ export function StandaloneImageEditor({taskId,runId,copyRevisionId,asset,assets,
                 {tab==='TEXT'&&<>
                   <div className={styles.scopeSelector} aria-label="标识生成方式"><span>生成方式</span><div role="group" aria-label="选择标识生成方式"><Button unstyled type="button" aria-pressed={disclosureMethod==='SVG'} onClick={()=>{setDisclosureMethod('SVG');setConfirmed(false);setError('');}}>程序叠加（SVG + Sharp）</Button><Button unstyled type="button" aria-pressed={disclosureMethod==='MODEL'} onClick={()=>{setDisclosureMethod('MODEL');setConfirmed(false);setError('');}}>图片模型融合</Button></div><small>{disclosureMethod==='SVG'?'程序标识提交后直接处理，不调用模型。':'由图片编辑模型将深色底标识融合进画面，并使用视觉模型验收。'}</small></div>
                   {disclosureMethod==='SVG'&&<><label>程序标识样式<Select value={disclosureBadgeVariant} disabled={readOnly||busy} onValueChange={value=>{setDisclosureBadgeVariant(value as DisclosureBadgeVariant);setPreviewMode('SOURCE');setError('');}}><SelectTrigger aria-label="程序标识样式"><SelectValue/></SelectTrigger><SelectContent className={styles.selectContent}><SelectItem value="outline-pill">描边徽章</SelectItem><SelectItem value="solid-pill">实心徽章</SelectItem></SelectContent></Select><small>{disclosureBadgeVariant==='solid-pill'?'实心底色与边框同色，文字自动选用黑色或白色保证可读性。':'文字与边框同色，内部保持透明。'}已选图片使用同一样式。</small></label><ImageDisclosureColorControl mode={disclosureColorMode} color={disclosureBadgeColor} disabled={readOnly||busy} onModeChange={value=>{setDisclosureColorMode(value);setPreviewMode('SOURCE');setError('');}} onColorChange={value=>{setDisclosureBadgeColor(value);setPreviewMode('SOURCE');setError('');}}/></>}
-                  <label>人工生成标识文字<Input aria-label="人工生成标识文字" value={text} maxLength={12} pattern="[\p{L}\p{N}_-]+" onChange={e=>setText(e.target.value)}/><small>最多 12 个字符，仅限文字、数字、下划线或短横线。</small></label>
+                  <label>人工生成标识文字<Input aria-label="人工生成标识文字" value={text} maxLength={12} pattern={'[\\p{L}\\p{N}_\\-]+'} onChange={e=>setText(e.target.value)}/><small>最多 12 个字符，仅限文字、数字、下划线或短横线。</small></label>
                   {imageAssets.length>1&&<div className={inlineStyles.disclosurePicker} aria-label="标识应用范围">
                     <div className={inlineStyles.disclosurePickerHeading}><span>应用范围 · 已选 {disclosurePages.length} 张</span><div><Button unstyled type="button" onClick={()=>{setSelectedDisclosurePages(imageAssets.map((_,index)=>index+1));setConfirmed(false);}}>全选</Button><Button unstyled type="button" onClick={()=>{setSelectedDisclosurePages([]);setConfirmed(false);}}>清空</Button></div></div>
                     <div className={inlineStyles.disclosurePageGrid}>{imageAssets.map((item,index)=>{const targetPage=index+1;return <div className={inlineStyles.disclosurePageCard} data-current={textPreviewPage===targetPage} data-selected={disclosurePages.includes(targetPage)} key={targetPage}>

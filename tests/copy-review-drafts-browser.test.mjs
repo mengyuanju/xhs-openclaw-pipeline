@@ -44,7 +44,7 @@ test('copy review drafts use IndexedDB across reloads, account and revision scop
     const { css } = await postcss([tailwind()]).process(rawCss, { from: join(process.cwd(), 'app/globals.css') });
 
     const plan = ['hero', 'steps', 'summary'].map((kind, index) => ({
-      kind, headline: `正式规划第 ${index + 1} 页`, subtitle: '', bullets: ['分类', '整理'], prompt: '整洁桌面和自然光',
+      kind, headline: `正式规划第 ${index + 1} 页`, subtitle: '', bullets: ['分类', '整理'], prompt: '整洁桌面、分区收纳盒和明亮自然光',
     }));
     const revision = (id, title) => ({ id, revision: id - 11, approvedAt: null,
       content: { copy: { title, body: '按使用频率整理桌面，将常用物品放在手边。'.repeat(15), tags: ['#收纳', '#桌面'] },
@@ -193,12 +193,14 @@ test('copy review drafts use IndexedDB across reloads, account and revision scop
     await planPage.locator('#review-copy-title').fill('未提交的文案修改');
     await planPage.locator('#review-plan-headline-0').fill('已正式保存的规划');
     await waitAutosaved(planPage);
-    await Promise.all([
-      planPage.waitForResponse(async response => response.url().endsWith('/tasks/41')
-        && response.request().method() === 'GET'
-        && (await response.json()).data?.currentCopyRevisionId === 14),
+    const [planSaveResponse] = await Promise.all([
+      planPage.waitForResponse(response => response.url().endsWith('/tasks/41/approve-copy')
+        && response.request().postDataJSON()?.decision === 'SAVE_PLAN'),
       planPage.getByRole('button', { name: '单独保存图片规划', exact: true }).click(),
     ]);
+    assert.equal(planSaveResponse.status(), 200);
+    assert.equal((await planSaveResponse.json()).data.currentCopyRevisionId, 14);
+    assert.equal(revisionId, 14, 'the formal save creates exactly one new revision');
     await planPage.reload();
     await planPage.locator('#review-copy-title').waitFor();
     assert.equal(await planPage.locator('#review-copy-title').inputValue(), '未提交的文案修改');
@@ -221,10 +223,13 @@ test('copy review drafts use IndexedDB across reloads, account and revision scop
     await ratingPage.getByText('草稿 v1', { exact: true }).waitFor();
     await ratingPage.getByText('草稿 v2', { exact: true }).waitFor();
     const getCountBeforeSave = requests.filter(item => item.method === 'GET' && item.path.endsWith('/copy-review-drafts')).length;
-    await Promise.all([
-      ratingPage.waitForResponse(response => response.url().endsWith('/tasks/41') && response.request().method() === 'GET'),
+    const [ratingSaveResponse] = await Promise.all([
+      ratingPage.waitForResponse(response => response.url().endsWith('/tasks/41/approve-copy')
+        && response.request().postDataJSON()?.decision === 'SAVE'),
       ratingPage.getByRole('button', { name: '保存评分，暂不提交', exact: true }).click(),
     ]);
+    assert.equal(ratingSaveResponse.status(), 200);
+    assert.equal((await ratingSaveResponse.json()).data.currentCopyRevisionId, 12);
     assert.equal(revisionId, 12, 'rating-only SAVE leaves the formal copy revision unchanged');
     assert.equal(savedAssessment?.score, 2.5);
     legacyDrafts = [legacyRecord('不应再次导入的旧服务器草稿')];

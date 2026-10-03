@@ -1,11 +1,13 @@
+import { readTaskReviewSource } from './helpers/task-review-source.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 test('task dialogs expose lazy read-only model call history only to administrators', async () => {
-  const dialog = await readFile(new URL('../app/workbench/task-review-dialog.tsx', import.meta.url), 'utf8');
+  const dialog = await readTaskReviewSource();
   const trace = await readFile(new URL('../app/workbench/model-call-trace.tsx', import.meta.url), 'utf8');
-  assert.match(dialog, /role === 'ADMIN' && <ModelCallTrace/u);
+  assert.match(dialog, /role === 'ADMIN' && <TaskReviewModelHistory/u);
+  assert.match(dialog, /return <ModelCallTrace key=\{detail\.id\}/u);
   assert.ok(dialog.indexOf('<ModelCallTrace key={detail.id}') > dialog.indexOf('联网资料来源'));
   assert.ok(dialog.indexOf('<ModelCallTrace key={detail.id}') < dialog.indexOf('<footer'));
   assert.match(trace, /useState\(false\)/);

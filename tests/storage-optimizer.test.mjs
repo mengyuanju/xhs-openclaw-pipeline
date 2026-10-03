@@ -179,11 +179,49 @@ describe('task storage retention', () => {
     await access(join(oldOutputDir, 'post.json'));
     await access(latestOutputImage);
     const [latestStat, assetStat] = await Promise.all([
-      stat(latestOutputImage),
-      stat(join(assetRoot, currentAssetPath)),
+      stat(latestOutputImage, { bigint: true }),
+      stat(join(assetRoot, currentAssetPath), { bigint: true }),
     ]);
     assert.equal(latestStat.dev, assetStat.dev);
     assert.equal(latestStat.ino, assetStat.ino);
+  });
+
+  it('links every distinct retained file using exact filesystem identities across a batch', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'xhs-storage-file-identity-'));
+    directories.push(directory);
+    const assetRoot = join(directory, 'assets');
+    const outputRoot = join(directory, 'output');
+    const outputDir = join(outputRoot, '1', 'attempt-1');
+    const assetDir = join(assetRoot, 'generated', '1', 'attempt-1');
+    await Promise.all([mkdir(outputDir, { recursive: true }), mkdir(assetDir, { recursive: true })]);
+    const assets = [];
+    // Repeated real files cover NTFS identities above the safe-integer range;
+    // Number-based stat can falsely classify adjacent independent files as links.
+    for (let page = 1; page <= 32; page += 1) {
+      const name = `page-${page}.png`;
+      const fileName = `11111111-1111-4111-8111-111111111111-${name}`;
+      const bytes = Buffer.from(`retained image ${page}`);
+      await writeFile(join(outputDir, name), bytes);
+      await writeFile(join(assetDir, fileName), bytes);
+      const [source, destination] = await Promise.all([
+        stat(join(outputDir, name), { bigint: true }),
+        stat(join(assetDir, fileName), { bigint: true }),
+      ]);
+      assert.notEqual(source.ino, destination.ino, 'the fixture starts with independent files');
+      assets.push({ id: page, kind: 'GENERATED', sourceTextRevisionId: 1, pageIndex: page,
+        relativePath: `generated/1/attempt-1/${fileName}`, fileName, sha256: sha256(bytes) });
+    }
+    const task = { id: 1, config: { currentTextRevisionId: 1, imageCount: assets.length }, assets,
+      generationRuns: [{ attempt: 1, outputDir }] };
+    const store = { getTask: () => task, deleteAssetsForRetention: () => [] };
+    const preview = await optimizeTaskStorage({ store, taskId: 1, assetRoot, outputRoot });
+    assert.equal(preview.deduplication.linkCount, assets.length);
+    assert.deepEqual(preview.errors, []);
+    const applied = await optimizeTaskStorage({ store, taskId: 1, assetRoot, outputRoot, apply: true });
+    assert.equal(applied.deduplication.linkedCount, assets.length);
+    assert.deepEqual(applied.errors, []);
+    assert.equal((await optimizeTaskStorage({ store, taskId: 1, assetRoot, outputRoot })).deduplication.linkCount, 0,
+      'existing hard links are recognized exactly on the next preview');
   });
 
   it('never treats the latest output directory as historical when run rows repeat it', async () => {

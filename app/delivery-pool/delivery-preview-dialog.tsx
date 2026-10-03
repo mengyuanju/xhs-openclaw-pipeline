@@ -12,6 +12,7 @@ import { useEffect, useState } from 'react';
 
 import { apiRequest } from '../components/api-client';
 import { ImageManualModificationNote } from '../components/image-manual-modification-note';
+import { AssetThumbnail } from '../components/asset-thumbnail';
 import styles from './delivery-pool.module.css';
 import {
   normalizeDeliveryContentPreview,
@@ -117,7 +118,7 @@ export function DeliveryPreviewDialog({
               aria-pressed={index === activePage}
               onClick={() => setActivePage(index)}
             >
-              <img src={apiPath(item.url)} alt="" loading="lazy" decoding="async" />
+              <AssetThumbnail src={apiPath(item.url)} alt="" loading="lazy" />
               <span>{String(item.page).padStart(2, '0')}</span>
             </Button>)}
           </div>

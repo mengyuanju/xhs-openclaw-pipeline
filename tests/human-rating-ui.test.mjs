@@ -1,3 +1,4 @@
+import { readTaskReviewSource } from './helpers/task-review-source.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
@@ -53,7 +54,7 @@ test('shared image rating keeps its passing rule while copy machine drafts use d
 
 test('locked copy fields explain score gates while plan fields use their own permission gate', async () => {
   const [source, styles, sonner] = await Promise.all([
-    readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
+    readTaskReviewSource(),
     readFile(projectFile('app/globals.css'), 'utf8'),
     readFile(projectFile('components/ui/sonner.tsx'), 'utf8'),
   ]);
@@ -83,10 +84,11 @@ test('locked copy fields explain score gates while plan fields use their own per
 });
 
 test('copy review scores the machine draft once and auto-scores an edited approval at three', async () => {
-  const source = await readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8');
+  const source = await readTaskReviewSource();
 
   assert.match(source, /const isImageRetryRework = Boolean\(detail && isImageRetryExhausted\(detail\)\)/u);
-  assert.match(source, /const isCopyRework = !\['DISCARD_RESTORE', 'SECOND_ASSIGNMENT'\]\.includes\(detail\?\.mandatoryCopyQcOrigin \?\? ''\) && Boolean\(isImageRetryRework/u);
+  // A new return or exhausted image retry starts rework even after a reset.
+  assert.match(source, /const isCopyRework = Boolean\(isImageRetryRework\s*\|\| detail\?\.copyQaReworkPending\s*\|\| \(!\['DISCARD_RESTORE', 'SECOND_ASSIGNMENT'\]\.includes\(detail\?\.mandatoryCopyQcOrigin \?\? ''\)/u);
   assert.match(source, /const copyFieldsEditable = editable && \(isCopyRework \|\| copyOriginalScore === 2 \|\| copyOriginalScore === 2\.5\)/u);
   assert.doesNotMatch(source, /copyFieldsEditable = editable && originalCopyRatingComplete/u);
   assert.match(source, /const planFieldsReadOnly = !\(editable \|\| canEditApprovedImagePlan\)/u);
@@ -123,15 +125,15 @@ test('copy review scores the machine draft once and auto-scores an edited approv
   assert.match(source, /const canApproveCopy = isCopyRework \? copyReworkSatisfied/u);
   assert.match(source, /disabled=\{!editable \|\| loading \|\| submitting \|\| humanQualitySettingsUnavailable \|\| Boolean\(savedCopyRatings\.current\) \|\| copyContentChanged\}/u);
   assert.match(source, /最终修改稿无需再次评分/u);
-  assert.match(source, /生图失败文案修订/u);
-  assert.match(source, /提交修订并强制复检/u);
+  assert.match(source, /生图失败处理/u);
+  assert.match(source, /isImageRetryRework \? '提交修订并复检'/u);
   assert.match(source, /!isImageRetryRework && \(isCopyRework \|\| copyOriginalScore !== 1\)/u);
   assert.match(source, /document\.getElementById\(`copy-original-\$\{detail\.id\}-note`\)\?\.focus\(\)/u,
     'when deduction reasons are hidden, selecting a low score should focus its required note');
 });
 
 test('copy and image review visibility settings control their own guidance and reasons', async () => {
-  const source = await readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8');
+  const source = await readTaskReviewSource();
 
   assert.match(source, /humanRatingSettings\.copyReviewDisplay\.showScoreDescriptions/u);
   assert.match(source, /humanQualitySettings\?\.copyReviewDisplay\.showDeductionReasons === true/u);
@@ -151,7 +153,7 @@ test('copy and image review visibility settings control their own guidance and r
 
 test('image review separates automatic evidence from configurable human deduction reasons', async () => {
   const [dialog, qualitySummary] = await Promise.all([
-    readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
+    readTaskReviewSource(),
     readFile(projectFile('app/workbench/task-quality-summary.tsx'), 'utf8'),
   ]);
 
@@ -163,7 +165,7 @@ test('image review separates automatic evidence from configurable human deductio
 
 test('copy decisions use the shared payload builder and preserve the original assessment', async () => {
   const [source, builder] = await Promise.all([
-    readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
+    readTaskReviewSource(),
     readFile(projectFile('src/copy-review-submission.mjs'), 'utf8'),
   ]);
 
@@ -186,7 +188,7 @@ test('copy decisions use the shared payload builder and preserve the original as
 });
 
 test('image review requires only a whole-set score while keeping feedback optional', async () => {
-  const source = await readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8');
+  const source = await readTaskReviewSource();
 
   assert.match(source, /legend="整套图片评分"/u);
   assert.match(source, /const imageRatingComplete = imageScore !== null/u);

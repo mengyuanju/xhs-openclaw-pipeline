@@ -1,3 +1,4 @@
+import { readTaskReviewSource } from './helpers/task-review-source.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
@@ -102,7 +103,7 @@ test('primary section pages omit visible display headlines while keeping an acce
   ];
 
   for (const [path, accessibleName] of sectionPages) {
-    const page = await readFile(projectFile(path), 'utf8');
+    const page = await (path === 'app/workbench/task-review-dialog.tsx' ? readTaskReviewSource() : readFile(projectFile(path), 'utf8'));
     assert.match(page, new RegExp(`<h1 className="sr-only">${accessibleName}<\\/h1>`));
     assert.doesNotMatch(page, /<h1(?! className="sr-only")/);
   }
@@ -122,7 +123,7 @@ test('file uploads use the branded, keyboard-focusable control', async () => {
 test('generated assets open in an accessible centered Radix dialog preview', async () => {
   const [preview, imageBatch, dialog, styles] = await Promise.all([
     readFile(projectFile('app/components/image-preview.tsx'), 'utf8'),
-    readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
+    readTaskReviewSource(),
     readFile(projectFile('components/ui/dialog.tsx'), 'utf8'),
     readFile(projectFile('app/globals.css'), 'utf8'),
   ]);
@@ -147,7 +148,7 @@ test('generated assets open in an accessible centered Radix dialog preview', asy
 });
 
 test('image regeneration stays in the always-visible review footer', async () => {
-  const reviewDialog = await readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8');
+  const reviewDialog = await readTaskReviewSource();
   const footerStart = reviewDialog.indexOf('<footer className="workbench-review-footer">');
   const footerEnd = reviewDialog.indexOf('</footer>', footerStart);
   const regenerateButton = reviewDialog.indexOf('>重新生成图片</Button>');
@@ -168,7 +169,7 @@ test('application dropdowns use the shared Radix select instead of native select
   const [select, styles, ...screens] = await Promise.all([
     readFile(projectFile('components/ui/select.tsx'), 'utf8'),
     readFile(projectFile('app/globals.css'), 'utf8'),
-    ...paths.map((path) => readFile(projectFile(path), 'utf8')),
+    ...paths.map((path) => path === 'app/workbench/task-review-dialog.tsx' ? readTaskReviewSource() : readFile(projectFile(path), 'utf8')),
   ]);
 
   assert.match(select, /@radix-ui\/react-select/);
@@ -198,7 +199,7 @@ test('confirmation prompts use one accessible Radix alert dialog provider', asyn
     readFile(projectFile('components/ui/confirm-dialog.tsx'), 'utf8'),
     readFile(projectFile('app/components/app-frame.tsx'), 'utf8'),
     readFile(projectFile('app/globals.css'), 'utf8'),
-    ...paths.map((path) => readFile(projectFile(path), 'utf8')),
+    ...paths.map((path) => path === 'app/workbench/task-review-dialog.tsx' ? readTaskReviewSource() : readFile(projectFile(path), 'utf8')),
   ]);
 
   assert.match(confirmation, /@radix-ui\/react-alert-dialog/);
@@ -227,7 +228,7 @@ test('required text prompts use the shared accessible dialog instead of the brow
     readFile(projectFile('components/ui/text-input-dialog.tsx'), 'utf8'),
     readFile(projectFile('app/components/app-frame.tsx'), 'utf8'),
     readFile(projectFile('app/globals.css'), 'utf8'),
-    ...paths.map((path) => readFile(projectFile(path), 'utf8')),
+    ...paths.map((path) => path === 'app/workbench/task-review-dialog.tsx' ? readTaskReviewSource() : readFile(projectFile(path), 'utf8')),
   ]);
 
   assert.match(textInputDialog, /export function TextInputDialogProvider/u);
@@ -269,7 +270,7 @@ test('reviewers default to full-image previews and can switch to 100 percent mod
 test('image previews navigate within a batch and keep fitted landscape images geometrically centered', async () => {
   const [preview, imageBatch, styles] = await Promise.all([
     readFile(projectFile('app/components/image-preview.tsx'), 'utf8'),
-    readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
+    readTaskReviewSource(),
     readFile(projectFile('app/globals.css'), 'utf8'),
   ]);
 
@@ -328,17 +329,20 @@ test('primary actions and small login copy meet WCAG AA text contrast', async ()
 });
 
 test('the unified knowledge base exposes visual and copy modules with accessible controls', async () => {
-  const [navigation, topbar, page, tabs, workbench] = await Promise.all([
+  const [navigation, topbar, page, tabs, workbench, knowledgeViews] = await Promise.all([
     readFile(projectFile('app/components/side-nav.tsx'), 'utf8'),
     readFile(projectFile('app/components/app-topbar.tsx'), 'utf8'),
     readFile(projectFile('app/knowledge/page.tsx'), 'utf8'),
     readFile(projectFile('app/knowledge/knowledge-tabs.tsx'), 'utf8'),
     readFile(projectFile('app/knowledge/knowledge-workbench.tsx'), 'utf8'),
+    readFile(projectFile('app/knowledge/knowledge-views.ts'), 'utf8'),
   ]);
 
   assert.match(navigation, /href: '\/knowledge', label: '知识库'/);
   assert.match(topbar, /pathname\.startsWith\('\/knowledge'\)[\s\S]*title: '知识库'/u);
-  assert.match(tabs, /SHOW_KNOWLEDGE_TYPE_SWITCHER = false/u);
+  assert.match(knowledgeViews, /SHOW_KNOWLEDGE_TYPE_SWITCHER = false/u);
+  assert.match(tabs, /import \{ SHOW_KNOWLEDGE_TYPE_SWITCHER \} from '\.\/knowledge-views'/u);
+  assert.match(page, /SHOW_KNOWLEDGE_TYPE_SWITCHER \? listAllKnowledge\(store, 'listVisualKnowledge'\) : \[\]/u);
   assert.match(tabs, /useState<KnowledgeView>\('COPY'\)/u);
   assert.match(tabs, /role="tablist"/u);
   assert.match(tabs, /aria-selected/u);

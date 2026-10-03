@@ -7,7 +7,8 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { apiRequest } from './api-client';
 import { notifyWorkspaceUpdated } from './workspace-updates';
-import { backgroundTaskGroup, backgroundTaskMessage, backgroundTaskStatus, backgroundTaskTitle, createBackgroundTaskStore, isBackgroundTaskRunning, type BackgroundTask } from './background-task-store';
+import { backgroundTaskGroup, backgroundTaskMessage, backgroundTaskStatus, backgroundTaskTitle, createBackgroundTaskStore, isBackgroundTaskRunning, type BackgroundTask, type BackgroundTaskSnapshot } from './background-task-store';
+import { readImageEditState } from './image-edit-state';
 import styles from './background-tasks.module.css';
 
 type Store = ReturnType<typeof createBackgroundTaskStore>;
@@ -57,9 +58,39 @@ export function BackgroundTasksProvider({ accountKey, accountUsername, accountId
     const storageKey = `xhs:background-tasks:v1:${accountKey}`;
     const next = createBackgroundTaskStore({
       storage, storageKey, accountUsername, accountId,
-      request: path => apiRequest(`/api/control-plane${path}`, { signal: AbortSignal.timeout(15_000), cache: 'no-store' }),
+      request: async path => {
+        const planning = path.includes('/regenerate-image-plan/') && !path.includes('?full=1');
+        const value = await apiRequest<BackgroundTaskSnapshot>(`/api/control-plane${path.replace('?full=1','')}${planning ? '?metadata=true' : ''}`,
+          { signal: AbortSignal.timeout(15_000), cache: 'no-store' });
+        return planning ? { ...value, metadataOnly: true } : value;
+      },
+      requestStates: async rows => {
+        const results = new Map<string, BackgroundTaskSnapshot | Error>();
+        const groups = new Map<string, BackgroundTask[]>();
+        for (const task of rows) {
+          const key = `${task.kind}:${task.taskId}`;
+          groups.set(key, [...(groups.get(key) ?? []), task]);
+        }
+        await Promise.allSettled([...groups.values()].map(async group => {
+          for (let offset = 0; offset < group.length; offset += 100) {
+            const batch = group.slice(offset, offset + 100);
+            try {
+              const state = await readImageEditState({ taskId: batch[0].taskId,
+                standalone: batch[0].kind === 'STANDALONE_IMAGE_EDIT', ids: batch.map(task => task.id) });
+              for (const task of batch) {
+                const item = state.items.find(item => item.id === task.id);
+                results.set(task.id, state.status === 'DELETED' ? { status: 'DELETED' }
+                  : item ? { ...item, metadataOnly: true }
+                    : Object.assign(new Error('图片修改已不可访问'), { status: 404 }));
+              }
+            } catch (error) { batch.forEach(task => results.set(task.id, error instanceof Error ? error : new Error('图片状态读取失败'))); }
+          }
+        }));
+        return results;
+      },
       onComplete: task => {
-        notifyWorkspaceUpdated();
+        notifyWorkspaceUpdated({scopes:task.kind==='STANDALONE_IMAGE_EDIT' ? ['image-editor','background']
+          : ['tasks','task-details','image-edits','background'],taskIds:[task.taskId]});
         const notify = ['SUCCEEDED', 'PREVIEW_READY', 'ACCEPTED'].includes(task.status) ? toast.success : toast.warning;
         notify(backgroundTaskTitle(task), { id: `background:${task.id}`, description: backgroundTaskMessage(task), duration: 12_000,
           action: { label: '查看任务', onClick: () => { void openTask(task); } } });
@@ -82,14 +113,23 @@ export function BackgroundTasksProvider({ accountKey, accountUsername, accountId
       else void next.poll();
     };
     const sync = (event: StorageEvent) => { if (event.key === storageKey) next.sync(event.newValue ?? '[]'); };
+    const visible = () => { if(document.visibilityState === 'visible')poll(); };
     poll();
-    const timer = window.setInterval(poll, 4_000);
+    let checkedAt = Date.now();
+    const timer = window.setInterval(() => {
+      const interval = document.visibilityState !== 'visible' ? 30_000
+        : next.getSnapshot().some(isBackgroundTaskRunning) ? 4000 : 15_000;
+      if (Date.now() - checkedAt < interval) return;
+      checkedAt = Date.now(); poll();
+    }, 1000);
     window.addEventListener('focus', poll);
     window.addEventListener('storage', sync);
+    document.addEventListener('visibilitychange', visible);
     return () => {
       next.stop(); unsubscribe(); storeRef.current = null;
       next.getSnapshot().forEach(task => toast.dismiss(`background:${task.id}`));
       window.clearInterval(timer); window.removeEventListener('focus', poll); window.removeEventListener('storage', sync);
+      document.removeEventListener('visibilitychange', visible);
     };
   }, [accountKey, accountUsername, accountId, accountScope, openTask]);
   return <BackgroundTasksContext.Provider value={{ tasks: storeScope === accountScope ? tasks : [],

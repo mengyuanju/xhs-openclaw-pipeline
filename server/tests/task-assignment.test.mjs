@@ -265,7 +265,7 @@ test('a stable creator can retry unassigned copy work but cannot retry after the
           assigned_to_user_id: null, current_execution_id: null,
         })] };
       }
-      if (source.includes('SELECT id, node_id, snapshot FROM task_executions')) return { rows: [] };
+      if (source.includes('FROM task_executions') && source.includes('WHERE task_id = $1 AND kind = $2')) return { rows: [] };
       if (source.includes('UPDATE tasks SET')) {
         return { rows: [taskRow(9, {
           state: 'COPY_QUEUED', current_stage: 'COPY_QUEUED',

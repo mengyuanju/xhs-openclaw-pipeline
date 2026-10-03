@@ -1,6 +1,6 @@
 'use client';
 
-import { memo, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { memo, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Checkbox, Input, Radio, Slider, Textarea } from '@/components/ui/input';
@@ -10,6 +10,8 @@ import { UploadCloud, X } from 'lucide-react';
 import { ApiRequestError, apiRequest } from './api-client';
 import { createRequestId } from './request-id';
 import { useBackgroundTasks } from './background-tasks';
+import { useImageEditState } from './use-image-edit-state';
+import { type ImageEditState } from './image-edit-state';
 import { isBackgroundTaskRunning } from './background-task-store';
 import { ImageDisclosureColorControl, DISCLOSURE_COLOR_ERROR, normalizeDisclosureBadgeColor, type DisclosureColorMode } from './image-disclosure-color-control';
 import { AI_DISCLOSURE_DEFAULT_COLOR, AI_DISCLOSURE_FALLBACK_COLOR, resolveAiDisclosureTextColor } from '../../src/ai-disclosure-badge.mjs';
@@ -158,13 +160,15 @@ function pointLocation(point:{x:number;y:number}|null) {
   return `画面${horizontal.replace('侧','')}${vertical.replace('方','')}`;
 }
 const newReplacement=(index:number,page:number):ProductReplacement=>({key:`product-${index}`,reference:null,referenceMode:'APPEARANCE',targets:{[page]:{description:'',region:null,targetMode:'SINGLE'}}});
-export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,page,runs,onChanged}: {
+export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,page,runs,onChanged,initialOpen=false,openSignal,hideTrigger=false,returnFocusRef}: {
   taskId:number;runId:string;copyRevisionId:number;asset:Asset;assets?:Asset[];page:number;
-  runs:Array<{id:string;result:{processing?:{type:string}}|null}>;onChanged:()=>Promise<void>;
+  runs:Array<{id:string;result:{processing?:{type:string}}|null}>;onChanged:()=>Promise<void>;initialOpen?:boolean;
+  openSignal?:number;hideTrigger?:boolean;returnFocusRef?:RefObject<HTMLButtonElement|null>;
 }) {
   const confirm=useConfirmDialog();
   const {tasks:backgroundTasks,store:backgroundStore}=useBackgroundTasks();
-  const [open,setOpen]=useState(false),[tab,setTab]=useState('TEXT');
+  const [open,setOpen]=useState(initialOpen),[tab,setTab]=useState('TEXT');
+  useEffect(()=>{if(openSignal)setOpen(true);},[openSignal]);
   const [text,setText]=useState(DEFAULT_DISCLOSURE_TEXT);
   const [selectedTextPages,setSelectedTextPages]=useState<number[]>([page]);
   const [textPreviewPage,setTextPreviewPage]=useState(page);
@@ -241,12 +245,13 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
   function setTargetRegion(value:TargetRegion|null) {updateActiveTarget(current=>({...current,region:value}));}
   function setTargetMode(value:TargetMode) {updateActiveTarget(current=>({...current,targetMode:value,region:null}));}
   function setReferenceMode(value:ReferenceMode) {if(activeReplacement)updateReplacement(activeReplacement.key,current=>({...current,referenceMode:value}));}
-  const refresh=useCallback(async()=>{
-    const items=await apiRequest<Edit[]>(path(`/v1/tasks/${taskId}/image-edits`));
+  const refresh=useCallback(async(state?:ImageEditState,isCurrent:()=>boolean=()=>true)=>{
+    const items=(state?.legacyItems??await apiRequest<Edit[]>(path(`/v1/tasks/${taskId}/image-edits`))) as Edit[];
+    if(!isCurrent())return;
     setEdits(items);
     for(const edit of items)if(isBackgroundTaskRunning(edit))backgroundStore?.track({id:edit.id,kind:'IMAGE_EDIT',taskId,page:edit.target_page,status:edit.status,ownerUsername:edit.created_by,ownerAccountId:edit.created_by_account_id});
   },[backgroundStore,taskId]);
-  useEffect(()=>{if(!open)return;let active=true;const poll=()=>{if(active)void refresh().catch(e=>setError(e.message));};poll();const timer=setInterval(poll,4000);return()=>{active=false;clearInterval(timer);};},[open,refresh]);
+  useImageEditState({taskId,enabled:open,refresh,onError:error=>setError(error.message)});
   useEffect(()=>{if(open)setRecentDisclosureTexts(loadRecentDisclosureTexts(window.localStorage));},[open]);
   useEffect(()=>{if(!notice||busy)return;const timer=window.setTimeout(()=>setNotice(''),NOTICE_DURATION_MS);return()=>window.clearTimeout(timer);},[notice,busy]);
   useEffect(()=>()=>{if(targetSelectionFrame.current!==null)window.cancelAnimationFrame(targetSelectionFrame.current);},[]);
@@ -579,8 +584,9 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
     } finally {setBusy(false);setPendingBatchAccept(false);setReason('');}
   }
   return <>
-    <Button className="current-image-editor-trigger" type="button" onClick={()=>setOpen(true)}>修改图片</Button>
-    <Dialog open={open} onOpenChange={next=>{if(!busy)setOpen(next);}}><DialogContent className={styles.dialog} overlayClassName={styles.overlay}>
+    {!hideTrigger && <Button className="current-image-editor-trigger" type="button" onClick={()=>setOpen(true)}>修改图片</Button>}
+    <Dialog open={open} onOpenChange={next=>{if(!busy)setOpen(next);}}><DialogContent className={styles.dialog} overlayClassName={styles.overlay}
+      onCloseAutoFocus={event=>{if(returnFocusRef?.current){event.preventDefault();returnFocusRef.current.focus();}}}>
       <header className={styles.header}>
         <div><DialogTitle className={styles.title}>当前图片修改工作台 · 第 {displayPage} 页</DialogTitle>
         <DialogDescription className={styles.description}>草稿和预览保留当前图片及交付状态，采用新图后需重新初审。提交后可关闭窗口，完成或失败会在“后台任务”中提醒。</DialogDescription>
@@ -638,7 +644,7 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
                 {tab==='TEXT'&&<>
                   <div className={styles.scopeSelector} aria-label="标识生成方式"><span>生成方式</span><div role="group" aria-label="选择标识生成方式"><Button unstyled type="button" aria-pressed={disclosureMethod==='SVG'} onClick={()=>{setDisclosureMethod('SVG');setConfirmed(false);setError('');}}>程序叠加（SVG + Sharp）</Button><Button unstyled type="button" aria-pressed={disclosureMethod==='MODEL'} onClick={()=>{setDisclosureMethod('MODEL');setConfirmed(false);setError('');}}>图片模型融合</Button></div><small>{disclosureMethod==='SVG'?'程序标识提交后直接处理，不调用模型。':'由图片编辑模型将深色底标识融合进画面，并使用视觉模型验收。'}</small></div>
                   {disclosureMethod==='SVG'&&<><label>程序标识样式<Select value={disclosureBadgeVariant} disabled={busy} onValueChange={value=>{setDisclosureBadgeVariant(value as DisclosureBadgeVariant);setPreviewMode('SOURCE');setError('');}}><SelectTrigger aria-label="程序标识样式"><SelectValue/></SelectTrigger><SelectContent className={styles.selectContent}><SelectItem value="outline-pill">描边徽章</SelectItem><SelectItem value="solid-pill">实心徽章</SelectItem></SelectContent></Select><small>{disclosureBadgeVariant==='solid-pill'?'实心底色与边框同色，文字自动选用黑色或白色保证可读性。':'文字与边框同色，内部保持透明。'}已选图片使用同一样式。</small></label><ImageDisclosureColorControl mode={disclosureColorMode} color={disclosureBadgeColor} disabled={busy} onModeChange={value=>{setDisclosureColorMode(value);setPreviewMode('SOURCE');setError('');}} onColorChange={value=>{setDisclosureBadgeColor(value);setPreviewMode('SOURCE');setError('');}}/></>}
-                  <label>人工生成标识文字<Input aria-label="人工生成标识文字" value={text} maxLength={12} pattern="[\p{L}\p{N}_-]+" onChange={e=>setText(e.target.value)}/><small>最多 12 个字符，仅限文字、数字、下划线或短横线。</small></label>
+                  <label>人工生成标识文字<Input aria-label="人工生成标识文字" value={text} maxLength={12} pattern={'[\\p{L}\\p{N}_\\-]+'} onChange={e=>setText(e.target.value)}/><small>最多 12 个字符，仅限文字、数字、下划线或短横线。</small></label>
                   <section className={styles.disclosureSelection} aria-label="标识应用范围">
                     <div className={styles.disclosureSelectionHeading}><strong>选择要添加标识的图片</strong><span>已选 {textPages.length} / {imageAssets.length} 张</span><Button variant="outline" size="sm" type="button" disabled={busy} onClick={()=>{setSelectedTextPages(imageAssets.map((_,index)=>index+1));setConfirmed(false);}}>全选</Button><Button variant="outline" size="sm" type="button" disabled={busy} onClick={()=>{setSelectedTextPages([]);setConfirmed(false);}}>清空</Button></div>
                     <div className={styles.disclosureImageGrid}>{imageAssets.map((item,index)=>{const targetPage=index+1,checked=textPages.includes(targetPage);return <div className={styles.disclosureImageChoice} data-selected={checked} key={targetPage}>

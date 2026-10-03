@@ -327,6 +327,7 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
       preserveFilters = false,
       confirmedScreening,
       appendItems = false,
+      preserveError = false,
       cursor = null,
       requestedItemStatus,
       requestedItemSearch,
@@ -334,6 +335,7 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
       preserveFilters?: boolean;
       confirmedScreening?: ConfirmedScreening;
       appendItems?: boolean;
+      preserveError?: boolean;
       cursor?: string | null;
       requestedItemStatus?: QueryPackageItemFilter;
       requestedItemSearch?: string;
@@ -351,7 +353,7 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
       setLoadingMoreItems(false);
       setDetailLoading(true);
     }
-    setDetailError('');
+    if (!preserveError) setDetailError('');
     if (!appendItems) {
       setDetail((current) => current?.id === id
         ? { ...current, items: [], itemPage: { total: 0, returnedCount: 0, hasMore: false, nextCursor: null } }
@@ -661,7 +663,7 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
       setScreeningReason('');
       setDetailError(`${failure}；已清除本地暂存并刷新最新状态。`);
       await Promise.allSettled([
-        openPackage(detail.id, { preserveFilters: true }),
+        openPackage(detail.id, { preserveFilters: true, preserveError: true }),
         load({ silent: true }),
       ]);
     } finally {

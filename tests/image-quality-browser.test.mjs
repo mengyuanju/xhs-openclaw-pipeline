@@ -60,6 +60,8 @@ test('image QA browser: blind queue, repeated mandatory recheck returns and pass
   const firstId = randomUUID();
   const secondId = randomUUID();
   const thirdId = randomUUID();
+  const staleId = randomUUID();
+  const refreshedId = randomUUID();
   const freezeId = randomUUID();
   const png = await sharp({ create: { width: 400, height: 500, channels: 4, background: '#ddeee8' } }).png().toBuffer();
   let phase = 0;
@@ -69,6 +71,9 @@ test('image QA browser: blind queue, repeated mandatory recheck returns and pass
   let passedItemId = null;
   let discarded = null;
   let failDiscard = false;
+  let allowBatchReturn = false;
+  const batchPreviews = [], batchReturns = [];
+  const staleRequests = [];
   let browser;
   let server;
   const manualModificationNote = `第 2 页右下角替换新版包装。\n第 3 页标题第二行修正错字。\n修改素材：${'manual-edit-'.repeat(25)}<script>window.fixtureInjected=true</script>`;
@@ -79,7 +84,7 @@ test('image QA browser: blind queue, repeated mandatory recheck returns and pass
     manualModificationNote: id === firstId ? manualModificationNote : null,
     taskId: 991, query: '不应泄露的真实任务', submitter: { accountId: 64, username: 'hidden-worker' },
     assets: [1, 2].map((assetId) => ({ id: assetId, mediaType: 'image/png', sha256: 'a'.repeat(64), originalName: null, pageIndex: assetId, url: `/v1/assets/${assetId}` })),
-    capabilities: { canPass: true, canReturnSingle: true, canReturnBatch: false, canDiscard: true },
+    capabilities: { canPass: true, canReturnSingle: true, canReturnBatch: phase === 5 && allowBatchReturn, canDiscard: true },
   });
   try {
     await build({
@@ -114,19 +119,38 @@ test('image QA browser: blind queue, repeated mandatory recheck returns and pass
           imageReviewDisplay: { showDeductionReasons: true },
         } })); return;
       }
+      if (request.url?.endsWith('/batch-return-preview') && request.method === 'GET') {
+        batchPreviews.push(request.url); response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify({ data: { freezePublicId: freezeId, confirmedCount: 2, itemIds: [firstId, secondId] } })); return;
+      }
+      if (request.url === '/api/control-plane/v1/image-qa/batch-return' && request.method === 'POST') {
+        let body = ''; for await (const chunk of request) body += chunk; batchReturns.push(JSON.parse(body)); phase = 6;
+        response.setHeader('content-type', 'application/json'); response.end(JSON.stringify({ data: { confirmedCount: 2 } })); return;
+      }
       if (request.url?.startsWith('/api/control-plane/v1/image-qa/items') && request.method === 'GET') {
         const status = new URL(request.url, 'http://localhost').searchParams.get('status');
-        const items = phase === 4 && status === 'DISCARDED'
+        const items = phase === 7 || phase === 8
+          ? [{ ...item(phase === 7 ? staleId : refreshedId, 'MANDATORY_RECHECK'), anonymousCode: phase === 7 ? 'IQ-STALE-OLD' : 'IQ-STALE-NEW' }]
+          : phase === 4 && status === 'DISCARDED'
           ? [{ ...item(firstId, 'RANDOM'), status: 'DISCARDED', discardReason: discarded.note,
             capabilities: { canPass: false, canReturnSingle: false, canReturnBatch: false, canDiscard: false } }]
-          : phase === 0 ? [item(firstId, 'RANDOM')]
+          : phase === 0 || phase === 5 ? [item(firstId, 'RANDOM')]
           : phase === 1 ? [item(secondId, 'MANDATORY_RECHECK')]
           : phase === 2 ? [item(thirdId, 'MANDATORY_RECHECK')] : [];
-        response.setHeader('content-type', 'application/json'); response.end(JSON.stringify({ data: { items, limit: 200, offset: 0 } })); return;
+        response.setHeader('content-type', 'application/json'); response.end(JSON.stringify({ data: { items, limit: 50, offset: 0,
+          summary: { total: items.length, mandatoryCount: items.filter(item => item.sampleKind === 'MANDATORY_RECHECK').length,
+            assetCount: items.reduce((count, item) => count + item.assets.length, 0) } } })); return;
       }
       if (request.url?.startsWith('/api/control-plane/v1/image-qa/items/') && request.method === 'POST') {
         let body = '';
         for await (const chunk of request) body += chunk;
+        const mutationItemId = request.url.split('/').at(-2);
+        if (mutationItemId === staleId) {
+          staleRequests.push({ itemId: mutationItemId, body: JSON.parse(body), status: 409 }); phase = 8;
+          response.statusCode = 409; response.setHeader('content-type', 'application/json');
+          response.end(JSON.stringify({ error: { code: 'STALE_IMAGE_QA', message: '图集已更新或被其他质检人员处置，请刷新后重新核对' } })); return;
+        }
+        if (mutationItemId === refreshedId) staleRequests.push({ itemId: mutationItemId, body: JSON.parse(body), status: 200 });
         if (request.url.endsWith('/return')) {
           returned = JSON.parse(body);
           const itemId = request.url.split('/').at(-2);
@@ -305,6 +329,40 @@ test('image QA browser: blind queue, repeated mandatory recheck returns and pass
     await page.getByRole('button', { name: '查看图片', exact: true }).click();
     await page.getByText('废弃原因：审核发现图片不符合主题', { exact: true }).waitFor();
     assert.equal(await page.getByRole('dialog').getByRole('button', { name: '废弃任务', exact: true }).count(), 0);
+    phase = 5;
+    await page.reload(); await page.getByRole('button', { name: '打回', exact: true }).click();
+    assert.equal(await page.getByRole('button', { name: '整批打回', exact: true }).count(), 0, 'no capability means no batch action');
+    allowBatchReturn = true;
+    await page.reload(); await page.getByRole('button', { name: '打回', exact: true }).click();
+    await page.getByRole('button', { name: '整批打回', exact: true }).click();
+    await page.getByRole('alert').getByText('整批打回图片时至少选择一项返工原因。', { exact: true }).waitFor();
+    assert.equal(batchPreviews.length, 0); await page.getByLabel('画面文字错误', { exact: true }).check();
+    await page.getByRole('button', { name: '整批打回', exact: true }).click();
+    await page.getByRole('alert').getByText('整批打回图片时必须填写适用于本批任务的明确修改要求。', { exact: true }).waitFor();
+    await page.getByLabel('具体修改要求（必填）', { exact: true }).fill('整批修复同类文字问题，每条均重新初审和强制复检');
+    const cancelConfirmation = new Promise(done => page.once('dialog', async dialog => { assert.equal(dialog.type(), 'confirm'); assert.match(dialog.message(), /整批打回 2 条/); await dialog.dismiss(); done(); }));
+    await page.getByRole('button', { name: '整批打回', exact: true }).click(); await cancelConfirmation;
+    assert.equal(batchPreviews.length, 1); assert.equal(batchReturns.length, 0); assert.equal(phase, 5);
+    const acceptedConfirmation = new Promise(done => page.once('dialog', async dialog => { await dialog.accept(); done(); }));
+    await page.getByRole('button', { name: '整批打回', exact: true }).click(); await acceptedConfirmation;
+    await page.getByText('当前没有待质检任务', { exact: true }).waitFor();
+    assert.equal(batchPreviews.length, 2); assert.equal(batchReturns.length, 1);
+    assert.deepEqual(batchReturns[0].itemIds, [firstId, secondId]); assert.equal(batchReturns[0].confirmedCount, 2);
+    assert.equal(batchReturns[0].freezePublicId, freezeId); assert.deepEqual(batchReturns[0].reasonCodes, ['TEXT_ERROR']);
+    assert.equal(batchReturns[0].note, '整批修复同类文字问题，每条均重新初审和强制复检'); assert.match(batchReturns[0].requestId, /^[a-f0-9-]{36}$/u);
+    phase = 7; await page.reload(); await page.getByText('IQ-STALE-OLD', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '打回', exact: true }).click();
+    const staleDialog = page.getByRole('dialog', { name: 'IQ-STALE-OLD', exact: true });
+    await staleDialog.getByLabel('画面文字错误', { exact: true }).check(); await staleDialog.getByLabel('第 01 页 · 01-image.png', { exact: true }).check();
+    const staleNote = '旧图集修改要求必须在失败后保留，刷新新版本重新核对'; await staleDialog.getByLabel('具体修改要求（必填）', { exact: true }).fill(staleNote);
+    await staleDialog.getByRole('button', { name: '确认单条打回', exact: true }).click(); await page.getByText(/图集已更新或被其他质检人员处置/).waitFor();
+    assert.equal(await staleDialog.isVisible(), true); assert.equal(await page.locator('textarea').count(), 1); assert.equal(await page.locator('textarea').inputValue(), staleNote);
+    assert.equal(staleRequests.length, 1); assert.equal(staleRequests[0].status, 409); assert.equal(staleRequests[0].itemId, staleId);
+    await staleDialog.getByRole('button', { name: '关闭弹窗', exact: true }).click();
+    await page.getByRole('button', { name: '刷新队列', exact: true }).click(); await page.getByText('IQ-STALE-NEW', { exact: true }).waitFor(); assert.equal(await page.getByText('IQ-STALE-OLD', { exact: true }).count(), 0);
+    await page.getByRole('button', { name: '通过', exact: true }).click(); await page.getByText('当前没有待质检任务', { exact: true }).waitFor();
+    assert.equal(staleRequests.length, 2); assert.equal(staleRequests[1].itemId, refreshedId); assert.equal(staleRequests[1].status, 200);
+    assert.notEqual(staleRequests[0].body.requestId, staleRequests[1].body.requestId);
     assert.deepEqual(browserErrors, []);
   } finally {
     await browser?.close();

@@ -41,7 +41,7 @@ test('background task ownership browser: foreign history stays outside personal 
       status: 'QUEUED', config: { instruction: '同事排队中的第 4 页修复' },
     })],
   ]);
-  const requests = [], unexpectedRequests = [], pageErrors = [];
+  const requests = [], compactRequests = [], unexpectedRequests = [], pageErrors = [];
   let browser, server, ownershipGate;
   const gatedIds = new Set();
   try {
@@ -107,7 +107,14 @@ test('background task ownership browser: foreign history stays outside personal 
           let body = ''; for await (const chunk of req) body += chunk;
           const data = body ? JSON.parse(body) : null;
           let response;
-          if (url.pathname === '/api/control-plane/v1/tasks/429/image-edits') {
+          if (/^\/api\/control-plane\/v1\/tasks\/\d+\/image-edits\/state$/u.test(url.pathname)) {
+            const requestedIds = (url.searchParams.get('ids')??'').split(',').filter(Boolean);
+            compactRequests.push({taskId:Number(url.pathname.split('/')[5]),ids:requestedIds});
+            if(requestedIds.some(id=>gatedIds.has(id)))await ownershipGate.promise;
+            const ids = url.pathname.includes('/tasks/429/') ? [...new Set([foreignId,queuedForeignId,ownId,...requestedIds])] : requestedIds;
+            const items=ids.flatMap(id=>rows.has(id)?[rows.get(id)]:[]).map(({id,target_page,status,version,error,created_by,created_by_account_id})=>({id,target_page,status,version,error,created_by,created_by_account_id}));
+            response={status:items.find(item=>item.status==='RUNNING')?.status??items.find(item=>item.status==='QUEUED')?.status??items[0]?.status??'UPLOADED',signature:JSON.stringify(items.map(item=>[item.id,item.version,item.status,item.error??null])),items};
+          } else if (url.pathname === '/api/control-plane/v1/tasks/429/image-edits') {
             if (req.method === 'POST') {
               response = imageEdit(ownId, {
                 created_by: 'manager', created_by_account_id: 1, status: 'QUEUED',
@@ -202,7 +209,7 @@ test('background task ownership browser: foreign history stays outside personal 
         await notifications.getByText(foreignTitle, { exact: true }).waitFor();
         assert.equal(await notifications.locator('article').count(), 1);
         await notifications.getByText('图片修复已完成，请打开“修改图片”检查并采用预览。', { exact: true }).waitFor();
-        assert.equal(requests.some(([, path]) => path.endsWith(`/image-edits/${ownId}`)), true);
+        assert.equal(compactRequests.some(request=>request.ids.includes(ownId)), true, 'owned rows are tracked by compact shared state');
         assert.equal(requests.filter(([method, path]) => method === 'POST' && path.endsWith('/tasks/429/image-edits')).length, 1);
       } finally { await context.close(); }
     });
@@ -229,8 +236,8 @@ test('background task ownership browser: foreign history stays outside personal 
         const page = await context.newPage();
         page.on('pageerror', error => pageErrors.push(error.message));
         const ownershipChecks = Promise.all([
-          page.waitForRequest(request => request.url().endsWith(`/image-edits/${foreignId}`)),
-          page.waitForRequest(request => request.url().endsWith(`/image-edits/${legacyOwnId}`)),
+          page.waitForRequest(request => request.url().includes('/tasks/429/image-edits/state?ids=') && request.url().includes(foreignId)),
+          page.waitForRequest(request => request.url().includes('/tasks/430/image-edits/state?ids=') && request.url().includes(legacyOwnId)),
         ]);
         await page.goto(`${origin}/?editor=0`);
         await ownershipChecks;

@@ -110,12 +110,16 @@ export function createPreviewServiceClient({
   apiKey,
   fetchImpl = fetch,
   timeoutMs = 5 * 60_000,
+  revokeTimeoutMs = 15_000,
 } = {}) {
   const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
   const normalizedApiKey = typeof apiKey === 'string' ? apiKey.trim() : '';
   if (!normalizedBaseUrl || !normalizedApiKey) return null;
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 30 * 60_000) {
     throw new RangeError('preview service timeout must be between 1000 and 1800000 milliseconds');
+  }
+  if (!Number.isInteger(revokeTimeoutMs) || revokeTimeoutMs < 1_000 || revokeTimeoutMs > 60_000) {
+    throw new RangeError('preview revocation timeout must be between 1000 and 60000 milliseconds');
   }
 
   return Object.freeze({
@@ -172,7 +176,7 @@ export function createPreviewServiceClient({
         {
           method: 'POST',
           headers: { Authorization: `Bearer ${normalizedApiKey}` },
-          signal: combinedSignal(signal, timeoutMs),
+          signal: combinedSignal(signal, revokeTimeoutMs),
         },
         fetchImpl,
       );
@@ -458,25 +462,35 @@ async function revokeStalePreview(repository, previewClient, previewId, signal) 
 export async function drainDeliveryPreviewRevocations(
   repository,
   previewClient,
-  { limit = 10, signal } = {},
+  { limit = 10, signal, concurrency = 2 } = {},
 ) {
   if (!previewClient || typeof repository?.claimDeliveryPreviewRevocationJobs !== 'function') {
     return { claimed: 0, revoked: 0, failed: 0 };
   }
+  if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 4) {
+    throw new RangeError('preview revocation concurrency must be between 1 and 4');
+  }
+  if (signal?.aborted) return { claimed: 0, revoked: 0, failed: 0 };
   const jobs = await repository.claimDeliveryPreviewRevocationJobs(limit);
   let revoked = 0;
   let failed = 0;
-  for (const job of jobs) {
-    try {
-      signal?.throwIfAborted();
-      const result = await previewClient.revoke(job.previewId, { signal });
-      await repository.markDeliveryPreviewRevoked(job.previewId, new Date(result.revokedAt));
-      revoked += 1;
-    } catch (error) {
-      failed += 1;
-      await repository.failDeliveryPreviewRevocationJob(job.id, error);
+  let cursor = 0;
+  const results = await Promise.allSettled(Array.from({ length: Math.min(concurrency, jobs.length) }, async () => {
+    while (cursor < jobs.length) {
+      const job = jobs[cursor++];
+      try {
+        signal?.throwIfAborted();
+        const result = await previewClient.revoke(job.previewId, { signal });
+        await repository.markDeliveryPreviewRevoked(job.previewId, new Date(result.revokedAt));
+        revoked += 1;
+      } catch (error) {
+        await repository.failDeliveryPreviewRevocationJob(job.id, error);
+        failed += 1;
+      }
     }
-  }
+  }));
+  const failure = results.find(result => result.status === 'rejected');
+  if (failure) throw failure.reason;
   return { claimed: jobs.length, revoked, failed };
 }
 

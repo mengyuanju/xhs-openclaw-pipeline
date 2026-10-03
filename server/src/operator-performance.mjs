@@ -1,3 +1,4 @@
+import { OPERATOR_EVENTS_SOURCE_SQL, OPERATOR_CURRENT_SOURCE_SQL, OPERATOR_PENDING_SOURCE_SQL } from './operator-performance-event-sources.mjs';
 import { readAccountQualityFacts } from './account-quality-statistics.mjs';
 import { readAnnotationDiscardFacts } from './annotation-discard-facts.mjs';
 import { readAnnotationAssignmentReport } from './annotation-assignment-report.mjs';
@@ -8,29 +9,23 @@ import { needsReassignment } from '../../src/quality-rounds.mjs';
 import { ControlPlaneAuthorizationError, ControlPlaneConflictError, ControlPlaneNotFoundError } from './domain.mjs';
 import { buildPerformanceSnapshot,normalizePerformanceFilters,performanceCsv,performanceMetricRows,performancePeoplePage,summarizeOperator } from '../../src/operator-performance.mjs';
 import { buildAnnotationJobReport } from '../../src/annotation-job-report.mjs';
+import { readCachedReportAggregate, runLimitedReportExport, readReportFactVersion, OPERATOR_REPORT_SOURCES, TASK_REPORT_SOURCES, runReportSingleFlight,runHeavyReportQuery,acquireReportQuerySlot } from './report-query-cache.mjs';
+import { readSqlOperatorSnapshot, readSqlOperatorDetails } from './operator-performance-sql.mjs';
+import { readSqlAnnotationJobReport } from './annotation-job-report-query.mjs';
 
 const LIMIT=50_000,REPORT_EVENT_LIMIT=200_000,TTL=5*60_000;
 const caches=new WeakMap();
+const oracleCaches=new WeakMap();
 const iso=value=>value instanceof Date ? value.toISOString():value;
+// Preserve the database clock's microseconds for fact cutoffs, while showing
+// the established ISO millisecond timestamp in the public response.
+async function readOperatorClock(client) {
+  const row=(await client.query('SELECT at,at::text AS data_cutoff FROM (SELECT clock_timestamp() AS at) report_clock')).rows[0];
+  return {asOf:iso(row.at),dataCutoff:row.data_cutoff??iso(row.at)};
+}
 const number=value=>value==null?null:Number(value);
 
-export const PERFORMANCE_EVENTS_SQL=`SELECT e.*,EXISTS(SELECT 1 FROM tasks t WHERE t.id=e.task_id) AS task_exists,
-    (SELECT bool_or(s.data->>'selected'='true') FROM operator_performance_events s WHERE s.task_id=e.task_id AND s.stage=e.stage
-      AND s.kind='SAMPLE' AND s.data->>'sampleKind'='RANDOM' AND s.data->>'approvalId'=e.data->>'approvalId') AS sample_selected,
-    previous.occurred_at AS previous_submitted_at,
-    (SELECT max(r.occurred_at) FROM operator_performance_events r WHERE r.task_id=e.task_id
-      AND r.occurred_at<e.occurred_at AND (previous.occurred_at IS NULL OR r.occurred_at>=previous.occurred_at)
-      AND (r.kind IN ('RETURN','BATCH_RETURN') OR r.kind='QUALITY' AND r.data->>'outcome'='RETURN')
-      AND COALESCE(r.data->>'target',r.stage) IN (e.stage,'BOTH')) AS returned_at,
-    NULL::bigint AS return_round
-  FROM operator_performance_events e
-  LEFT JOIN LATERAL(SELECT occurred_at FROM operator_performance_events p WHERE p.task_id=e.task_id AND p.stage=e.stage
-    AND p.kind='SUBMIT' AND p.data->>'exclusion' IS NULL AND (p.occurred_at,p.sequence_id)<(e.occurred_at,e.sequence_id)
-    ORDER BY p.occurred_at DESC,p.sequence_id DESC LIMIT 1) previous ON e.kind='SUBMIT'
-  WHERE e.occurred_at >= $1 AND e.occurred_at < $2 AND e.occurred_at <= $3
-    AND ($4::bigint IS NULL OR e.account_id=$4) AND ($5::text='' OR e.stage=$5)
-    AND ($6::bigint IS NULL OR (e.data->>'batchId')::bigint=$6)
-  ORDER BY e.occurred_at,e.event_key LIMIT ${LIMIT+1}`;
+export const PERFORMANCE_EVENTS_SQL=`${OPERATOR_EVENTS_SOURCE_SQL} LIMIT ${LIMIT+1}`;
 
 // Account-scoped reports still credit a valid recheck performed by a different
 // account to the original random sample. Each lookup is anchored to one failed
@@ -48,28 +43,9 @@ const CROSS_ACCOUNT_RECHECK_SQL=`SELECT s.task_id,s.stage,recheck.account_id,rec
   ) recheck ON true
   LIMIT ${LIMIT+1}`;
 
-const CURRENT_SQL=`SELECT latest.*,t.query,t.production_batch_id AS batch_id,t.assigned_at,
-    (SELECT q.data||jsonb_build_object('id',q.event_key,'taskId',q.task_id,'accountId',q.account_id,
-      'stage',q.stage,'kind',q.kind,'at',q.occurred_at)
-      FROM operator_performance_events q WHERE q.task_id=t.id AND q.stage=latest.stage AND q.kind='QUALITY'
-      ORDER BY q.occurred_at DESC,q.sequence_id DESC LIMIT 1) AS last_quality,
-    CASE WHEN latest.baseline THEN greatest(t.personal_stage_entered_at,
-      (SELECT max(p.finished_at) FROM copy_image_plan_regeneration_jobs p WHERE p.task_id=t.id AND p.copy_revision_id=t.current_copy_revision_id AND p.status='SUCCEEDED' AND t.state='COPY_REVIEW_PENDING'),
-      (SELECT max(e.updated_at) FROM image_edit_requests e WHERE e.task_id=t.id AND e.copy_revision_id=t.current_copy_revision_id AND e.status='PREVIEW_READY' AND t.state IN ('MANUAL_ARCHIVE','IMAGE_REWORK_PENDING')))
-      ELSE latest.occurred_at END AS waiting_at,
-    COALESCE(u.display_name,latest.username,'历史身份未确认') AS display_name
-  FROM (SELECT DISTINCT ON(task_id) * FROM operator_stage_events ORDER BY task_id,occurred_at DESC,id DESC) latest
-  JOIN tasks t ON t.id=latest.task_id LEFT JOIN app_users u ON u.id=latest.account_id
-  WHERE latest.phase<>'CLOSED' AND ($1::bigint IS NULL OR latest.account_id=$1)
-    AND ($2::text='' OR latest.stage=$2) AND ($3::bigint IS NULL OR t.production_batch_id=$3)
-  ORDER BY latest.task_id LIMIT ${LIMIT+1}`;
+const CURRENT_SQL=`${OPERATOR_CURRENT_SOURCE_SQL} LIMIT ${LIMIT+1}`;
 
-const PENDING_SQL=`SELECT q.*,t.query,COALESCE(u.display_name,q.username,'历史身份未确认') AS display_name
-  FROM operator_quality_samples q JOIN tasks t ON t.id=q.task_id LEFT JOIN app_users u ON u.id=q.account_id
-  WHERE q.outcome IS NULL AND ((q.selected AND q.status='PENDING') OR (q.exclusion IS NOT NULL AND q.created_at >= $1 AND q.created_at < $2))
-    AND ($3::bigint IS NULL OR q.account_id=$3) AND ($4::text='' OR q.stage=$4)
-    AND ($5::bigint IS NULL OR q.batch_id=$5)
-  ORDER BY q.created_at,q.id LIMIT ${LIMIT+1}`;
+const PENDING_SQL=`${OPERATOR_PENDING_SOURCE_SQL} LIMIT ${LIMIT+1}`;
 
 function assertComplete(rows) {
   if(rows.length>LIMIT) throw new RangeError('统计范围超过 50,000 条事实，请缩小日期或选择人员；未返回不完整排名');
@@ -84,16 +60,16 @@ function eventFrom(row) {
     at:iso(row.occurred_at),canOpen:row.task_exists,sampleSelected:row.sample_selected,previousSubmittedAt:iso(row.previous_submitted_at),returnedAt:iso(row.returned_at),returnRound:Number(row.return_round??0)};
 }
 function actorKey(actor) { return `${actor.userId}:${actor.username}:${actor.credentialVersion??actor.version??1}`; }
-function cacheFor(pool,now) {
-  if(!caches.has(pool)) caches.set(pool,new Map());
-  const cache=caches.get(pool);
+function cacheFor(pool,now,stores=caches) {
+  if(!stores.has(pool)) stores.set(pool,new Map());
+  const cache=stores.get(pool);
   for(const [key,value] of cache) if(value.expires<=now) cache.delete(key);
   return cache;
 }
 
-export async function readOperatorPerformance(pool,actor,input={},options={}) {
+export async function readOperatorPerformanceOracle(pool,actor,input={},options={}) {
   if(actor?.role!=='ADMIN' || !Number.isSafeInteger(actor.userId) || actor.userId<1) throw new ControlPlaneAuthorizationError('仅管理员可以查看人员表现');
-  const now=options.now?.()??Date.now(),filters=normalizePerformanceFilters(input,now),cache=cacheFor(pool,now);
+  const now=options.now?.()??Date.now(),filters=normalizePerformanceFilters(input,now),cache=cacheFor(pool,now,oracleCaches);
   let snapshot;
   if(filters.snapshotToken) {
     snapshot=cache.get(filters.snapshotToken);
@@ -113,7 +89,13 @@ export async function readOperatorPerformance(pool,actor,input={},options={}) {
     try {
       await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
       await client.query("SET LOCAL statement_timeout='15s'");
-      const asOf=iso((await client.query('SELECT clock_timestamp() AS at')).rows[0].at);
+      const databaseSnapshot=await readOperatorClock(client);
+      databaseSnapshot.snapshot_version=await readReportFactVersion(client,options.kind==='annotationJobReport'
+        ? [...TASK_REPORT_SOURCES,'copy_return_dispositions','image_task_dispositions']:OPERATOR_REPORT_SOURCES);
+      const asOf=databaseSnapshot.dataCutoff;
+      const {page,pageSize,sort,order,metric,sampleSet,snapshotToken,...aggregateFilters}=filters;
+      snapshot=await readCachedReportAggregate(pool,`operator-performance:${options.kind??'report'}`,actor,aggregateFilters,
+        databaseSnapshot.snapshot_version,async()=>{
       // The account roster belongs to the same database snapshot as its facts.
       // Activity and date filters apply to metrics, not to who appears in ALL.
       const rosterRows=filters.activity==='ALL' ? (await client.query(`
@@ -164,17 +146,19 @@ export async function readOperatorPerformance(pool,actor,input={},options={}) {
         at:iso(row.occurred_at),baseline:row.baseline})):[];
       const report=buildPerformanceSnapshot(events,current,timeline,filters,asOf,[...events,...otherRechecks],roster);
       const annotation=options.kind==='annotationJobReport' ? await readAnnotationAssignmentReport(client,report) : null;
-      await client.query('COMMIT');
       const token=randomUUID();
-      snapshot={report,current,timeline,annotationReport:annotation?.report??null,
+      return {report,current,timeline,annotationReport:annotation?.report??null,
         firstCopyVerdicts:annotation?.firstCopyVerdicts??null,actor:actorKey(actor),expires:now+TTL,token};
+      });
+      await client.query('COMMIT');
       // Keep memory bounded; an evicted snapshot returns an explicit refresh error.
+      cache.delete(snapshot.token);
       while(cache.size>=8 || [...cache.values()].reduce((n,s)=>n+s.report.rows.length+s.report.people.length+s.timeline.length,0)
-        +events.length+report.people.length+timeline.length>150_000) {
+        +snapshot.report.rows.length+snapshot.report.people.length+snapshot.timeline.length>150_000) {
         if(!cache.size) break;
         cache.delete(cache.keys().next().value);
       }
-      cache.set(token,snapshot);
+      cache.set(snapshot.token,snapshot);
     } catch(error) { await client.query('ROLLBACK');throw error; }
     finally {client.release();}
   }
@@ -194,7 +178,7 @@ export async function readOperatorPerformance(pool,actor,input={},options={}) {
     }
     return buildAnnotationJobReport(snapshot.annotationReport,snapshot.firstCopyVerdicts);
   }
-  if(options.kind==='export') return {csv:performanceCsv(report),asOf:report.asOf};
+  if(options.kind==='export') return runLimitedReportExport(pool,async()=>({csv:performanceCsv(report),asOf:report.asOf}));
   if(options.kind==='detail' || options.accountId!==undefined) {
     const accountId=options.accountId===undefined?null:Number(options.accountId);
     if(accountId!==null && (!Number.isSafeInteger(accountId)||accountId<1)) throw new TypeError('人员账号无效');
@@ -215,6 +199,123 @@ export async function readOperatorPerformance(pool,actor,input={},options={}) {
       timeline:snapshot.timeline.filter(row=>tasks.has(row.taskId)),current:snapshot.current.filter(row=>report.filters.activity!=='QA' && (accountId===null || row.accountId===accountId)),
       metricVersion:report.metricVersion};
   }
-  const {rows,people,...rest}=report;
+  const {rows,people,dataCutoff,...rest}=report;
   return {...rest,people:performancePeoplePage(report,filters),snapshotToken:snapshot.token,expiresAt:new Date(snapshot.expires).toISOString()};
+}
+
+function rememberCompactSnapshot(cache,snapshot) {
+  snapshot.bytes=Buffer.byteLength(JSON.stringify(snapshot.report),'utf8');
+  cache.delete(snapshot.token);
+  while(cache.size>=128 || [...cache.values()].reduce((total,value)=>total+(value.bytes??0),0)+snapshot.bytes>32*1024*1024) {
+    if(!cache.size)break;
+    cache.delete(cache.keys().next().value);
+  }
+  cache.set(snapshot.token,snapshot);
+}
+
+export async function readOperatorPerformance(pool,actor,input={},options={}) {
+  if(options.oracle===true) {
+    return readOperatorPerformanceOracle(pool,actor,input,options);
+  }
+  if(actor?.role!=='ADMIN' || !Number.isSafeInteger(actor.userId) || actor.userId<1)throw new ControlPlaneAuthorizationError('仅管理员可以查看人员表现');
+  const now=options.now?.()??Date.now(),filters=normalizePerformanceFilters(input,now),cache=cacheFor(pool,now);
+  if(options.kind==='annotationJobReport') {
+    const {page,pageSize,sort,order,metric,sampleSet,snapshotToken,...aggregateFilters}=filters;
+    return runReportSingleFlight(pool,'annotation-jobs',[aggregateFilters,options.forceRefresh===true],async()=>{
+    const client=await pool.connect();
+    try {
+      await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      await client.query("SET LOCAL statement_timeout='30s'");
+      // Only the two admitted heavy report calculations receive this budget.
+      // It disappears at COMMIT/ROLLBACK and does not change the server/pool.
+      const {asOf,dataCutoff}=await readOperatorClock(client);
+      const version=await readReportFactVersion(client,[...TASK_REPORT_SOURCES,'copy_return_dispositions','image_task_dispositions']);
+      const result=await readCachedReportAggregate(pool,'annotation-jobs-sql',
+        {role:'ADMIN',userId:0,username:'report-scope'},aggregateFilters,version,
+        ()=>runHeavyReportQuery(pool,async()=>{
+          await client.query("SET LOCAL work_mem='32MB'");
+          return readSqlAnnotationJobReport(client,filters,asOf,undefined,dataCutoff);
+        }),{forceRefresh:options.forceRefresh===true});
+      await client.query('COMMIT');
+      return result;
+    } catch(error) {await client.query('ROLLBACK').catch(()=>{});throw error;}
+    finally {client.release();}
+    });
+  }
+  let snapshot;
+  if(filters.snapshotToken && options.forceRefresh!==true) {
+    snapshot=cache.get(filters.snapshotToken);
+    if(!snapshot || snapshot.actor!==actorKey(actor))throw new ControlPlaneConflictError('PERFORMANCE_SNAPSHOT_EXPIRED','报表快照已过期，请刷新统计后重试');
+    if(!snapshot.sql)return readOperatorPerformanceOracle(pool,actor,input,options);
+    if(!options.kind || options.kind==='report') {
+      for(const key of ['period','accountId','stage','batchId','query','activity'])if(input[key]!==undefined && filters[key]!==snapshot.report.filters[key]) {
+        throw new ControlPlaneConflictError('PERFORMANCE_SNAPSHOT_FILTER_MISMATCH','筛选条件已变化，请刷新统计');
+      }
+      if((input.from && input.from!==snapshot.report.range.from)||(input.to && input.to!==snapshot.report.range.to))throw new ControlPlaneConflictError('PERFORMANCE_SNAPSHOT_FILTER_MISMATCH','日期已变化，请刷新统计');
+    }
+  } else {
+    if(options.kind && options.kind!=='report')throw new TypeError('查看明细或导出需要报表快照');
+    const {page,pageSize,sort,order,metric,sampleSet,snapshotToken,...aggregateFilters}=filters;
+    const result=await runReportSingleFlight(pool,'operator-performance',[aggregateFilters,options.forceRefresh===true],async()=>{
+      const client=await pool.connect();
+      try {
+        await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+        await client.query("SET LOCAL statement_timeout='30s'");
+        const {asOf,dataCutoff}=await readOperatorClock(client);
+        const version=await readReportFactVersion(client,OPERATOR_REPORT_SOURCES);
+        const report=await readCachedReportAggregate(pool,'operator-performance-sql',
+          {role:'ADMIN',userId:0,username:'report-scope'},aggregateFilters,version,
+          // The personnel-wide query retains its canonical source: the
+          // projection join did not improve its million-current-task plan.
+          ()=>runHeavyReportQuery(pool,async()=>{
+            await client.query("SET LOCAL work_mem='32MB'");
+            return readSqlOperatorSnapshot(client,filters,asOf,dataCutoff,{useProjections:false,summaryOnly:true});
+          }),
+          {forceRefresh:options.forceRefresh===true});
+        await client.query('COMMIT');
+        return {report,version};
+      } catch(error) {await client.query('ROLLBACK').catch(()=>{});throw error;}
+      finally {client.release();}
+    });
+    snapshot={sql:true,report:result.report,actor:actorKey(actor),expires:now+TTL,token:randomUUID(),snapshotVersion:result.version};
+    rememberCompactSnapshot(cache,snapshot);
+  }
+  const {report}=snapshot;
+  if(options.kind==='export')return runLimitedReportExport(pool,async()=>({csv:performanceCsv(report),asOf:report.asOf}));
+  if(options.kind==='detail' || options.accountId!==undefined) {
+    const accountId=options.accountId===undefined?null:Number(options.accountId);
+    if(accountId!==null && (!Number.isSafeInteger(accountId)||accountId<1))throw new TypeError('人员账号无效');
+    let person=accountId===null ? {...report.summary,accountId:0,username:'',displayName:'团队'} : report.people.find(row=>row.accountId===accountId);
+    if(!person)throw new ControlPlaneNotFoundError('当前报表没有该人员记录');
+    let releaseHeavy=accountId===null?acquireReportQuerySlot(pool):null,client;
+    try {
+      client=await pool.connect();
+      await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      await client.query("SET LOCAL statement_timeout='30s'");
+      const version=await readReportFactVersion(client,OPERATOR_REPORT_SOURCES);
+      const refreshed=version!==snapshot.snapshotVersion;
+      let detailReport=report;
+      if(refreshed) {
+        releaseHeavy??=acquireReportQuerySlot(pool);
+        await client.query("SET LOCAL work_mem='32MB'");
+        const {asOf,dataCutoff}=await readOperatorClock(client);
+        const detailFilters={...report.filters,accountId:accountId??report.filters.accountId};
+        const {page,pageSize,sort,order,metric,sampleSet,snapshotToken,...aggregateFilters}=detailFilters;
+        detailReport=await readCachedReportAggregate(pool,'operator-performance-sql',
+          {role:'ADMIN',userId:0,username:'report-scope'},aggregateFilters,version,
+          ()=>readSqlOperatorSnapshot(client,detailFilters,asOf,dataCutoff,{useProjections:false,summaryOnly:true}));
+        person=accountId===null?{...detailReport.summary,accountId:0,username:'',displayName:'团队'}
+          :detailReport.people.find(row=>row.accountId===accountId);
+        if(!person)throw new ControlPlaneNotFoundError('当前报表没有该人员记录');
+      }
+      if(accountId===null&&!refreshed)await client.query("SET LOCAL work_mem='32MB'");
+      const detail=await readSqlOperatorDetails(client,detailReport,filters,accountId,options);
+      await client.query('COMMIT');
+      return structuredClone({person,range:report.range,asOf:detailReport.asOf,reportAsOf:report.asOf,refreshed,
+        snapshotToken:snapshot.token,metricVersion:report.metricVersion,...detail});
+    } catch(error) {if(client)await client.query('ROLLBACK').catch(()=>{});throw error;}
+    finally {client?.release();releaseHeavy?.();}
+  }
+  const {rows,people,dataCutoff,...rest}=report;
+  return structuredClone({...rest,people:performancePeoplePage(report,filters),snapshotToken:snapshot.token,expiresAt:new Date(snapshot.expires).toISOString()});
 }

@@ -64,6 +64,53 @@ npm run dev
 
 默认打开 `http://127.0.0.1:3001`。登录由中心账户服务验证，初始管理员需按界面提示修改密码。
 
+### 一条命令启动开发数据库环境
+
+在项目根目录运行：
+
+```powershell
+npm run start:development
+```
+
+这条命令同时启动开发中心和开发页面：
+
+| 项目 | 开发配置 |
+| --- | --- |
+| 数据库 | `server/.env` 中的开发 `DATABASE_URL` |
+| 文件目录 | `server/.env` 中的开发 `CONTROL_PLANE_STORAGE_ROOT` |
+| 中心地址 | 本机 `http://127.0.0.1:4311`；开发执行机使用 `http://<中心机局域网 IP>:4311` |
+| 中心监听 | `0.0.0.0`，允许可信局域网执行机连接 |
+| 页面地址 | `http://127.0.0.1:3002` |
+| 前端构建目录 | `.next-dev-4311` |
+
+用浏览器无痕窗口打开开发页面，避免与同一主机的生产登录 Cookie 冲突。按 `Ctrl+C` 同时关闭两个开发服务。启动前会检查数据库、文件目录与生产配置的隔离以及端口占用；端口已占用时会报错。
+
+开发中心使用 `4311`，生产中心保留 `4310`，两个中心可同时运行。开发启动连接开发数据库和文件目录；开发执行机的 `CONTROL_PLANE_URL` 应指向 `4311`，领取和回传的是开发库任务。前端构建目录为 `.next-dev-4311`，与生产构建隔离。
+
+已启动开发服务时无需重复运行此命令，直接打开开发页面即可。端口被占用时，启动入口会显示页面与中心地址，并退出；已有服务继续运行。如需重启，先在原启动窗口按 `Ctrl+C` 关闭旧实例，或停止已确认属于本项目的后台开发进程，再执行启动命令。
+
+仅检查配置可运行：
+
+```powershell
+npm run start:development -- --check-only
+```
+
+开发中心启动时会运行恢复和质检协调等逻辑并更新开发库。此入口用于页面和数据库优化测试，不启动执行机、搜索进程或程序改图进程，并关闭开发实例的预览发布接口及已配置的 DeepSeek、Dots、搜索机器令牌。手动触发其他模型功能仍可能调用外部服务。数据库版本需事先升级或同步；此命令不会自动同步生产数据。
+
+### 生产数据库每日备份
+
+Windows 计划任务 `XhsOpenClawDailyDatabaseBackup` 每天北京时间 **02:15** 执行，明确使用 `--environment=production`，读取 `XHS_PRODUCTION_DATABASE_URL`，不随当前开发服务的启动环境切换。
+
+生产备份保存在 `D:\auto-claw\backups\production-database\YYYY\MM\`，文件名为 `xhs-production-database-backup-<UTC时间>.zip`，默认保留 30 天。压缩包包含 PostgreSQL 的恢复文件、SQL、各表数据、迁移脚本及清单；本地 `data/queue.db` 存在时另附 SQLite 副本。写入完成并通过校验后才成为正式 ZIP 并清理过期备份。
+
+手动备份：
+
+```powershell
+npm run db:backup:production
+```
+
+可以使用 `--out=PATH` 指定目录。备份清单会记录实际数据库名。数据库备份不包含图片、缩略图和交付 ZIP；生产文件目录 `D:\auto-claw\images_storage_prod` 需要另行备份。
+
 ```powershell
 npm run build
 npm start
@@ -150,4 +197,37 @@ npm run build
 npm run smoke
 ```
 
-自动化测试使用 Fake，不消耗真实模型额度。清理范围、保留原因和验证结果见 [代码清理审计](docs/code-cleanup-audit-2026-09-06.md)。
+模型测试使用 Fake，不消耗真实模型额度；新增数据库集成测试使用独立临时 PostgreSQL，浏览器测试访问真实接口。清理范围、保留原因和验证结果见 [代码清理审计](docs/code-cleanup-audit-2026-09-06.md)。
+
+### 大数据查询与交付记录清理
+
+本轮开发库迁移为 `0100`–`0108`。任务与词包列表先分页再读取关联摘要；个人工作台按 SQL 完整筛选和计数，人员与标注作业报表使用完整事实聚合。任务弹窗先读取当前处理版本，历史文案、图片、评分和执行记录展开后按游标分批读取；历史图片对照和恢复参数仍可使用。计数与统计缓存有容量、有效期和访问范围限制，报表快照绑定提交账号。同一筛选条件的管理员报表请求共享一次查询，等待者不占交互连接；不同账号各自获得绑定权限的快照。后台进度、心跳、模型记录和未改变数据的清扫不会刷新统计版本；业务事实变化后，明细在同一个读取时点更新并提示，原报表导出仍保持原时点。
+
+进入交付池时，在同一事务中冻结该次交付之前的执行记录范围，后台分批删除对应的模型提示词、请求与返回正文。仍运行的执行暂缓清理；交付后新建的返修执行不在旧清理范围内。作业、文案、图片、审核与绩效事实保留，页面显示清理状态。历史交付记录按分页游标补入清理队列；失败和锁竞争会延期重试。
+
+任务明细 CSV 可在页面创建持久后台导出，使用独立单连接分批读取完整结果，显示进度并提供下载，文件保留 24 小时；支持进程中断恢复与过期文件清理。旧同步导出入口仍有 10,000 条保护上限。旧无 `section` 的个人接口及旧 QA 接口保留原有 50,000 条限制，当前工作台使用新的完整 SQL 分页入口。
+
+中心交互连接池默认 10 个连接。人员与标注重统计共享最多 2 个独立计算名额，同筛选请求合并；名额用满时返回明确的繁忙提示，让普通查询继续使用连接。可通过 `PG_POOL_MAX`、`PG_CONNECTION_TIMEOUT_MS`、`PG_IDLE_TIMEOUT_MS`、`PG_STATEMENT_TIMEOUT_MS`、`PG_IDLE_TRANSACTION_TIMEOUT_MS` 调整；开发库和生产库共用 PostgreSQL 实例时，不应直接修改全局数据库参数。百万条基准使用独立临时 PostgreSQL 集群，合成模型结果和图片，不代表真实模型吞吐量或实际存储容量。
+
+百万任务在 Ryzen 7 5700G、15.3 GiB 内存、PostgreSQL 18.6 上，以默认 10 个交互连接和 30 秒语句超时测量：30 个不同账号、600 次常用交互请求全部成功。应用缓存冷启动阶段整体 P95 为 909 ms，重复访问为 205 ms；个人工作台分别为 1,113 ms 和 206 ms。每阶段包含 30 个账号各 10 次请求，覆盖任务列表、当前详情、历史分页、词包与个人工作台；数据库缓存已由数据准备与验证预热。这是本机实测结果，远程网络和真实图片传输需要另行考虑。
+
+同一百万任务库的完整人员报表首次约 7.0 秒，标注作业报表完整入口约 4.8 秒；缓存重复读取分别为 4 ms、2 ms。30 个真实管理员同筛选共享一次计算，同时普通列表 P95 为 154 ms。30 种独立筛选同时提交时，2 个重统计完成，28 个请求收到预期的繁忙提示，同时普通列表 P95 为 56 ms；此项使用服务端报表 API 和真实数据库角色验证。
+
+开发库安全迁移工具固定核对 `xhs_control`、本机连接与开发/生产库分离；先做开发库完整备份和生产库只读指纹，再应用限定迁移并核对生产数据：
+
+```powershell
+node scripts/apply-development-scaling.mjs --backup-only
+node scripts/apply-development-scaling.mjs --apply
+node scripts/verify-development-scaling.mjs
+node scripts/apply-development-scaling.mjs --verify-production
+$env:RUN_SCALING_POSTGRES='1'
+node --test server/tests/model-call-cleanup-postgres.test.mjs server/tests/task-report-exports-postgres.test.mjs server/tests/personal-workspace-query-postgres.test.mjs server/tests/personal-statistics-query-postgres.test.mjs
+$env:RUN_SCALABLE_POSTGRES='1'
+node --test server/tests/task-current-lineage-postgres.test.mjs
+$env:XHS_NEXT_DIST_DIR='.next-scaling-e2e'
+npm run build
+node scripts/scaling-browser-e2e.mjs
+node server/integration/scalability-benchmark.mjs
+```
+
+测试和迁移报告位于本机忽略目录 `reports/`，开发库备份位于 `server/backups/`。真实浏览器测试覆盖登录、文案与图片处理、交付清理、按需历史和持久 CSV 下载；不会调用模型。不要把开发库迁移脚本改为生产库部署工具。

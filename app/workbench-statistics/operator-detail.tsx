@@ -114,26 +114,27 @@ export function OperatorDetailDialog({report,selection,onClose}:{report:Operator
   const [view,setView]=useState<(typeof VIEWS)[number][0]>('events');
   const scopeStage=selection.scopeStage==='COPY'||selection.scopeStage==='IMAGE'?selection.scopeStage:'';
   const [metric,setMetric]=useState(selection.metric),[stage,setStage]=useState(scopeStage||selection.stage),[sampleSet,setSampleSet]=useState(selection.sampleSet??'all'),[page,setPage]=useState(1);
+  const [currentPage,setCurrentPage]=useState(1);
   const [data,setData]=useState<OperatorDetail|null>(null),[error,setError]=useState(''),[busy,setBusy]=useState(false),[retry,setRetry]=useState(0);
   useEffect(()=>{
     const controller=new AbortController();let disposed=false;
     const timeout=setTimeout(()=>controller.abort(),30_000);
     setBusy(true);setError('');setData(null);
-    const search=new URLSearchParams({snapshotToken:report.snapshotToken,metric,stage,sampleSet,page:String(page),pageSize:'15'});
+    const search=new URLSearchParams({snapshotToken:report.snapshotToken,metric,stage,sampleSet,page:String(page),pageSize:'15',currentPage:String(currentPage),currentPageSize:'20'});
     const path=selection.accountId?`${selection.accountId}/tasks`:'tasks';
     void apiRequest<OperatorDetail>(`${OPERATOR_API}/${path}?${search}`,{signal:controller.signal,cache:'no-store'})
       .then(next=>{if(!next?.person||!Array.isArray(next.items))throw Error('明细数据不完整');if(!disposed)setData(next);})
       .catch(caught=>{if(!disposed)setError(controller.signal.aborted?'明细读取超时，请重试':caught instanceof Error?caught.message:'明细读取失败');})
       .finally(()=>{clearTimeout(timeout);if(!disposed)setBusy(false);});
     return()=>{disposed=true;controller.abort();clearTimeout(timeout);};
-  },[report.snapshotToken,selection.accountId,metric,stage,sampleSet,page,retry]);
+  },[report.snapshotToken,selection.accountId,metric,stage,sampleSet,page,currentPage,retry]);
   const listedPerson=report.people.items.find(person=>person.accountId===selection.accountId);
   const person=data?.person??(selection.accountId?listedPerson:report.summary);
   const name=data?.person.displayName??(selection.accountId?listedPerson?.displayName??'标注':'团队');
   const qaContext=metric.startsWith('qa')||report.filters?.activity==='QA';
   return <Dialog open onOpenChange={open=>{if(!open)onClose();}}><DialogContent className={ui.dialog}>
     <header className={ui.header}><DialogTitle className={ui.title}>{name} · 质量与效率明细</DialogTitle>
-      <DialogDescription className={ui.description}><span>{report.range.from} 至 {report.range.to}</span><span>报表时点 {time(report.asOf)}</span></DialogDescription>
+      <DialogDescription className={ui.description}><span>{report.range.from} 至 {report.range.to}</span><span>明细更新于 {time(data?.asOf??report.asOf)}</span></DialogDescription>
     </header>
     {person&&<Summary person={person} qa={qaContext} scopeStage={scopeStage}/>}
     <div className={ui.tabs} role="tablist" aria-label="明细视图">{VIEWS.map(([key,label],index)=><button key={key} type="button" role="tab" id={`${dialogId}-${key}-tab`} aria-controls={`${dialogId}-${key}-panel`} aria-selected={view===key} tabIndex={view===key?0:-1}
@@ -149,6 +150,7 @@ export function OperatorDetailDialog({report,selection,onClose}:{report:Operator
       {['firstPass','recheck','firstRecheck','qa','qaRecheck','annotationOverall'].includes(metric)&&<label>结论 <Select value={sampleSet} onValueChange={value=>{setSampleSet(value);setPage(1);}}><SelectTrigger aria-label="质检结论" className={styles.selector}><SelectValue /></SelectTrigger><SelectContent className={ui.filterSelectContent}><SelectItem value="all">全部结论</SelectItem>{metric==='annotationOverall'&&<SelectItem value="first">一次通过</SelectItem>}<SelectItem value="passed">通过样本</SelectItem><SelectItem value="failed">退回样本</SelectItem></SelectContent></Select></label>}
     </div>}
     {error&&<div role="alert" className={`${styles.notice} ${styles.error}`}>{error}<Button variant="ghost" size="sm" onClick={()=>setRetry(value=>value+1)}>重试</Button></div>}
+    {data?.refreshed&&<p role="status" className={styles.notice}>明细已按最新数据更新，可关闭后刷新总报表查看最新汇总。</p>}
     {busy&&<p role="status" className={styles.muted}>正在读取对应任务和事件…</p>}
     {data&&view==='events'&&<><p className={ui.resultCount}>共 {data.total} 条事件。<span>同一作业可包含多条记录</span></p><div className={ui.events}>
       {data.items.map(item=><article className={ui.event} key={item.id}><header><div className={ui.eventIdentity}><strong>{item.taskId?`#${item.taskId}`:'批量操作'}</strong><span className={ui.stageBadge}>{STAGE_LABEL[item.stage]}</span><span>{KINDS[item.kind]??item.kind}</span></div>
@@ -180,8 +182,12 @@ export function OperatorDetailDialog({report,selection,onClose}:{report:Operator
       <section><div className={ui.sectionHeading}><h3>主要退回原因</h3><p>同一退回可包含多个原因。</p></div>
         {data.person.reasons.length?<ul className={ui.reasonList}>{data.person.reasons.map(item=><li key={item.code}><span>{item.code}</span><strong>{item.count} 次</strong></li>)}</ul>:<p className={styles.muted}>暂无退回原因记录</p>}
       </section>
-      <section><div className={ui.sectionHeading}><h3>当前标注待办</h3><p>报表时点的任务与等待时长。</p></div>
-        {data.current.length?<ul className={ui.currentList}>{data.current.map(task=><li key={task.taskId}><Link href={`/workbench/all?taskId=${task.taskId}`} className={styles.link}>#{task.taskId} · {task.query}</Link><span>{PHASES[task.phase]??task.phase} · {duration(task.waitingMs)}</span></li>)}</ul>:<p className={styles.muted}>报表时点没有当前标注待办。</p>}
+      <section><div className={ui.sectionHeading}><h3>当前标注待办</h3><p>明细更新时点的任务与等待时长，共 {data.currentTotal} 项。</p></div>
+        {data.current.length?<ul className={ui.currentList}>{data.current.map(task=><li key={task.taskId}><Link href={`/workbench/all?taskId=${task.taskId}`} className={styles.link}>#{task.taskId} · {task.query}</Link><span>{PHASES[task.phase]??task.phase} · {duration(task.waitingMs)}</span></li>)}</ul>:<p className={styles.muted}>明细更新时点没有当前标注待办。</p>}
+        {data.currentTotal>data.currentPageSize&&<div className={styles.pagination}><span>第 {data.currentPage} / {Math.max(1,Math.ceil(data.currentTotal/data.currentPageSize))} 页</span><div className={styles.actions}>
+          <Button variant="outline" size="sm" disabled={busy||data.currentPage<=1} onClick={()=>setCurrentPage(data.currentPage-1)}>上一页</Button>
+          <Button variant="outline" size="sm" disabled={busy||data.currentPage*data.currentPageSize>=data.currentTotal} onClick={()=>setCurrentPage(data.currentPage+1)}>下一页</Button>
+        </div></div>}
         <p className={ui.waitingNote}>质检待办：{data.person.qa.pending} 项可处理，{data.person.qa.blocked} 项暂不可处理。</p>
       </section>
     </div>}

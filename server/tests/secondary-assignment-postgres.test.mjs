@@ -11,6 +11,7 @@ import { decideCopyQaItemV2 } from '../src/copy-qa-v2.mjs';
 import { readAccountQualityFacts } from '../src/account-quality-statistics.mjs';
 import { summarizeAccountQuality } from '../../src/account-quality-statistics.mjs';
 import { PERFORMANCE_VERSION } from '../../src/operator-performance.mjs';
+import { hydrateExecutionSnapshots, storeExecutionSnapshot } from '../src/execution-snapshot-storage.mjs';
 
 test('secondary assignment migrates existing states and preserves QA subjects while resetting content', {
   skip:process.env.RUN_SECONDARY_ASSIGNMENT_POSTGRES!=='1', timeout:180000,
@@ -98,6 +99,14 @@ test('secondary assignment migrates existing states and preserves QA subjects wh
     assert.equal((await db.query('SELECT count(*) FROM task_initial_baselines WHERE task_id=$1',[unprovenTask])).rows[0].count,'0',
       'a claimed generation without a COPY execution does not establish provenance');
     await assert.rejects(repo.returnCopyQaItem(legacy.item.public_id,{requestId:randomUUID(),expectedRevisionToken:'f'.repeat(64),reasonCodes:['COPY_LOGIC'],note:'复检失败'},{actor:qa}),/强制复检/);
+    const historicalSnapshotExecution=randomUUID();
+    const historicalSnapshot=await storeExecutionSnapshot(db,{prompts:{COPY:{content:'disposable old annotation prompt'}},
+      knowledge:[{content:'disposable old annotation knowledge'}],productionSettings:{production:{value:{test:true}}}});
+    await db.query(`INSERT INTO task_executions(id,task_id,kind,node_id,status,stage,snapshot,
+      snapshot_prompts_hash,snapshot_knowledge_hash,snapshot_production_settings_hash)
+      VALUES($1,$2,'COPY','sa-node','SUCCEEDED','COMPLETED',$3,$4,$5,$6)`,
+    [historicalSnapshotExecution,legacy.task,historicalSnapshot.snapshot,historicalSnapshot.promptsHash,
+      historicalSnapshot.knowledgeHash,historicalSnapshot.productionSettingsHash]);
     const escalateInput={requestId:randomUUID(),expectedRevisionToken:'f'.repeat(64),note:'复检仍有错误'};
     await assert.rejects(repo.escalateQualityToAdmin('COPY',ordinary.item.public_id,escalateInput,{actor:qa}),/变化/);
     const receipt=await repo.escalateQualityToAdmin('COPY',legacy.item.public_id,escalateInput,{actor:qa});
@@ -111,6 +120,12 @@ test('secondary assignment migrates existing states and preserves QA subjects wh
     const record=pending.items[0];assert.equal(record.canAssign,true);
     const reset=(await db.query('SELECT * FROM tasks WHERE id=$1',[legacy.task])).rows[0];
     assert.equal(reset.state,'PENDING_SECOND_ASSIGNMENT');assert.equal(reset.assigned_to_user_id,null);assert.equal(reset.mandatory_image_qc,true);
+    const clearedExecution=(await db.query('SELECT * FROM task_executions WHERE id=$1',[historicalSnapshotExecution])).rows[0];
+    assert.ok(clearedExecution.content_cleared_at);
+    assert.equal(clearedExecution.snapshot_prompts_hash,null);
+    assert.equal(clearedExecution.snapshot_knowledge_hash,null);
+    assert.equal(clearedExecution.snapshot_production_settings_hash,null);
+    assert.deepEqual((await hydrateExecutionSnapshots(db,[clearedExecution]))[0].snapshot,{},'reset cannot restore cleared config via shared references');
     assert.deepEqual((await db.query('SELECT content FROM copy_revisions WHERE id=$1',[reset.current_copy_revision_id])).rows[0].content,{...baseline,manualReview:null});
     assert.deepEqual((await db.query('SELECT content FROM copy_revisions WHERE id=$1',[legacy.revision])).rows[0].content,{});
     await assert.rejects(db.query("UPDATE copy_revisions SET content='{\"restore\":true}' WHERE id=$1",[legacy.revision]),/immutable|cannot be restored/);

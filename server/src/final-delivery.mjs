@@ -8,6 +8,8 @@ import {
 } from './domain.mjs';
 import { resolveDeliveryArchiveSource } from './delivery-source.mjs';
 import { scheduleReferenceCleanupForTask } from './image-reference-cleanup.mjs';
+import { scheduleDeliveryModelCallCleanup } from './model-call-cleanup.mjs';
+import { deleteDeliveredCopyReviewDrafts } from './delivery-draft-cleanup.mjs';
 import { IMAGE_FORMATS } from './image-options.mjs';
 import { normalizeListPagination } from './list-pagination.mjs';
 import { normalizeClientBatchCode } from './client-batch.mjs';
@@ -250,6 +252,8 @@ export async function createReadyDeliveryEntry(client, {
     RETURNING *
   `, [taskId, copyRevisionId, imageRunId, actor?.userId ?? null, actor?.username ?? 'system']);
   await scheduleReferenceCleanupForTask(client, taskId, { before: result.rows[0].created_at });
+  await scheduleDeliveryModelCallCleanup(client, result.rows[0].id, taskId);
+  await deleteDeliveredCopyReviewDrafts(client, taskId);
   return result.rows[0];
 }
 

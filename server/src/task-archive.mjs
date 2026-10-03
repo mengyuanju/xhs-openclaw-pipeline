@@ -1,5 +1,5 @@
 import { PassThrough } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
+import { finished, pipeline } from 'node:stream/promises';
 
 import { ZipArchive } from 'archiver';
 import JSZip from 'jszip';
@@ -190,6 +190,7 @@ function waitForArchiveEntry(archive, output, signal) {
 export async function writeBatchTaskArchive(tasks, loadAsset, output, {
   maxTasks = 20,
   signal,
+  flat = false,
 } = {}) {
   if (!tasks || typeof tasks[Symbol.asyncIterator] !== 'function'
       && typeof tasks[Symbol.iterator] !== 'function') {
@@ -235,9 +236,14 @@ export async function writeBatchTaskArchive(tasks, loadAsset, output, {
         throw new RangeError(`batch archive must contain between 1 and ${maxTasks} tasks`);
       }
       if (transferError) throw transferError;
-      const directory = `${clientBatchDirectory(task)}/任务-${normalizeTaskId(task.id)}-资源包`;
+      const taskId = normalizeTaskId(task.id);
+      const directory = flat ? '' : `${clientBatchDirectory(task)}/任务-${taskId}-资源包/`;
       for await (const file of taskArchiveFiles(task, (assetId) => loadAsset(task, assetId))) {
         const stream = typeof file.content?.pipe === 'function' ? file.content : null;
+        // The archive pipeline closes its own streams, not an appended asset.
+        // Observe this asset before destroying it so a job cannot release its
+        // slot while the asset's pending read or close is still in flight.
+        const sourceClosed = stream ? finished(stream, { cleanup: true }).catch(() => {}) : null;
         const onAbort = () => stream?.destroy(signal.reason);
         stream?.once('error', (error) => archive.destroy(error));
         signal?.addEventListener('abort', onAbort, { once: true });
@@ -245,17 +251,23 @@ export async function writeBatchTaskArchive(tasks, loadAsset, output, {
           signal?.throwIfAborted();
           if (transferError) throw transferError;
           const entryWritten = waitForArchiveEntry(archive, output, signal);
-          archive.append(file.content, { name: `${directory}/${file.name}` });
+          archive.append(file.content, { name: `${directory}${file.name}` });
           await entryWritten;
         } finally {
           signal?.removeEventListener('abort', onAbort);
           stream?.destroy();
+          await sourceClosed;
         }
       }
     }
     if (taskCount === 0) throw new RangeError('batch archive must contain at least 1 task');
     signal?.throwIfAborted();
-    await archive.finalize();
+    // A stopped destination can leave the ZIP engine's finalize promise
+    // pending under backpressure. Its pipeline failure must still settle the
+    // job; Promise.race observes a later finalize rejection as well.
+    await Promise.race([archive.finalize(), transfer.then(() => {
+      if (transferError) throw transferError;
+    })]);
     await transfer;
     if (transferError) throw transferError;
     return { taskCount };
@@ -265,6 +277,11 @@ export async function writeBatchTaskArchive(tasks, loadAsset, output, {
     await transfer;
     throw error;
   }
+}
+
+/** Single-task archives preserve the original flat file layout. */
+export async function writeTaskArchive(task, loadAsset, output, { signal } = {}) {
+  return writeBatchTaskArchive([task], (_task, id) => loadAsset(id), output, { maxTasks: 1, signal, flat: true });
 }
 
 export async function createBatchTaskArchiveStream(tasks, loadAsset, { maxTasks = 20 } = {}) {

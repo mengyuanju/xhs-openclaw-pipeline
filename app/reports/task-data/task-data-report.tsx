@@ -1,4 +1,5 @@
 'use client';
+import { ReportExports } from './report-exports';
 
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
@@ -720,6 +721,7 @@ export function TaskDataReport() {
 
     {error && <div role="alert" className={styles.errorBox}>{error}</div>}
     {exportError && <div role="alert" className={styles.errorBox}>{exportError}</div>}
+    <ReportExports query={applied} disabled={!ready || loading || !report} />
     {report && <><section className={styles.statisticsPanel} aria-label="标注作业统计">
       <section className={styles.overviewSection} aria-labelledby="task-overview-title">
         <div className={styles.overviewToolbar}>

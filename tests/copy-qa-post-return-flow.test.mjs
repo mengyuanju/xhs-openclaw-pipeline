@@ -34,50 +34,45 @@ test('a returned public item remains the trigger for a freshly previewed batch u
   assert.equal(payload.confirmedCount, 3);
 });
 
-test('the single-return success state offers release-rest and batch-upgrade branches', async () => {
+// The current page uses V2 batches. Legacy manual freeze controls are retired.
+test('V2 single return submits the selected final revision and refreshes its current batch page', async () => {
   const source = await readFile(new URL('../app/copy-qa/copy-qa-workbench.tsx', import.meta.url), 'utf8');
-  assert.match(source, /setReturnItem\(\{ \.\.\.returned, status: 'RETURNED' \}\)[\s\S]*setReturnCompleted\(true\)/u);
-  assert.match(source, /放行同批其余/u);
-  assert.match(source, /升级整批打回/u);
-  assert.match(source, /beginBatchReturn\(returnItem,[\s\S]*reasonCodes: returnReasons[\s\S]*note: returnNote/u);
-  assert.match(source, /triggerSamplingItemId: batchTriggerItem\.id/u);
-  assert.doesNotMatch(source, /triggerSamplingItemId: selectedItems\[0\]\.id/u);
+  assert.match(source, /decision==='RETURN'&&!note\.trim\(\)&&!reasonCodes\.length/u);
+  assert.match(source, /revisionToken:item\.revisionToken/u);
+  assert.match(source, /\/v2\/copy-qa\/items\/\$\{item\.id\}\/decision/u);
+  assert.match(source, /JSON\.stringify\(\{requestId,\.\.\.payload\}\)/u);
+  assert.match(source, /setReturnItem\(null\)[\s\S]*if\(detail\)await open\(detail\.batch\.id,detail\.pagination\.offset\)/u);
+  assert.doesNotMatch(source, /batch-return-preview|release-rest|\/v1\/copy-qa/u);
 });
 
-test('mandatory recheck actions explain their dedicated gate before image generation', async () => {
-  const source = await readFile(new URL('../app/copy-qa/copy-qa-workbench.tsx', import.meta.url), 'utf8');
-
-  assert.match(source, /const mandatoryRecheck = item\.sampleKind === 'MANDATORY_RECHECK'/u);
-  assert.match(source, /title: mandatoryRecheck \? '确认返工稿通过强制复检？' : '确认当前最终稿通过抽检？'/u);
-  assert.match(source, /返工稿已按最终 3 分记录；通过强制复检后才会进入待生图队列/u);
-  assert.match(source, /confirmLabel: mandatoryRecheck \? '(?:确认)?通过强制复检' : '确认通过'/u);
-  assert.match(source, /已通过强制复检并进入待生图队列/u);
-  assert.match(source, /未通过强制复检[\s\S]{0,120}再次进入强制复检，通过前不会进入待生图队列/u);
+test('V2 batches always select mandatory rechecks and refuse their unreviewed release', async () => {
+  const service = await readFile(new URL('../server/src/copy-qa-v2.mjs', import.meta.url), 'utf8');
+  assert.match(service, /if \(row\.mandatory_copy_qc === true\) selected\.add\(Number\(row\.task_id\)\)/u);
+  assert.match(service, /mandatoryReview=task\.mandatory_copy_qc===true\|\|task\.copy_qa_rework_pending===true/u);
+  assert.match(service, /AND \(\$3::boolean OR NOT mandatory_copy_qc\)/u);
+  assert.match(service, /await releaseMember\(client,member,\{reviewed:true\}\)/u);
 });
 
-test('copy QA visibly separates one-time sampling from mandatory rechecks and explains the retry state loop', async () => {
+test('V2 page shows pending and finished batches with the server-defined return policy', async () => {
   const source = await readFile(new URL('../app/copy-qa/copy-qa-workbench.tsx', import.meta.url), 'utf8');
-
-  assert.match(source, /type CopyQaKindFilter = 'ALL' \| 'RANDOM' \| 'MANDATORY_RECHECK'/u);
-  assert.match(source, /<SelectItem value="RANDOM">一次抽检<\/SelectItem><SelectItem value="MANDATORY_RECHECK">强制复检<\/SelectItem>/u);
-  assert.match(source, /一次抽检对每个入选版本最多 1 次；强制复检当前不设总次数上限/u);
-  assert.match(source, /打回 → 修改 → 新强制复检/u);
-  assert.match(source, /旧的待检项会变为“旧版已失效”/u);
+  assert.match(source, /type View = 'PENDING'\|'FINISHED'/u);
+  assert.match(source, /role="tablist" aria-label="质检批次状态"/u);
+  assert.match(source, /待质检批次/u);
+  assert.match(source, /已完成批次/u);
+  assert.match(source, /detail\.batch\.fullInspection\?'本批所有质检项需逐条完成质检。'/u);
+  assert.match(source, /质检项驳回达到 \$\{detail\.batch\.returnTriggerCount\} 条后，系统自动处理剩余成员/u);
 });
 
-test('copy QA result filter keeps its longest option on one line', async () => {
-  const [source, styles] = await Promise.all([
-    readFile(new URL('../app/copy-qa/copy-qa-workbench.tsx', import.meta.url), 'utf8'),
-    readFile(new URL('../app/copy-qa/copy-qa.module.css', import.meta.url), 'utf8'),
-  ]);
-
-  assert.equal(source.match(/<SelectTrigger className=\{styles\.filterSelect\}>/gu)?.length, 1);
-  assert.match(styles, /\.filterSelect\s*\{[^}]*min-width:\s*128px;/su);
+test('V2 return threshold is enforced on the server and full inspection is never auto-returned', async () => {
+  const service = await readFile(new URL('../server/src/copy-qa-v2.mjs', import.meta.url), 'utf8');
+  assert.match(service, /if\(!batch\.full_inspection && batch\.return_trigger_count>0\s*&& Number\(stats\.returned\)>=Number\(batch\.return_trigger_count\)\)/u);
+  assert.match(service, /WHERE batch_id=\$1 AND status IN \('PENDING','NOT_SELECTED'\)/u);
+  assert.match(service, /else if\(Number\(stats\.pending\)===0\)\{\s*await completeBatch/u);
 });
 
 test('copy QA detail compares final copy and image planning in responsive columns', async () => {
   const [source, styles] = await Promise.all([
-    readFile(new URL('../app/copy-qa/copy-qa-workbench.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../app/copy-qa/copy-qa-revision-view.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../app/copy-qa/copy-qa.module.css', import.meta.url), 'utf8'),
   ]);
 

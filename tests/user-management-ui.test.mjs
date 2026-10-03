@@ -1,3 +1,5 @@
+import { readRepositorySource } from '../server/tests/helpers/repository-source.mjs';
+import { readControlPlaneHttpSource } from './control-plane-http-source.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
@@ -40,9 +42,10 @@ test('central user management exposes the three fixed roles and default-password
   assert.doesNotMatch(loginForm, /defaultValue=["']admin["']/u);
   assert.match(styles, /\.profile-password-grid \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);[^}]*align-items: start;[^}]*max-width: 560px;/u);
   assert.match(styles, /\.forced-password-dialog \{[^}]*width: min\(calc\(100vw - 32px\), 560px\);[^}]*max-height: min\(92dvh, 720px\);/u);
-  assert.match(manager, /className="user-editor-permission-options"[\s\S]*文案审核[\s\S]*文案质检/u);
+  assert.match(manager, /className="user-editor-toggle-grid"[\s\S]*name="copyReviewEnabled"[\s\S]*文案审核[\s\S]*name="copyQcEnabled"[\s\S]*文案质检/u);
   assert.match(manager, /name="imageQcEnabled"[\s\S]{0,180}disabled=\{editorRole !== 'REVIEWER'\}/u);
-  assert.match(styles, /\.user-editor-permission-options \{[^}]*display: flex;[^}]*flex-wrap: wrap;[^}]*align-items: center;/u);
+  assert.match(styles, /\.user-editor-toggle-grid \{[^}]*display: grid;[^}]*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\);/u);
+  assert.match(styles, /@media[^}]*\{[\s\S]*\.user-editor-grid, \.user-editor-toggle-grid, \.user-editor-quality-options \{ grid-template-columns: 1fr;/u);
   assert.match(migration, /CREATE TABLE IF NOT EXISTS app_users/u);
 });
 
@@ -76,8 +79,8 @@ test('user management prioritizes one task at a time with compact filtering and 
 test('workbench separates assignee from creator and limits controls to stable owners or unassigned creators', async () => {
   const [workbench, repository, server] = await Promise.all([
     source('app/workbench/creation-workbench.tsx'),
-    source('server/src/postgres-repository.mjs'),
-    source('server/src/http-server.mjs'),
+    readRepositorySource(),
+    readControlPlaneHttpSource(),
   ]);
   assert.match(workbench, /<th[^>]*>负责人 \/ 创建人<\/th>/u);
   assert.match(workbench, /task\.assignedToDisplayName/u);

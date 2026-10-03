@@ -20,6 +20,7 @@ export type OperatorEvent = {id:string;taskId:number|null;accountId:number|null;
   first?:boolean;firstPassed?:boolean;reworkPassed?:boolean;finalPassed?:boolean;day?:string;fromBatch?:boolean;sampleKind?:string;rework?:boolean;returnedAt?:string;returnRound?:number|null;reviewRound?:number|null;roundKnown?:boolean;consecutiveReturns?:number;waitingMs?:number;reasons?:string[];target?:string;exclusion?:string;blocked?:boolean;passBlocked?:boolean;affectedCount?:number;affectedCountRecovered?:boolean;affectedTaskIds?:number[];
   submittedAt?:string;releaseMethod?:string;timing?:{humanMs:number|null;backgroundMs:number|null;qualityWaitMs:number|null;reason:string|null}};
 export type OperatorDetail = {person:OperatorPerson;asOf:string;range:{from:string;to:string};items:OperatorEvent[];total:number;page:number;pageSize:number;
+  refreshed?:boolean;currentTotal:number;currentPage:number;currentPageSize:number;
   trend:{date:string;qa:number;submitted:number;returned:number;COPY:Rate;IMAGE:Rate}[];
   current:{taskId:number;query:string;phase:string;stage:string;waitingMs:number}[];
   timeline:{id:number;taskId:number;accountId:number|null;stage:string;phase:string;at:string;baseline:boolean}[]};

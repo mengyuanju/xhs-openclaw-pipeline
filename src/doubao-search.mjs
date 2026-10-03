@@ -1,4 +1,5 @@
 import { validatedWebSearchTimeout } from './web-search-config.mjs';
+import { traceModelCall } from './model-call-trace.mjs';
 
 const SEARCH_ENDPOINTS = Object.freeze({
   GLOBAL: 'https://open.feedcoopapi.com/search_api/global_search',
@@ -17,10 +18,32 @@ function requiredApiKey(value) {
   return key;
 }
 
-function plainText(value, maxLength, key = '') {
+function credentialTextRedactor(key) {
+  return (value) => {
+    const text = value.replaceAll(key, '[REDACTED_API_KEY]');
+    if (!/%[0-9a-f]{2}/iu.test(text)) return text;
+    return text.replace(/\S+/gu, (token) => {
+      let decoded = token;
+      for (let depth = 0; depth < 3; depth += 1) {
+        // Decode local byte runs, so unrelated malformed escapes cannot hide a
+        // valid encoded credential. Literal characters keep their exact case.
+        const next = decoded.replace(/(?:%[0-9a-f]{2})+/giu, (bytes) =>
+          Buffer.from(bytes.replaceAll('%', ''), 'hex').toString('utf8'));
+        if (next === decoded) break;
+        if (next.includes(key)) return '[REDACTED_API_KEY]';
+        decoded = next;
+      }
+      return token;
+    });
+  };
+}
+
+function plainText(value, maxLength, redactText = (text) => text) {
   if (typeof value !== 'string') return '';
-  const withoutKey = key ? value.replaceAll(key, '[REDACTED_API_KEY]') : value;
-  return [...withoutKey.replace(/<[^>]*>/gu, '').replace(/[\u0000-\u001f\u007f]/gu, ' ').trim()]
+  const withoutKey = redactText(value);
+  const cleaned = withoutKey.replace(/<[^>]*>/gu, '').replace(/[\u0000-\u001f\u007f]/gu, ' ').trim();
+  // Markup removal can join formerly separated credential fragments.
+  return [...redactText(cleaned)]
     .slice(0, maxLength).join('');
 }
 
@@ -40,33 +63,33 @@ function sourceUrl(value, key) {
   return url;
 }
 
-function sourceFromDocument(document, key) {
+function sourceFromDocument(document, key, redactText) {
   if (!document || typeof document !== 'object' || Array.isArray(document)) return null;
   const url = sourceUrl(document.Url, key);
   if (!url) return null;
   const snippet = Array.isArray(document.Snippet)
     ? document.Snippet.filter((part) => part?.Type === 'text')
-      .map((part) => plainText(part.Text, 1_000, key)).filter(Boolean).join(' ')
+      .map((part) => plainText(part.Text, 1_000, redactText)).filter(Boolean).join(' ')
     : '';
   return {
-    title: plainText(document.Title, 300, key),
+    title: plainText(document.Title, 300, redactText),
     url,
-    snippet: plainText(snippet, 3_000, key),
-    siteName: plainText(document.HostInfo?.Hostname, 200, key),
+    snippet: plainText(snippet, 3_000, redactText),
+    siteName: plainText(document.HostInfo?.Hostname, 200, redactText),
   };
 }
 
-function sourceFromWebResult(item, key) {
+function sourceFromWebResult(item, key, redactText) {
   if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
   const url = sourceUrl(item.Url, key);
   if (!url) return null;
   const summary = typeof item.Summary === 'string' && item.Summary.trim()
     ? item.Summary : item.Snippet;
   return {
-    title: plainText(item.Title, 300, key),
+    title: plainText(item.Title, 300, redactText),
     url,
-    snippet: plainText(summary, 3_000, key),
-    siteName: plainText(item.SiteName, 200, key),
+    snippet: plainText(summary, 3_000, redactText),
+    siteName: plainText(item.SiteName, 200, redactText),
   };
 }
 
@@ -140,68 +163,73 @@ export async function runDoubaoWebSearch(
   const requestTimeoutMs = validatedWebSearchTimeout(timeoutMs);
   const deadline = AbortSignal.timeout(requestTimeoutMs);
   const signal = executionSignal ? AbortSignal.any([executionSignal, deadline]) : deadline;
-  let response;
-  try {
-    response = await fetchImpl(SEARCH_ENDPOINTS[mode], {
-      method: 'POST', redirect: 'error', signal,
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json', Authorization: `Bearer ${key}` },
-      body: JSON.stringify(mode === 'CUSTOM'
-        ? {
-          Query: [...normalizedQuery].slice(0, MAX_UPSTREAM_QUERY_LENGTH).join(''),
-          SearchType: 'web', Count: limit, NeedSummary: true,
-        }
-        : {
-          SearchType: 'web',
-          Query: [...normalizedQuery].slice(0, MAX_UPSTREAM_QUERY_LENGTH).join(''),
-          DocCount: limit,
-          MaxSnippetLength: 1000,
-          Filter: { IcpHostOnly: icpHostOnly },
-        }),
-    });
-  } catch {
-    executionSignal?.throwIfAborted();
-    throw new Error(signal.aborted
-      ? 'Doubao web search request timed out'
-      : 'Doubao web search network request failed');
-  }
-  if (!response?.ok) {
-    const status = Number.isInteger(response?.status) ? response.status : 502;
-    throw new Error(`Doubao web search failed with HTTP ${status}`);
-  }
-  const payload = await readBoundedJson(response, signal, executionSignal);
-  const serviceCode = payload?.Result?.ErrorCode;
-  if (serviceCode !== undefined && serviceCode !== null
-    && serviceCode !== 0 && !(mode === 'CUSTOM' && serviceCode === '0')) {
-    const safeCode = mode === 'CUSTOM' && typeof serviceCode === 'string'
-      ? SAFE_API_ERROR_CODE.test(serviceCode) && !serviceCode.toLowerCase().includes(key.toLowerCase())
-        ? serviceCode : null
-      : Number.isSafeInteger(serviceCode) && !String(serviceCode).includes(key)
-        ? String(serviceCode) : null;
-    throw new Error(safeCode
-      ? `Doubao web search failed with service code ${safeCode}`
-      : 'Doubao web search failed with invalid ErrorCode');
-  }
-  const apiError = payload?.ResponseMetadata?.Error;
-  if (apiError != null) {
-    // Message and the raw response are untrusted and can echo request data or credentials.
-    const code = safeApiErrorCode(apiError, key);
-    throw new Error(code
-      ? `Doubao web search failed with API code ${code}`
-      : 'Doubao web search failed with an API error without safe code');
-  }
-  if (!payload?.Result || typeof payload.Result !== 'object' || Array.isArray(payload.Result)) {
-    throw new Error('Doubao web search failed with missing Result');
-  }
-  if (mode === 'GLOBAL' && (serviceCode === undefined || serviceCode === null)) {
-    throw new Error('Doubao web search failed with missing ErrorCode');
-  }
-  if (mode === 'GLOBAL' && serviceCode !== 0) {
-    throw new Error('Doubao web search failed with invalid ErrorCode');
-  }
-  const documents = mode === 'CUSTOM' ? payload.Result.WebResults : payload.Result.Documents;
-  if (!Array.isArray(documents)) throw new TypeError('Doubao web search returned no source evidence');
-  const sourceFromResult = mode === 'CUSTOM' ? sourceFromWebResult : sourceFromDocument;
-  const sources = documents.slice(0, limit).map((document) => sourceFromResult(document, key)).filter(Boolean);
-  if (sources.length === 0) throw new TypeError('Doubao web search returned no source evidence');
-  return { provider: 'doubao', result: { content: resultContent(sources), sources } };
+  const upstreamQuery = [...normalizedQuery].slice(0, MAX_UPSTREAM_QUERY_LENGTH).join('');
+  const requestBody = mode === 'CUSTOM'
+    ? { Query: upstreamQuery, SearchType: 'web', Count: limit, NeedSummary: true }
+    : { SearchType: 'web', Query: upstreamQuery, DocCount: limit, MaxSnippetLength: 1000,
+      Filter: { IcpHostOnly: icpHostOnly } };
+  const redactText = credentialTextRedactor(key);
+  const traceQuery = redactText(requestBody.Query);
+  return traceModelCall({ provider: 'Doubao', operation: 'WEB_SEARCH', model: '',
+    prompt: traceQuery, request: { ...requestBody, Query: traceQuery }, requestScope: 'HTTP_BODY' }, async (capture) => {
+    let response;
+    try {
+      response = await fetchImpl(SEARCH_ENDPOINTS[mode], {
+        method: 'POST', redirect: 'error', signal,
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json', Authorization: `Bearer ${key}` },
+        body: JSON.stringify(requestBody),
+      });
+    } catch {
+      executionSignal?.throwIfAborted();
+      throw new Error(signal.aborted
+        ? 'Doubao web search request timed out'
+        : 'Doubao web search network request failed');
+    }
+    const httpStatus = Number.isInteger(response?.status) ? response.status : 502;
+    capture.response({ httpStatus });
+    if (!response?.ok) {
+      throw new Error(`Doubao web search failed with HTTP ${httpStatus}`);
+    }
+    const payload = await readBoundedJson(response, signal, executionSignal);
+    const serviceCode = payload?.Result?.ErrorCode;
+    if (serviceCode !== undefined && serviceCode !== null
+      && serviceCode !== 0 && !(mode === 'CUSTOM' && serviceCode === '0')) {
+      const safeCode = mode === 'CUSTOM' && typeof serviceCode === 'string'
+        ? SAFE_API_ERROR_CODE.test(serviceCode) && !serviceCode.toLowerCase().includes(key.toLowerCase())
+          ? serviceCode : null
+        : Number.isSafeInteger(serviceCode) && !String(serviceCode).includes(key)
+          ? String(serviceCode) : null;
+      throw new Error(safeCode
+        ? `Doubao web search failed with service code ${safeCode}`
+        : 'Doubao web search failed with invalid ErrorCode');
+    }
+    const apiError = payload?.ResponseMetadata?.Error;
+    if (apiError != null) {
+      // Message and the raw response are untrusted and can echo request data or credentials.
+      const code = safeApiErrorCode(apiError, key);
+      throw new Error(code
+        ? `Doubao web search failed with API code ${code}`
+        : 'Doubao web search failed with an API error without safe code');
+    }
+    if (!payload?.Result || typeof payload.Result !== 'object' || Array.isArray(payload.Result)) {
+      throw new Error('Doubao web search failed with missing Result');
+    }
+    if (mode === 'GLOBAL' && (serviceCode === undefined || serviceCode === null)) {
+      throw new Error('Doubao web search failed with missing ErrorCode');
+    }
+    if (mode === 'GLOBAL' && serviceCode !== 0) {
+      throw new Error('Doubao web search failed with invalid ErrorCode');
+    }
+    const documents = mode === 'CUSTOM' ? payload.Result.WebResults : payload.Result.Documents;
+    if (!Array.isArray(documents)) throw new TypeError('Doubao web search returned no source evidence');
+    const sourceFromResult = mode === 'CUSTOM' ? sourceFromWebResult : sourceFromDocument;
+    const sources = documents.slice(0, limit)
+      .map((document) => sourceFromResult(document, key, redactText)).filter(Boolean);
+    if (sources.length === 0) throw new TypeError('Doubao web search returned no source evidence');
+    const result = { content: resultContent(sources), sources };
+    // Persist only normalized evidence. Raw errors, unknown fields, and excluded
+    // source URLs can echo credentials, including percent-encoded credentials.
+    capture.response({ httpStatus, scope: 'NORMALIZED_SEARCH_EVIDENCE', result });
+    return { provider: 'doubao', result };
+  }, [key]);
 }

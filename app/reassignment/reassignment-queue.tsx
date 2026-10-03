@@ -6,7 +6,6 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { apiRequest } from '../components/api-client';
-import { notifyWorkspaceUpdated } from '../components/workspace-updates';
 import { createRequestId } from '../components/request-id';
 import styles from './reassignment-queue.module.css';
 
@@ -158,7 +157,7 @@ export function ReassignmentQueue() {
     if (request.current?.key !== key) request.current = { key, id: createRequestId() };
     try {
       await apiRequest(`${root}/${selected.id}/${operation}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...payload, requestId: request.current.id }) });
-      notifyWorkspaceUpdated(); setSelected(null);
+      setSelected(null);
       setBatchFeedback(null);
       setNotice(operation === 'reassign' ? '已分配初始数据，原账号统计保留。' : operation === 'discard' ? '已最终废弃，原质检日期的统计已更新。' : operation === 'restore' ? '已撤销废弃，任务恢复待二次分配。' : '处理已提交，可刷新列表查看最新结果。');
       await load();
@@ -209,7 +208,6 @@ export function ReassignmentQueue() {
       setBatchFeedback({ ...result, tasks: batchItems });
       setCheckedIds(new Set(result.results.filter(item => !item.success).map(item => item.id)));
       setBatchOperation(null); batchRequest.current = null;
-      notifyWorkspaceUpdated();
       await load();
     } catch (e) { setBatchError(e instanceof Error ? e.message : '批量操作失败，请重试'); }
     finally { pending.current = false; setBatchBusy(false); }

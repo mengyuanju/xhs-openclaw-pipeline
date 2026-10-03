@@ -1,48 +1,97 @@
 import { readAccountQualityFacts } from './account-quality-statistics.mjs';
 import { summarizeAccountQuality } from '../../src/account-quality-statistics.mjs';
-import { normalizePersonalFilters, selectPersonalTasks, summarizePersonalToday, summarizePersonalWorkspace } from '../../src/personal-workspace.mjs';
+import { classifyPersonalTask, normalizePersonalFilters, selectPersonalTasks, summarizePersonalWorkspace } from '../../src/personal-workspace.mjs';
 import { normalizeRange } from '../../src/web-statistics/summary.mjs';
 import { ControlPlaneAuthenticationError } from './domain.mjs';
 import { createHash } from 'node:crypto';
 import { readQaFacts } from './quality-review-statistics.mjs';
 import { readInspectionRounds } from './quality-rounds.mjs';
 import { qaMetricRows, summarizeQa, uniqueTaskCount } from '../../src/quality-review-statistics.mjs';
-import { buildPersonalQaActivity, personalQaMetricRows } from '../../src/personal-qa-statistics.mjs';
-import { readPersonalQaCoverage } from './personal-qa-coverage.mjs';
-import { readAnnotationDiscardFacts } from './annotation-discard-facts.mjs';
 import { deliveryLedgerQuery } from './delivery-ledger.mjs';
-import { summarizeAnnotationOverall } from '../../src/operator-performance.mjs';
+import { invalidatePersonalWorkspaceCounts, readPersonalCurrentPage } from './personal-workspace-query.mjs';
+import { personalHistoryFactsSql, readPersonalHistoryPageEvents } from './personal-workspace-history-query.mjs';
+import { readPersonalPassTotals, readPersonalPeriodSummary, readPersonalReceipts } from './personal-statistics-query.mjs';
 
 const MAX_FACTS = 50_000;
 const iso = value => value instanceof Date ? value.toISOString() : value ?? null;
 
 // All report/list classification is performed against the same small, read-only
 // facts. Generated copy, prompts, credentials and execution snapshots never leave this query.
-export function personalFactsSql(blindSql) {
+export function personalFactsSql(blindSql, { unbounded = false, classificationOnly = false, idsOnly = false,
+  historicalCandidateSql = '', repeated = false, additionalWhere = '', personalScope } = {}) {
+  // Only the CURRENT classifier consumes this projection. Its ASSIGNED scope
+  // needs the immutable assignee relationship; creator access is still resolved
+  // by the original full facts when hydrating the selected page's task IDs.
+  const assignedClassification = classificationOnly && personalScope === 'ASSIGNED' && !historicalCandidateSql;
+  const creatorMatch = assignedClassification ? 'false' : 'creator.id=$1';
+  const creatorJoin = assignedClassification ? ''
+    : 'LEFT JOIN app_users creator ON creator.username=task.created_by_user_id AND creator.created_at<task.created_at';
+  const currentRelation = assignedClassification
+    ? "($4::varchar='ASSIGNED' AND assignee.id=$1)"
+    : "(($4::varchar='ASSIGNED' AND assignee.id=$1) OR ($4::varchar='CREATED' AND creator.id=$1) OR ($4::varchar='ALL' AND (creator.id=$1 OR assignee.id=$1)))";
+  const reworkGuard = `(task.state='COPY_REVIEW_PENDING' AND COALESCE(task.current_stage,'')<>'IMAGE_RETRY_EXHAUSTED'
+    AND CASE WHEN task.mandatory_copy_qc_origin IN ('QA_RETURN','FINAL_REWORK') THEN task.mandatory_copy_qc_origin
+      ELSE revision.revision_origin END IN ('QA_RETURN','FINAL_REWORK')
+    OR task.state='IMAGE_REWORK_PENDING' OR task.state='MANUAL_ARCHIVE' AND task.mandatory_image_qc)`;
+  const returnGuard = classificationOnly && !repeated ? `AND ${reworkGuard}` : '';
+  const revisionGuard = "(task.state IN ('COPY_REVIEW_PENDING','IMAGE_REWORK_PENDING') OR task.state='MANUAL_ARCHIVE' AND task.mandatory_image_qc)";
+  // Keep ordinary classification on the small revision origin index. Fetch the
+  // JSON fallback only when a rework category actually needs its final target.
+  const reworkTarget = classificationOnly
+    ? `CASE WHEN ${reworkGuard} THEN COALESCE(returns.target,
+      (SELECT target_revision.content->'finalRework'->>'target' FROM copy_revisions target_revision
+        WHERE target_revision.id=task.current_copy_revision_id),'COPY') ELSE 'COPY' END`
+    : "COALESCE(returns.target,revision.content->'finalRework'->>'target','COPY')";
+  // An ownership scope with no current, non-draft edits cannot have an edit
+  // counter. This uncorrelated check runs once, rather than starting an empty
+  // aggregate for every one of a person's historical or pending tasks.
+  const editCandidateExists = assignedClassification ? `EXISTS (
+    SELECT 1 FROM image_edit_requests candidate
+    JOIN tasks candidate_task ON candidate_task.id=candidate.task_id
+      AND candidate_task.current_copy_revision_id=candidate.copy_revision_id
+    JOIN app_users candidate_owner ON candidate_owner.username=candidate_task.assigned_to_user_id
+      AND candidate_owner.created_at<candidate_task.assigned_at
+    WHERE candidate_owner.id=$1 AND candidate_task.task_kind='CONTENT'
+      AND candidate_task.state NOT IN ('REVIEWED','CANCELLED') AND candidate.status<>'DRAFT'
+  )` : 'true';
+  if (idsOnly) return `SELECT task.id,task.query,task.state,task.created_at,task.priority_sort_at,task.priority_mode,
+      task.priority_paused
+    FROM tasks task
+    LEFT JOIN app_users creator ON creator.username=task.created_by_user_id AND creator.created_at<task.created_at
+    LEFT JOIN app_users assignee ON assignee.username=task.assigned_to_user_id AND assignee.created_at<task.assigned_at
+    WHERE (($4::varchar='ASSIGNED' AND assignee.id=$1)
+      OR ($4::varchar='CREATED' AND creator.id=$1)
+      OR ($4::varchar='ALL' AND (creator.id=$1 OR assignee.id=$1)))
+      AND task.task_kind='CONTENT' AND NOT ($3::varchar='REVIEWER' AND ${blindSql})
+      AND ($2::bigint[] IS NOT NULL AND $5::boolean)
+      ${additionalWhere}`;
   return `SELECT task.id, task.query, task.state, task.current_stage,
       task.created_at, task.personal_stage_entered_at AS queue_entered_at, task.priority_sort_at, task.priority_mode,
       task.source_query_package_name, task.mandatory_copy_qc, task.mandatory_image_qc,
       task.mandatory_copy_qc_origin, revision.revision_origin,
-      creator.id = $1 AS is_created, assignee.id = $1 AS is_assigned,
-      (($3::varchar = 'ADMIN' OR creator.id = $1 OR assignee.id = $1)
+      ${creatorMatch} AS is_created, assignee.id = $1 AS is_assigned,
+      (($3::varchar = 'ADMIN' OR ${creatorMatch} OR assignee.id = $1)
         AND NOT ($3::varchar = 'REVIEWER' AND ${blindSql})) AS has_access,
-      COALESCE(returns.target, revision.content->'finalRework'->>'target', 'COPY') AS rework_target,
+      ${reworkTarget} AS rework_target,
       returns.source AS rework_source, returns.at AS returned_at, returns.note AS return_note,
       returns.reasons AS return_reasons,
       returns.rounds AS rework_rounds, plan.status AS plan_status, plan.finished_at AS plan_ready_at,
       edits.queued, edits.running, edits.ready, edits.failed, edits.preview_ready_at,
-      EXISTS (SELECT 1 FROM delivery_entries d WHERE d.task_id=task.id AND d.status='READY'
+      ${classificationOnly ? "task.state='REVIEWED' AND" : ''} EXISTS (SELECT 1 FROM delivery_entries d WHERE d.task_id=task.id AND d.status='READY'
         AND d.copy_revision_id=task.current_copy_revision_id AND d.image_run_id=task.current_image_run_id
         AND NOT EXISTS (SELECT 1 FROM delivery_batch_items packed JOIN delivery_item_confirmations confirmation ON confirmation.item_id=packed.id
           WHERE packed.task_id=task.id AND packed.copy_revision_id=task.current_copy_revision_id AND packed.image_run_id=task.current_image_run_id)) AS delivery_ready
     FROM tasks task
-    LEFT JOIN app_users creator ON creator.username=task.created_by_user_id AND creator.created_at<task.created_at
+    ${creatorJoin}
     LEFT JOIN app_users assignee ON assignee.username=task.assigned_to_user_id AND assignee.created_at<task.assigned_at
-    LEFT JOIN copy_revisions revision ON revision.id=task.current_copy_revision_id
+    LEFT JOIN copy_revisions revision ON revision.id=${classificationOnly
+      ? `CASE WHEN ${revisionGuard} THEN task.current_copy_revision_id END`
+      : 'task.current_copy_revision_id'}
     LEFT JOIN LATERAL (
       SELECT status,finished_at FROM copy_image_plan_regeneration_jobs p
       WHERE p.task_id=task.id AND p.copy_revision_id=task.current_copy_revision_id
-        AND task.state='COPY_REVIEW_PENDING' ORDER BY p.created_at DESC,p.id DESC LIMIT 1
+        AND task.state='COPY_REVIEW_PENDING' ORDER BY p.created_at DESC,p.id DESC
+        LIMIT ${classificationOnly ? "CASE WHEN task.state='COPY_REVIEW_PENDING' THEN 1 ELSE 0 END" : '1'}
     ) plan ON true
     LEFT JOIN LATERAL (
       SELECT count(*) FILTER (WHERE e.status='QUEUED') AS queued,
@@ -52,7 +101,10 @@ export function personalFactsSql(blindSql) {
         min(e.updated_at) FILTER (WHERE e.status='PREVIEW_READY') AS preview_ready_at
       FROM (SELECT DISTINCT ON (target_page) * FROM image_edit_requests e
         WHERE e.task_id=task.id AND e.copy_revision_id=task.current_copy_revision_id
+          ${classificationOnly ? "AND task.state NOT IN ('REVIEWED','CANCELLED')" : ''}
           AND e.status<>'DRAFT' ORDER BY target_page,created_at DESC,id DESC) e
+      ${classificationOnly ? `LIMIT CASE WHEN task.state NOT IN ('REVIEWED','CANCELLED')
+        AND task.current_copy_revision_id IS NOT NULL AND ${editCandidateExists} THEN 1 ELSE 0 END` : ''}
     ) edits ON true
     LEFT JOIN LATERAL (
       SELECT latest.*, count(*) OVER () AS rounds FROM (
@@ -60,22 +112,25 @@ export function personalFactsSql(blindSql) {
           r.content->'qualityReturn'->>'note' AS note,
           r.content->'qualityReturn'->'reasonSnapshots' AS reasons
           FROM copy_revisions r WHERE r.task_id=task.id AND r.revision_origin='QA_RETURN'
+            ${returnGuard}
         UNION ALL
         SELECT i.reviewed_at,'IMAGE_QA',COALESCE(i.rework_target,'IMAGE'),i.note,NULL::jsonb
           FROM image_sampling_items i WHERE i.task_id=task.id AND i.rework_target IS NOT NULL AND i.reviewed_at IS NOT NULL
+            ${returnGuard}
         UNION ALL
         SELECT a.created_at,'FINAL_REWORK',a.rework_target,a.note,NULL::jsonb FROM human_quality_assessments a
           WHERE a.task_id=task.id AND a.rework_target IS NOT NULL
-      ) latest ORDER BY at DESC LIMIT 1
+            ${returnGuard}
+      ) latest ORDER BY at DESC
+        LIMIT ${classificationOnly && !repeated ? `CASE WHEN ${reworkGuard} THEN 1 ELSE 0 END` : '1'}
     ) returns ON true
-    WHERE (($5::boolean AND (
-        ($4::varchar='ASSIGNED' AND assignee.id=$1)
-        OR ($4::varchar='CREATED' AND creator.id=$1)
-        OR ($4::varchar='ALL' AND (creator.id=$1 OR assignee.id=$1))))
-      OR task.id=ANY($2::bigint[]))
+    WHERE ${historicalCandidateSql ? `task.id IN (${historicalCandidateSql}) AND $2::bigint[] IS NOT NULL
+      AND $4::varchar IS NOT NULL AND $5::boolean IS NOT NULL` : `(($5::boolean AND ${currentRelation})
+      OR task.id=ANY($2::bigint[]))`}
       AND task.task_kind='CONTENT'
       AND NOT ($3::varchar='REVIEWER' AND ${blindSql})
-    ORDER BY task.id LIMIT ${MAX_FACTS + 1}`;
+      ${additionalWhere}
+    ${unbounded ? '' : `ORDER BY task.id LIMIT ${MAX_FACTS + 1}`}`;
 }
 
 function factFrom(row) {
@@ -94,6 +149,7 @@ function factFrom(row) {
     imageEdits: { queued: Number(row.queued ?? 0), running: Number(row.running ?? 0), ready: Number(row.ready ?? 0), failed: Number(row.failed ?? 0) },
     previewReadyAt: iso(row.preview_ready_at), deliveryReady: row.delivery_ready === true };
 }
+export { factFrom as personalFactFromRow };
 
 // Event identity is the original submitter account, never the current owner.
 // Reassignments therefore affect pending work but not historical contributions.
@@ -143,30 +199,6 @@ export const PERSONAL_QA_EVENTS_SQL = `SELECT e.*,
   WHERE e.account_id=$1 AND e.occurred_at >= $2 AND e.occurred_at < $3
   ORDER BY e.occurred_at,e.event_key LIMIT ${MAX_FACTS + 1}`;
 
-async function readPersonalSubmissions(client, actor, range) {
-  const rows=(await client.query(PERSONAL_SUBMISSIONS_SQL,[actor.userId,
-    new Date(range.startMs).toISOString(),new Date(range.endMs).toISOString()])).rows;
-  if(rows.length>MAX_FACTS)throw new RangeError('提交记录超出统计上限，请缩小日期范围');
-  return rows.map(row=>({id:row.id,taskId:Number(row.task_id),kind:'COMPLETE',stage:row.stage,
-    at:iso(row.at),firstSubmission:row.first_submission===true,rework:row.rework===true}));
-}
-
-async function readPersonalQaEvents(client, actor, range) {
-  const rows=(await client.query(PERSONAL_QA_EVENTS_SQL,[actor.userId,
-    new Date(range.startMs).toISOString(),new Date(range.endMs).toISOString()])).rows;
-  if(rows.length>MAX_FACTS)throw new RangeError('质检记录超出统计上限，请缩小日期范围');
-  return rows.map(row=>({...row.data,id:row.event_key,taskId:row.task_id==null?null:Number(row.task_id),
-    accountId:Number(row.account_id),stage:row.stage,kind:row.kind,at:iso(row.occurred_at),
-    sampleKind:row.effective_sample_kind??row.data?.sampleKind??null}));
-}
-
-async function readPersonalAnnotationDiscards(client, actor, range, now = Date.now()) {
-  const facts=await readAnnotationDiscardFacts(client,{start:new Date(range.startMs).toISOString(),
-    end:new Date(range.endMs).toISOString(),asOf:new Date(now).toISOString(),accountId:actor.userId,stage:'COPY'});
-  return facts.filter(row=>row.accountId===actor.userId && row.stage==='COPY' && !row.exclusion)
-    .map(row=>({...row,outcome:'DISCARD'}));
-}
-
 const BATCH_SQL = `SELECT b.id AS batch_id,
     CASE WHEN confirmation.item_id IS NOT NULL THEN 'DELIVERED' ELSE 'DOWNLOADED' END AS status,
     confirmation.confirmed_at AS delivered_at,confirmation.actor_account_id=$1 AS confirmed_by_me,
@@ -190,14 +222,12 @@ async function readPersonalOverview(client, actor, now) {
     `SELECT count(DISTINCT task_id)::integer AS ready FROM (${deliveryQuery.sql}) personal_delivery`,
     deliveryQuery.values,
   )).rows[0].ready);
-  const facts = await readAccountQualityFacts(client, { start: new Date(range.startMs).toISOString(),
-    end: new Date(range.endMs).toISOString(), accountId: actor.userId });
+  const passed = await readPersonalPassTotals(client, actor, range);
   return { section: 'overview', updatedAt: new Date(now).toISOString(), timezone: 'Asia/Shanghai',
     range: { from: range.from, to: range.to }, delivery: { ready,
       href: ['ADMIN', 'USER'].includes(actor.role)
         ? `/delivery-pool?dl_view=CURRENT&dl_state=PENDING&dl_assigneeId=${actor.userId}` : null },
-    passed: Object.fromEntries(['COPY', 'IMAGE'].map(stage => [stage,
-      summarizeAnnotationOverall(facts.filter(row => row.accountId === actor.userId && row.stage === stage)).passed])),
+    passed,
   };
 }
 
@@ -214,28 +244,60 @@ export async function readPersonalWorkspace(pool, actor, input, { report = false
   const client = await pool.connect();
   try {
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    await client.query("SET LOCAL statement_timeout='15s'");
+    // Modern cards aggregate fresh facts independently; polling one card must
+    // not invalidate every other person's page counts. The legacy combined
+    // report retains its historical forced-refresh behavior.
+    if (report && !section) invalidatePersonalWorkspaceCounts(pool);
+    if (!report) {
+      const historical = filters.mode !== 'CURRENT';
+      const page = await readPersonalCurrentPage(client, pool, {
+        actor, filters, historical,
+        factsSql: options => historical
+          ? personalHistoryFactsSql(baseOptions => personalFactsSql(blindSql, baseOptions), filters, options)
+          : personalFactsSql(blindSql, options),
+      }, { now });
+      const rows = page.ids.length ? (await client.query(personalFactsSql(blindSql),
+        [actor.userId, page.ids, actor.role, filters.personalScope, false])).rows : [];
+      const byId = new Map(rows.map(row => [Number(row.id), factFrom(row)]));
+      const facts = page.ids.map(id => byId.get(id) ?? (historical ? {
+        id, query: `历史内容 #${id}`, state: 'HISTORY_ONLY', createdAt: null, isAssigned: false, isCreated: false, canOpen: false,
+      } : null)).filter(Boolean);
+      const history = historical ? await readPersonalHistoryPageEvents(client, actor, filters, page.ids, now) : [];
+      const histories = new Map();
+      for (const event of history) {
+        if (!histories.has(event.taskId)) histories.set(event.taskId, []);
+        histories.get(event.taskId).push(event);
+      }
+      const ids = facts.filter(fact => fact.canOpen).map(fact => fact.id);
+      const items = ids.length ? await loadTasks(client, ids) : [];
+      const hydrated = new Map(items.map(task => [task.id, task]));
+      const { ids: _ids, workSummary: _workSummary, ...output } = page;
+      output.items = facts.map(fact => ({ ...(hydrated.get(fact.id) ?? {
+        id: fact.id, query: fact.query, state: fact.state, createdAt: fact.createdAt,
+        assignedToUserId: null, assignedToAccountId: null, createdByUserId: null, createdByAccountId: null,
+        currentCopyRevisionId: null, currentImageRunId: null, progressMessage: '历史完成记录；当前无权查看作业详情', progressPercent: 0,
+      }), canOpen: fact.canOpen, personalWork: fact.canOpen ? classifyPersonalTask(fact, now) : null,
+      personalHistory: histories.get(fact.id) ?? [] }));
+      output.updatedAt = new Date(now).toISOString();
+      await client.query('COMMIT');
+      return output;
+    }
     if (section === 'overview') {
       const output = await readPersonalOverview(client, actor, now);
       await client.query('COMMIT'); return output;
     }
     if(section==='personal') {
-      const submissions=await readPersonalSubmissions(client,actor,filters.range);
-      const qualityFacts=await readAccountQualityFacts(client,{start:new Date(filters.range.startMs).toISOString(),
-        end:new Date(filters.range.endMs).toISOString(),accountId:actor.userId});
-      const qaFacts=await readPersonalQaEvents(client,actor,filters.range);
-      const coverageFacts=await readPersonalQaCoverage(client,actor,filters.range);
-      const discardFacts=await readPersonalAnnotationDiscards(client,actor,filters.range,now);
-      const output=summarizePersonalToday(submissions,qualityFacts,qaFacts,filters.range,now,coverageFacts,discardFacts);
+      const output=await readPersonalPeriodSummary(client,actor,filters.range,now);
       await client.query('COMMIT');return output;
     }
     if(section==='jobs') {
-      const rows=(await client.query(personalFactsSql(blindSql),[actor.userId,[],actor.role,
-        filters.personalScope,true])).rows;
-      if(rows.length>MAX_FACTS)throw new RangeError('个人作业超出统计上限，暂时无法完整汇总');
-      const {updatedAt,scope,counts,rework,background,missingDates}=summarizePersonalWorkspace(
-        rows.map(factFrom),[],[],filters,now);
+      const { counts, workSummary } = await readPersonalCurrentPage(client, pool, {
+        actor, filters: normalizePersonalFilters({ personalScope: filters.personalScope }, now),
+        factsSql: options => personalFactsSql(blindSql, { ...options, classificationOnly: false }),
+      }, { now, countsOnly: true, ttlMs: 0 });
       await client.query('COMMIT');
-      return {section:'jobs',updatedAt,scope,counts,rework,background,missingDates};
+      return {section:'jobs',updatedAt:new Date(now).toISOString(),scope:filters.personalScope,counts,...workSummary};
     }
     let events = [], historyAvailable = true, deliveryAvailable = true, batches = [];
     if (report || filters.mode !== 'CURRENT') {
@@ -331,43 +393,13 @@ export async function readPersonalQualityActivity(pool,actor,input={}) {
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
     await client.query("SET LOCAL statement_timeout='15s'");
     if(receiptMetrics.has(metric)) {
-      let rows,coverageIncomplete=false;
-      if(metric==='copyFirstReview' || metric==='annotationDiscarded') {
-        rows=await readPersonalAnnotationDiscards(client,actor,filters.range);
-        if(metric==='copyFirstReview') {
-          const submissions=await readPersonalSubmissions(client,actor,filters.range);
-          rows.push(...submissions.filter(row=>row.stage==='COPY' && row.firstSubmission && !row.rework)
-            .map(row=>({...row,kind:'SUBMIT',submissionType:'FIRST'})));
-        }
-      } else if(metric.startsWith('submit')) {
-        const submissions=await readPersonalSubmissions(client,actor,filters.range);
-        rows=submissions.filter(row=>(!filters.stage||row.stage===filters.stage) &&
-          (metric==='submitAll' || (metric==='submitFirst' ? row.firstSubmission && !row.rework : row.rework)))
-          .map(row=>({...row,kind:'SUBMIT',submissionType:row.rework?'REWORK':row.firstSubmission?'FIRST':'REPEAT'}));
-      } else if(metric==='annotationOverall') {
-        const facts=await readAccountQualityFacts(client,{start:new Date(filters.range.startMs).toISOString(),
-          end:new Date(filters.range.endMs).toISOString(),accountId:actor.userId,stage:filters.stage});
-        rows=facts.filter(row=>row.kind==='ANNOTATION_QUALITY' && !row.exclusion
-          && ['PASS','RETURN'].includes(row.outcome)
-          && (input.sampleSet==='first' ? row.firstPassed===true
-            : input.sampleSet==='passed' ? row.outcome==='PASS'
-            : input.sampleSet==='failed' ? row.outcome==='RETURN' : true));
-      } else {
-        const qa=await readPersonalQaEvents(client,actor,filters.range);
-        const needsCoverage=['qaCoverage','qaBatchReturned','qaBatchReleased'].includes(metric);
-        const coverage=needsCoverage ? await readPersonalQaCoverage(client,actor,filters.range) : [];
-        rows=personalQaMetricRows(qa,coverage,metric,filters.stage);
-        coverageIncomplete=needsCoverage && buildPersonalQaActivity(qa,coverage,filters.stage).coverageIncomplete;
-      }
-      rows.sort((a,b)=>Date.parse(b.at)-Date.parse(a.at)||String(a.id).localeCompare(String(b.id)));
-      const page=Math.min(filters.page,Math.max(1,Math.ceil(rows.length/filters.pageSize)));
-      const result={total:rows.length,page,pageSize:filters.pageSize,coverageIncomplete,
-        items:rows.slice((page-1)*filters.pageSize,page*filters.pageSize).map(row=>{
+      const {rows,...page}=await readPersonalReceipts(client,actor,filters,metric,input.sampleSet);
+      const result={...page,items:rows.map(row=>{
           const token=createHash('sha256').update(String(row.id)).digest('hex').slice(0,12).toUpperCase();
-          return {id:`receipt:${token}`,code:`ACT-${token}`,stage:row.stage,kind:row.kind,at:row.at,
-            outcome:row.outcome??null,sampleKind:row.sampleKind??null,
-            submissionType:row.submissionType??null,firstPassed:row.firstPassed===true,
-            ...(row.coverageSources ? {coverageSources:row.coverageSources,manualKinds:row.manualKinds} : {})};
+          return {id:`receipt:${token}`,code:`ACT-${token}`,stage:row.stage,kind:row.kind,at:iso(row.at),
+            outcome:row.outcome??null,sampleKind:row.sample_kind??null,
+            submissionType:row.submission_type??null,firstPassed:row.first_passed===true,
+            ...(row.coverage_sources ? {coverageSources:row.coverage_sources,manualKinds:row.manual_kinds??[]} : {})};
         })};
       await client.query('COMMIT');return result;
     }

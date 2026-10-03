@@ -1,4 +1,5 @@
 import { notifyWorkspaceUpdated } from './workspace-updates';
+import { mutationWorkspaceUpdate } from '../../src/workspace-invalidation.mjs';
 import { browserSessionGeneration, fetchWithSessionCoordination, invalidateBrowserSession } from './session-client';
 
 export class ApiRequestError extends Error {
@@ -21,6 +22,7 @@ export async function apiRequest<T>(url: string, init?: RequestInit): Promise<T>
       ? payload.error.message : `请求失败（${response.status}）`;
     throw new ApiRequestError(response.status, code, message);
   }
-  if (url.startsWith('/api/control-plane/') && !['GET', 'HEAD'].includes((init?.method ?? 'GET').toUpperCase())) notifyWorkspaceUpdated();
+  const update = mutationWorkspaceUpdate(url, init?.method, init?.body, payload.data);
+  if (update) notifyWorkspaceUpdated(update);
   return payload.data as T;
 }

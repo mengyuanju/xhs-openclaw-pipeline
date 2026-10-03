@@ -70,8 +70,9 @@ export function backgroundTaskPath(task: BackgroundTask) {
 }
 
 type Storage = Pick<globalThis.Storage, 'getItem' | 'setItem'>;
-type Snapshot = { status: string; error?: string | null; created_by?: string; created_by_account_id?: number | null;
-  requestedByUsername?: string; requestedByAccountId?: number };
+export type BackgroundTaskSnapshot = { status: string; error?: string | null; created_by?: string; created_by_account_id?: number | null;
+  requestedByUsername?: string; requestedByAccountId?: number; metadataOnly?: boolean };
+type Snapshot = BackgroundTaskSnapshot;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const statuses = new Set(['QUEUED', 'RUNNING', 'SUCCEEDED', 'FAILED', 'STALE', 'PREVIEW_READY', 'ACCEPTED', 'REJECTED', 'CANCELLED', 'UNAVAILABLE', 'DELETED']);
 const advisoryImageEditPreflightErrors = [
@@ -84,12 +85,13 @@ function isAdvisoryImageEditPreflightFailure(task: Pick<BackgroundTask, 'kind' |
     && advisoryImageEditPreflightErrors.some(prefix => task.error?.includes(prefix));
 }
 
-export function createBackgroundTaskStore({ storage, storageKey, accountUsername, accountId, request, onComplete }: {
+export function createBackgroundTaskStore({ storage, storageKey, accountUsername, accountId, request, requestStates, onComplete }: {
   storage?: Storage;
   storageKey: string;
   accountUsername: string;
   accountId: number;
   request: (path: string) => Promise<Snapshot>;
+  requestStates?: (tasks: BackgroundTask[]) => Promise<Map<string, Snapshot | Error>>;
   onComplete: (task: BackgroundTask) => void;
 }) {
   let tasks: BackgroundTask[] = [];
@@ -223,15 +225,28 @@ export function createBackgroundTaskStore({ storage, storageKey, accountUsername
   async function poll() {
     if (stopped) return;
     sync();
-    await Promise.allSettled(tasks.filter(task => task.status !== 'DELETED' && (!hasOwner(task) || isBackgroundTaskRunning(task)
+    const selected = tasks.filter(task => task.status !== 'DELETED' && (!hasOwner(task) || isBackgroundTaskRunning(task)
       || task.kind === 'STANDALONE_IMAGE_EDIT' && task.status === 'UNAVAILABLE' && !unavailableChecked.has(task.id)
       || ['IMAGE_EDIT','STANDALONE_IMAGE_EDIT'].includes(task.kind) && task.status === 'PREVIEW_READY'
-      || task.kind === 'IMAGE_PLAN' && task.status === 'SUCCEEDED' && !task.consumed && !task.payload)).map(async task => {
+      || task.kind === 'IMAGE_PLAN' && task.status === 'SUCCEEDED' && !task.consumed && !task.payload));
+    const imageTasks = selected.filter(task => task.kind !== 'IMAGE_PLAN');
+    let states: Map<string, Snapshot | Error> | undefined;
+    if (requestStates && imageTasks.length) {
+      try { states = await requestStates(imageTasks); }
+      catch (error) { states = new Map(imageTasks.map(task => [task.id, error instanceof Error ? error : new Error('图片状态读取失败')])); }
+    }
+    await Promise.allSettled(selected.map(async task => {
       if (inFlight.has(task.id)) return;
       inFlight.add(task.id);
       if (task.status === 'UNAVAILABLE') unavailableChecked.add(task.id);
       try {
-        const payload = await request(backgroundTaskPath(task));
+        let payload = states?.get(task.id);
+        if (payload instanceof Error) throw payload;
+        payload ??= await request(backgroundTaskPath(task));
+        // A completed plan needs its actual draft, not the compact progress receipt.
+        if (task.kind === 'IMAGE_PLAN' && payload.metadataOnly && payload.status === 'SUCCEEDED') {
+          payload = await request(`${backgroundTaskPath(task)}?full=1`);
+        }
         sync();
         if (stopped || tasks.find(item => item.id === task.id) !== task) return;
         if (!payload || !statuses.has(payload.status)) throw new Error('任务状态暂不可用');
@@ -247,7 +262,10 @@ export function createBackgroundTaskStore({ storage, storageKey, accountUsername
           return;
         }
         const finished = isBackgroundTaskRunning(task) && !isBackgroundTaskRunning(payload);
-        const candidate = { ...task, ...owner, status: payload.status, error: payload.error, pollError: undefined, payload, read: finished ? false : task.read,
+        if(payload.metadataOnly && !finished && task.ownerUsername === owner.ownerUsername && task.ownerAccountId === owner.ownerAccountId
+          && task.status === payload.status && (task.error ?? null) === (payload.error ?? null) && !task.pollError && task.payload === undefined)return;
+        const candidate = { ...task, ...owner, status: payload.status, error: payload.error, pollError: undefined,
+          payload: payload.metadataOnly ? undefined : payload, read: finished ? false : task.read,
           updatedAt: Math.max(Date.now(), (task.updatedAt ?? task.createdAt) + 1) };
         const next = isAdvisoryImageEditPreflightFailure(candidate) ? { ...candidate, read: true } : candidate;
         tasks = tasks.map(item => item.id === task.id ? next : item);

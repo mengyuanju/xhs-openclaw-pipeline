@@ -180,7 +180,7 @@ function AiDisclosureSettings({
       <div><h2 id="ai-disclosure-heading">AI生成标识</h2><p className="subtle">统一控制图片提示词、OCR 白名单、Mock 排版和人工 AI 编辑后的叠层。</p></div>
       <label className="switch-field"><Switch checked={settings.aiDisclosureEnabled} disabled={busy} onChange={(event) => update('aiDisclosureEnabled', event.target.checked)} /><span>显示标识</span></label>
     </div>
-    <div className="field disclosure-field"><label htmlFor="ai-disclosure-text">标识文字</label><Input id="ai-disclosure-text" className="input" value={settings.aiDisclosureText} maxLength={12} pattern="[\\p{L}\\p{N}_-]+" disabled={busy || !settings.aiDisclosureEnabled} onChange={(event) => update('aiDisclosureText', event.target.value)} /><small>最多 12 个字符，仅限文字、数字、下划线或短横线；关闭后生成和验收都不再要求该标识。</small></div>
+    <div className="field disclosure-field"><label htmlFor="ai-disclosure-text">标识文字</label><Input id="ai-disclosure-text" className="input" value={settings.aiDisclosureText} maxLength={12} pattern={'[\\p{L}\\p{N}_\\-]+'} disabled={busy || !settings.aiDisclosureEnabled} onChange={(event) => update('aiDisclosureText', event.target.value)} /><small>最多 12 个字符，仅限文字、数字、下划线或短横线；关闭后生成和验收都不再要求该标识。</small></div>
   </section>;
 }
 

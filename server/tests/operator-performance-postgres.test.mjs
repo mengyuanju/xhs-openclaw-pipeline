@@ -3,6 +3,13 @@ import test from 'node:test';
 import { randomUUID } from 'node:crypto';
 import { startTemporaryPostgres18 } from './helpers/personal-postgres.mjs';
 import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
+import { readSqlOperatorSnapshot,readSqlOperatorDetails } from '../src/operator-performance-sql.mjs';
+import { normalizePerformanceFilters } from '../../src/operator-performance.mjs';
+import { readOperatorPerformanceOracle } from '../src/operator-performance.mjs';
+import {readSqlAnnotationJobReport} from '../src/annotation-job-report-query.mjs';
+import {refreshReportQueryProjections} from '../src/report-query-projections.mjs';
+import { OPERATOR_CURRENT_SOURCE_SQL } from '../src/operator-performance-event-sources.mjs';
+import { LEGACY_OPERATOR_CURRENT_SQL } from './helpers/operator-current-reference.mjs';
 
 test('operator report: real SQL, immutable identity, sampling denominator, snapshots and elapsed time',{
   skip:process.env.RUN_OPERATOR_PERFORMANCE_POSTGRES!=='1',timeout:180_000,
@@ -12,6 +19,41 @@ test('operator report: real SQL, immutable identity, sampling denominator, snaps
   try{
     await repository.initialize();
     const db=repository.pool;
+    const oraclePool={connect:()=>db.connect(),query:(...args)=>db.query(...args)};
+    async function assertSqlMatches(report,input={}) {
+      for (const parameters of [[null,'',null],[admin.userId,'',null],[null,'COPY',null],
+        [input.accountId ?? null,input.stage ?? '',input.batchId ?? null]]) {
+        const optimized=(await db.query(OPERATOR_CURRENT_SOURCE_SQL,parameters)).rows;
+        const legacy=(await db.query(LEGACY_OPERATOR_CURRENT_SQL,parameters)).rows;
+        assert.deepEqual(optimized,legacy,'scoped current facts preserve every pre-optimization field');
+      }
+      while((await refreshReportQueryProjections(db)).refreshed>0){}
+      const sql=await readSqlOperatorSnapshot(db,normalizePerformanceFilters(input),report.asOf);
+      const reference=await readSqlOperatorSnapshot(db,normalizePerformanceFilters(input),report.asOf,report.asOf,{useProjections:false});
+      assert.deepEqual(sql,reference,'ready incremental projections preserve the complete original SQL response');
+      const oracle=await readOperatorPerformanceOracle(oraclePool,admin,input);
+      assert.deepEqual(sql.summary,oracle.summary,'full SQL summary preserves the JavaScript metric oracle');
+      assert.deepEqual(sql.trend,oracle.trend,'SQL trend preserves Beijing-day metrics');
+      assert.deepEqual(report.summary,oracle.summary,'public report uses the same complete metric calculation');
+      for(const expected of oracle.people.items)assert.deepEqual(sql.people.find(row=>row.accountId===expected.accountId),expected,
+        `full SQL person ${expected.accountId} preserves the JavaScript metric oracle`);
+      for(const expected of oracle.people.items.filter(person=>person.contributed>0)) {
+        const detailInput={...input,snapshotToken:oracle.snapshotToken,metric:'all'};
+        const expectedDetail=await readOperatorPerformanceOracle(oraclePool,admin,detailInput,{kind:'detail',accountId:expected.accountId});
+        const actualDetail=await readSqlOperatorDetails(db,{...sql,asOf:oracle.asOf,dataCutoff:oracle.asOf},normalizePerformanceFilters(detailInput),expected.accountId);
+        const referenceDetail=await readSqlOperatorDetails(db,{...sql,asOf:oracle.asOf,dataCutoff:oracle.asOf},normalizePerformanceFilters(detailInput),expected.accountId,{useProjections:false});
+        assert.deepEqual(actualDetail,referenceDetail,'ready projections preserve every detail field and page');
+        assert.equal(actualDetail.total,expectedDetail.total,'person pushdown preserves all detail facts');
+        assert.deepEqual(actualDetail.items,expectedDetail.items,'person pushdown preserves precise facts and ancestry');
+        assert.deepEqual(actualDetail.trend,expectedDetail.trend,'person pushdown preserves the complete personal trend');
+      }
+      const annotationInput={...input,activity:'PRODUCTION',stage:''};
+      const annotationSql=await readSqlAnnotationJobReport(db,normalizePerformanceFilters(annotationInput),report.asOf);
+      const annotationReference=await readSqlAnnotationJobReport(db,normalizePerformanceFilters(annotationInput),report.asOf,undefined,report.asOf,{useProjections:false});
+      assert.deepEqual(annotationSql,annotationReference,'ready canonical handoff projections preserve the whole annotation response');
+      const annotationOracle=await readOperatorPerformanceOracle(oraclePool,admin,annotationInput,{kind:'annotationJobReport'});
+      assert.deepEqual({...annotationSql,asOf:''},{...annotationOracle,asOf:''},'complete SQL assignment/cohort report preserves JavaScript oracle');
+    }
     const users=(await db.query(`INSERT INTO app_users(username,display_name,role,password_hash,status,created_at)
       VALUES ('perf-a','标注甲','USER','fake-only','ACTIVE',now()-interval '5 days'),
       ('perf-b','标注乙','USER','fake-only','ACTIVE',now()-interval '5 days'),
@@ -52,6 +94,7 @@ test('operator report: real SQL, immutable identity, sampling denominator, snaps
     await db.query(`INSERT INTO copy_sampling_events(freeze_id,action,actor_account_id,actor_username,request_id)
       VALUES($1,'FREEZE',$2,'perf-admin',$3)`,[freeze,admin.userId,randomUUID()]);
     let report=await repository.operatorPerformance(admin,{});
+    await assertSqlMatches(report);
     for(const account of [idle,disabled]) {
       const row=report.people.items.find(person=>person.accountId===account.userId);
       assert.ok(row,`${account.username} appears with zero activity`);
@@ -61,10 +104,13 @@ test('operator report: real SQL, immutable identity, sampling denominator, snaps
     }
     assert.equal(report.people.total,Number((await db.query('SELECT count(*) FROM app_users')).rows[0].count));
     const idleScoped=await repository.operatorPerformance(admin,{accountId:String(idle.userId)});
+    await assertSqlMatches(idleScoped,{accountId:String(idle.userId)});
     assert.deepEqual(idleScoped.people.items.map(person=>person.accountId),[idle.userId]);
     const idleSearched=await repository.operatorPerformance(admin,{query:'空闲甲'});
+    await assertSqlMatches(idleSearched,{query:'空闲甲'});
     assert.deepEqual(idleSearched.people.items.map(person=>person.accountId),[idle.userId]);
     const qaOnly=await repository.operatorPerformance(admin,{activity:'QA'});
+    await assertSqlMatches(qaOnly,{activity:'QA'});
     assert.equal(qaOnly.people.items.some(person=>person.accountId===idle.userId),false);
     assert.equal(qaOnly.people.items.some(person=>person.accountId===disabled.userId),false);
     assert.equal(report.summary.COPY.submitted,10);
@@ -115,14 +161,17 @@ test('operator report: real SQL, immutable identity, sampling denominator, snaps
     await db.query(`INSERT INTO copy_sampling_events(freeze_id,sampling_item_id,action,actor_account_id,actor_username,request_id)
       VALUES($1,$2,'PASS',$3,'perf-admin',$4)`,[recheckFreeze,recheck,admin.userId,randomUUID()]);
     const repaired=await repository.operatorPerformance(admin,{});
+    await assertSqlMatches(repaired,{});
     assert.equal(repaired.summary.COPY.firstPass.rate,.75);
     assert.deepEqual(repaired.people.items.find(row=>row.accountId===a.userId).COPY.overallPass,
       {passed:4,failed:0,decided:4,rate:1});
     const scoped=await repository.operatorPerformance(admin,{accountId:String(a.userId)});
+    await assertSqlMatches(scoped,{accountId:String(a.userId)});
     assert.deepEqual(scoped.summary.COPY.overallPass,{passed:4,failed:0,decided:4,rate:1},
       'another worker recheck still counts for the original account after SQL account filtering');
     assert.equal(scoped.people.items.length,1);
     const searched=await repository.operatorPerformance(admin,{query:'标注甲'});
+    await assertSqlMatches(searched,{query:'标注甲'});
     assert.deepEqual(searched.summary.COPY.overallPass,{passed:4,failed:0,decided:4,rate:1},
       'name search keeps cross-account recheck history without showing that account');
     assert.equal(searched.people.items.length,1);
@@ -130,9 +179,14 @@ test('operator report: real SQL, immutable identity, sampling denominator, snaps
     assert.equal(bReport.COPY.firstPass.decided,0);assert.equal(bReport.COPY.recheck.rate,1);assert.equal(bReport.COPY.firstRecheck.rate,1);
     assert.equal(bReport.reworkRounds,1);assert.equal(bReport.reworkDuration.samples,1);
     const frozen=await repository.operatorPerformance(admin,{snapshotToken:report.snapshotToken,metric:'recheck'},{kind:'detail',accountId:b.userId});
-    assert.equal(frozen.total,0,'saved snapshot does not incorporate later conclusions');
+    assert.equal(frozen.total,1,'detail refresh incorporates later conclusions with matching person and trend');
+    assert.equal(frozen.refreshed,true);
+    assert.equal(frozen.person.COPY.recheck.rate,1);
+    const frozenExport=await repository.operatorPerformance(admin,{snapshotToken:report.snapshotToken},{kind:'export'});
+    assert.equal(frozenExport.asOf,report.asOf,'summary export keeps the original report snapshot');
     await db.query('DELETE FROM tasks WHERE id=$1',[original.task]);
     const deleted=await repository.operatorPerformance(admin,{});
+    await assertSqlMatches(deleted,{});
     assert.equal(deleted.summary.COPY.firstPass.rate,.75,'minimal history survives task deletion');
     assert.equal(deleted.people.items.find(row=>row.accountId===b.userId).COPY.recheck.rate,1);
     const removedDetails=await repository.operatorPerformance(admin,{snapshotToken:deleted.snapshotToken,metric:'recheck'},{kind:'detail',accountId:b.userId});
@@ -152,6 +206,7 @@ test('operator report: real SQL, immutable identity, sampling denominator, snaps
     await db.query(`INSERT INTO copy_sampling_events(freeze_id,sampling_item_id,action,actor_account_id,actor_username,request_id)
       VALUES($1,$2,'RETURN_BATCH',$3,'perf-admin',$4)`,[freeze,tasks[0].item,admin.userId,randomUUID()]);
     const batchReport=await repository.operatorPerformance(admin,{});
+    await assertSqlMatches(batchReport,{});
     assert.equal(batchReport.summary.batchAffected,4);
     assert.equal(batchReport.summary.qa.batchImpactReturns,4,'legacy batch without details recovers four affected members');
     assert.equal(batchReport.summary.qa.unknownBatchCounts,0);
@@ -170,6 +225,7 @@ test('operator report: real SQL, immutable identity, sampling denominator, snaps
         VALUES($1,$2,'PASS',$3,'test-reviewer',$4,$5)`,[extraFreeze,sample,reviewerId,randomUUID(),metadata]);
     }
     const excluded=await repository.operatorPerformance(admin,{});
+    await assertSqlMatches(excluded,{});
     assert.equal(excluded.summary.COPY.firstPass.rate,.75);
     assert.equal(excluded.dataQuality.excluded.find(item=>item.reason==='ADMIN_DIRECT').count,1);
     assert.equal(excluded.dataQuality.excluded.find(item=>item.reason==='SELF_REVIEW').count,1);
@@ -196,6 +252,7 @@ test('operator report: real SQL, immutable identity, sampling denominator, snaps
     assert.equal(action.items[0].consecutiveReturns,2);assert.equal(action.items[0].reviewRound,3);
     await db.query("UPDATE tasks SET assigned_to_user_id='perf-b',assigned_at=now() WHERE id=$1",[followup.task]);
     const reassigned=await repository.operatorPerformance(admin,{});
+    await assertSqlMatches(reassigned,{});
     assert.equal(reassigned.summary.reassignSuggested,0);
     assert.equal(reassigned.people.items.find(row=>row.accountId===a.userId).repeatedReturns,1);
   }finally{await repository.pool.end();await database.stop();}

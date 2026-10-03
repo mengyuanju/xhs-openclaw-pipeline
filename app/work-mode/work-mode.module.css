@@ -105,8 +105,10 @@
   .editor :global(.workbench-review-pane-switch) { display: flex; }
   .editor :global(.workbench-review-form[data-comparing="true"] [data-mobile-pane="copy"] > [data-review-pane="plan"]),
   .editor :global(.workbench-review-form[data-comparing="true"] [data-mobile-pane="plan"] > [data-review-pane="copy"]) { display: none; }
-  .editor :global(.workbench-review-form[data-work-layout="image"] .workbench-review-scroll) { overflow-y: auto; align-content: start; grid-template-rows: auto; padding: 10px; }
-  .editor :global(.workbench-review-form[data-work-layout="image"] .workbench-image-review-section) { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto; }
+  .editor :global(.workbench-review-form[data-work-layout="image"] .workbench-review-scroll) { overflow-y: auto; align-content: start; grid-template-rows: max-content; padding: 10px; }
+  /* The gallery and its history must retain their own height in a narrow editor. */
+  .editor :global(.workbench-review-form[data-work-layout="image"] .workbench-review-pane) { min-height: max-content; grid-template-rows: max-content; align-content: start; }
+  .editor :global(.workbench-review-form[data-work-layout="image"] .workbench-image-review-section) { min-height: auto; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto; }
   .editor :global(.workbench-review-form[data-work-layout="image"] .workbench-image-review-gallery) { height: clamp(420px, 62dvh, 660px); }
   .editor :global(.workbench-review-form[data-work-layout="image"] .workbench-image-review-decision) { grid-column: 1; overflow-y: visible; padding: 2px; }
 }

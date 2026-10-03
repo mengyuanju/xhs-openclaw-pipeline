@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 import { applyMigrations, loadMigrations } from '../src/database-migrations.mjs';
-import { passCopyQaItem, returnCopyQaItem } from '../src/copy-quality-control.mjs';
+import { decideCopyQaItemV2 } from '../src/copy-qa-v2.mjs';
 import { startTemporaryPostgres18 } from './temporary-postgres18.mjs';
 
 const content = {
@@ -78,10 +78,16 @@ test('PostgreSQL: plan-only direct submit, saved/reverted plans and repeated ret
       assert.equal(current.copyReworkSatisfied, true);
       assert.equal(current.content.imagePlan[0].layout.mode, 'CUSTOM', 'rework must preserve intentional layouts');
       assert.equal(detail.humanQualityAssessments.at(-1).score, 3);
-      let item = (await pool.query(`SELECT * FROM copy_sampling_items WHERE task_id = $1 ORDER BY id DESC LIMIT 1`, [taskId])).rows[0];
-      assert.equal(item.sample_kind, 'MANDATORY_RECHECK');
-      await returnCopyQaItem(pool, item.public_id, {
-        requestId: randomUUID(), expectedCopyRevisionId: Number(item.copy_revision_id), note: '副标题仍需调整',
+      // Current approvals create V2 mandatory one-item batches; legacy sampling
+      // items no longer receive new review rounds.
+      let item = (await pool.query(`SELECT member.*,batch.full_inspection,batch.sample_count
+        FROM copy_qa_batch_members_v2 member JOIN copy_qa_batches_v2 batch ON batch.id=member.batch_id
+        WHERE member.task_id=$1 ORDER BY member.id DESC LIMIT 1`,[taskId])).rows[0];
+      assert.equal(item.full_inspection,true);
+      assert.equal(item.sample_count,1);
+      assert.equal(item.selected,true);
+      await decideCopyQaItemV2(pool, item.public_id, {
+        requestId: randomUUID(), decision:'RETURN', revisionToken:item.content_sha256, note: '副标题仍需调整',
       }, inspector);
       detail = await repository.getTask(taskId);
       revisionId = detail.currentCopyRevisionId;
@@ -109,10 +115,13 @@ test('PostgreSQL: plan-only direct submit, saved/reverted plans and repeated ret
       const approved = await submit('APPROVE');
       assert.equal(approved.state, 'COPY_QC_PENDING');
       assert.equal(approved.currentCopyRevisionId, revisionId);
-      item = (await pool.query(`SELECT * FROM copy_sampling_items WHERE task_id = $1 ORDER BY id DESC LIMIT 1`, [taskId])).rows[0];
-      assert.equal(item.sample_kind, 'MANDATORY_RECHECK');
-      await passCopyQaItem(pool, item.public_id, {
-        requestId: randomUUID(), expectedCopyRevisionId: revisionId,
+      item = (await pool.query(`SELECT member.*,batch.full_inspection FROM copy_qa_batch_members_v2 member
+        JOIN copy_qa_batches_v2 batch ON batch.id=member.batch_id
+        WHERE member.task_id=$1 ORDER BY member.id DESC LIMIT 1`,[taskId])).rows[0];
+      assert.equal(item.full_inspection,true);
+      assert.equal(Number(item.copy_revision_id),revisionId);
+      await decideCopyQaItemV2(pool, item.public_id, {
+        requestId: randomUUID(), decision:'PASS',revisionToken:item.content_sha256,
       }, inspector);
       detail = await repository.getTask(taskId);
       assert.equal(detail.state, 'IMAGE_QUEUED');

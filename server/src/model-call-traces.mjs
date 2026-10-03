@@ -1,4 +1,5 @@
 import { ControlPlaneNotFoundError, normalizeTaskId, normalizeUuid } from './domain.mjs';
+import { decodeModelCallPayload } from './model-call-payload-archive.mjs';
 
 const TEXT_LIMIT = 200_000;
 
@@ -83,17 +84,27 @@ export async function listModelCalls(pool, rawTaskId, { limit = 20, offset = 0 }
   if (!Number.isInteger(limit) || limit < 1 || limit > 100 || !Number.isSafeInteger(offset) || offset < 0) {
     throw new TypeError('model call pagination is invalid');
   }
-  const result = await pool.query(`SELECT ${summaryColumns} FROM model_call_traces c
+  // One statement gives the page, count and cleanup marker the same MVCC snapshot.
+  const result = await pool.query(`SELECT
+    (SELECT count(*)::integer FROM model_call_traces WHERE task_id=$1) AS total,
+    COALESCE((SELECT jsonb_agg(row_to_json(page)) FROM (SELECT ${summaryColumns} FROM model_call_traces c
     JOIN task_executions e ON e.id = c.execution_id WHERE c.task_id = $1
-    ORDER BY e.started_at, e.id, c.sequence, c.id LIMIT $2 OFFSET $3`, [taskId, limit, offset]);
-  const count = await pool.query('SELECT count(*)::integer AS total FROM model_call_traces WHERE task_id = $1', [taskId]);
-  return { items: result.rows, total: count.rows[0].total, limit, offset };
+    ORDER BY e.started_at, e.id, c.sequence, c.id LIMIT $2 OFFSET $3) page),'[]'::jsonb) AS items,
+    (SELECT jsonb_build_object('deliveryEntryId',delivery_entry_id,'status',status,
+      'deletedCount',deleted_count,'capturedAt',captured_at,'completedAt',completed_at)
+      FROM delivery_model_call_cleanup WHERE task_id=$1 ORDER BY delivery_entry_id DESC LIMIT 1) AS cleanup`, [taskId, limit, offset]);
+  return { items: result.rows[0].items, total: result.rows[0].total, limit, offset, cleanup: result.rows[0].cleanup };
 }
 
 export async function getModelCall(pool, rawTaskId, rawCallId) {
-  const result = await pool.query(`SELECT ${summaryColumns}, c.prompt, c.request, c.response, c.error
+  const result = await pool.query(`SELECT ${summaryColumns}, c.prompt, c.request, c.response, c.error,
+      c.payload_archived, archive.format_version,archive.payload,archive.raw_bytes,archive.sha256
     FROM model_call_traces c JOIN task_executions e ON e.id = c.execution_id
+    LEFT JOIN model_call_payload_archives archive ON archive.call_id=c.id
     WHERE c.task_id = $1 AND c.id = $2`, [normalizeTaskId(rawTaskId), normalizeUuid(rawCallId, 'callId')]);
   if (!result.rows[0]) throw new ControlPlaneNotFoundError('model call not found');
-  return result.rows[0];
+  const { payload_archived, format_version, payload, raw_bytes, sha256, ...record } = result.rows[0];
+  return payload_archived
+    ? { ...record, ...await decodeModelCallPayload({ format_version, payload, raw_bytes, sha256 }) }
+    : record;
 }

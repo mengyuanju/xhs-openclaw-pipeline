@@ -11,6 +11,7 @@ import {
   updateQueryItemSelection,
 } from '../app/query-packages/types.ts';
 import { resolveLoginReturnPath } from '../app/login/return-path.ts';
+import { readTaskReviewSource } from './helpers/task-review-source.mjs';
 
 const copyWorkbenchUrl = new URL('../app/copy-qa/copy-qa-workbench.tsx', import.meta.url);
 const workflowQualitySettingsUrl = new URL('../app/settings/workflow-quality-settings-panel.tsx', import.meta.url);
@@ -61,40 +62,43 @@ test('copy QA and Query package page adapters preserve pagination metadata and l
   assert.equal(normalizePackagePage({ items: [packageRow()], total: null }).total, null);
 });
 
-test('copy QA requests the selected status from the server and exposes load-more scope honestly', async () => {
+test('V2 copy QA paginates the selected batch view and detail through the server', async () => {
   const source = await readFile(copyWorkbenchUrl, 'utf8');
-  assert.match(source, /const params = new URLSearchParams\(\{[\s\S]*?status,[\s\S]*?limit: String\(COPY_QA_LIST_LIMIT\),[\s\S]*?offset: String\(offset\)/u);
-  assert.match(source, /copy-qa\/items\?\$\{params\.toString\(\)\}/u);
-  assert.match(source, /role === 'ADMIN' && queryPackageName[\s\S]*params\.set\('queryPackageName', queryPackageName\)/u);
-  assert.match(source, /role === 'ADMIN' && personName[\s\S]*params\.set\('personName', personName\)/u);
-  assert.match(source, /searchedTaskId !== null[\s\S]*params\.set\('taskId', String\(searchedTaskId\)\)/u);
-  assert.match(source, /aria-label="按来源词包或质检轮次筛选全部抽检项"/u);
-  assert.match(source, /aria-label="按质量归属人或本次提交人筛选全部文案质检项"/u);
-  assert.match(source, /来源词包：\{item\.sourceProductionBatch\.queryPackageName \?\? '未归属词包'\}/u);
-  assert.match(source, /本次提交 @\$\{item\.currentApproverUsername\}/u);
-  assert.match(source, /!detail\.blindReview && <section[\s\S]*来源词包[\s\S]*detail\.sourceProductionBatch\.queryPackageName/u);
-  assert.match(source, /本次提交账号[\s\S]*detail\.currentApproverUsername/u);
-  assert.match(source, /load\(\{ silent: true, offset: nextOffset \}\)/u);
-  assert.match(source, /仅作用于当前已加载/u);
-  assert.doesNotMatch(source, /copy-qa\/items\?status=ALL['"`]/u,
-    'historical rows must not starve the default pending queue');
+  // V2 replaced the flat legacy queue with server-paged batches and members.
+  assert.match(source, /\/v2\/copy-qa\/batches\?view=\$\{view\}&limit=20&offset=\$\{batchOffset\}/u);
+  assert.match(source, /\/v2\/copy-qa\/batches\/\$\{id\}\?limit=50&offset=\$\{offset\}/u);
+  assert.match(source, /setView\(next\);setBatchOffset\(0\);setDetail\(null\);setSelectedItemId\(null\)/u);
+  assert.match(source, /setBatchPagination\(Array\.isArray\(result\)\?/u);
+  assert.match(source, /result\.offset!==batchOffset\)setBatchOffset\(result\.offset\)/u);
+  assert.match(source, /label="质检批次分页"/u);
+  assert.match(source, /label="质检明细分页"/u);
+  assert.match(source, /detail\.pagination\.offset\+index\+1/u);
+  assert.match(source, /disabled=\{busy\|\|offset\+limit>=total\}/u);
 });
 
 test('copy QA fixes administrators to a full-information view', async () => {
-  const source = await readFile(copyWorkbenchUrl, 'utf8');
+  const [source, service] = await Promise.all([
+    readFile(copyWorkbenchUrl, 'utf8'),
+    readFile(new URL('../server/src/copy-qa-v2.mjs', import.meta.url), 'utf8'),
+  ]);
   assert.doesNotMatch(source, /<label>评审模式<Select|setMode\(|const \[mode,/u,
     'the administrator response is already unredacted and must not expose a misleading blind-mode filter');
-  assert.match(source, /管理员固定使用完整信息视图，任务、Query、词包和来源信息不会因样本盲评策略而隐藏/u);
-  assert.match(source, /role === 'ADMIN'[\s\S]*?<TabsTrigger value="workers">标注<\/TabsTrigger>/u);
-  assert.match(source, /role === 'ADMIN' \? '管理员视图' : '质检视图'/u);
-  assert.match(source, /按样本策略脱敏 · 仅显示已授权操作/u);
-  assert.match(source, /样本评审模式由管理员预先决定，质检不可切换或更改/u);
+  assert.match(service, /const blind=batch\.blind_review_enabled&&actor\.role!=='ADMIN'/u);
+  assert.match(service, /taskId:blind\?null:Number\(row\.task_id\)/u);
+  assert.match(service, /approverUsername:blind\?null:row\.approver_username/u);
+  assert.match(source, /selectedItem\.taskId==null\?'独立盲评':'非盲评'/u);
+  assert.match(source, /selectedItem\.query&&<div>/u);
+  assert.match(source, /selectedItem\.approverUsername&&<div>/u);
 });
 
-test('copy QA accuracy statistics are fetched and rendered only for administrators', async () => {
+test('V2 copy QA renders batch counts from the server rather than retired accuracy tabs', async () => {
   const source = await readFile(copyWorkbenchUrl, 'utf8');
-  assert.match(source, /role === 'ADMIN' && !append[\s\S]*?\/v1\/copy-qa\/statistics/u);
-  assert.match(source, /\{role === 'ADMIN' && <TabsContent className=\{styles\.tabViewport\} value="workers">[\s\S]*?id="copy-qa-accuracy-title"/u);
+  assert.match(source, /batchPagination\.total/u);
+  assert.match(source, /detail\.batch\.memberCount/u);
+  assert.match(source, /detail\.batch\.sampleCount/u);
+  assert.match(source, /detail\.batch\.discardedCount\?\?detail\.items\.filter\(item=>item\.status==='DISCARDED'\)\.length/u);
+  assert.match(source, /detail\.batch\.pendingCount\?\?detail\.items\.filter\(item=>item\.status==='PENDING'\)\.length/u);
+  assert.doesNotMatch(source, /\/v1\/copy-qa\/statistics|copy-qa-accuracy-title/u);
 });
 
 test('workflow settings describe blind review as a non-administrator view policy', async () => {
@@ -103,12 +107,13 @@ test('workflow settings describe blind review as a non-administrator view policy
   assert.match(source, /管理员始终使用完整信息视图/u);
 });
 
-test('copy QA exposes administrator direct passes as a dedicated server-side result filter', async () => {
-  const source = await readFile(copyWorkbenchUrl, 'utf8');
-  assert.match(source, /role === 'ADMIN' && <SelectItem value="ADMIN_DIRECT_PASSED">管理员单独通过<\/SelectItem>/u);
-  assert.match(source, /status === 'ADMIN_DIRECT_PASSED'[\s\S]*item\.reviewMethod === 'ADMIN_DIRECT'/u);
-  assert.match(source, /管理员单独通过 ·/u);
-  assert.match(source, /质检处理[\s\S]*detail\.reviewMethod === 'ADMIN_DIRECT'/u);
+test('administrator direct copy QA pass requires the current task revision and an audited explanation', async () => {
+  const source = await readTaskReviewSource();
+  assert.match(source, /if \(!detail \|\| role !== 'ADMIN' \|\| detail\.state !== 'COPY_QC_PENDING'/u);
+  assert.match(source, /label: '通过原因（必填）'/u);
+  assert.match(source, /if \(!note\) return/u);
+  assert.match(source, /\/v1\/tasks\/\$\{detail\.id\}\/admin-direct-copy-qa/u);
+  assert.match(source, /requestId: createRequestId\(\),\s*note,\s*expectedCopyRevisionId: detail\.currentCopyRevisionId/u);
 });
 
 test('visible Query packages page through the server and virtualizes cursor-paged detail rows', async () => {

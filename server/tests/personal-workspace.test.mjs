@@ -2,12 +2,19 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readPersonalQualityActivity, readPersonalWorkspace } from '../src/personal-workspace.mjs';
 import { normalizeRange } from '../../src/web-statistics/summary.mjs';
+import { summarizePersonalToday } from '../../src/personal-workspace.mjs';
+import { personalQaMetricRows } from '../../src/personal-qa-statistics.mjs';
 const actor={userId:11,username:'worker',role:'USER'};
 
 function fake({historyFails=false,deliveryFails=false,qaFails=false,canOpen=false}={}) {
   const calls=[]; let released=false;
   const client={release(){released=true;},async query(sql,values){
     calls.push({sql,values});
+    if(historyFails && sql.includes('core_events AS'))throw Error('history unavailable');
+    if(sql.startsWith('WITH facts AS') && sql.includes('FROM filtered f'))return{rows:[{ALL:1,actionable:1,review:1,copyInitial:1}]};
+    if(sql.startsWith('WITH facts AS'))return{rows:[{id:1}]};
+    if(sql.startsWith('SELECT id FROM'))return{rows:[{id:1}]};
+    if(sql.startsWith('WITH RECURSIVE core_events'))return{rows:[{event_key:'copy:1',task_id:1,kind:'COMPLETE',stage:'COPY',occurred_at:new Date(),data:{},first_recheck:false,round_known:false}]};
     if(qaFails&&sql.includes('FROM quality_review_activity_events'))throw Error('quality activity unavailable');
     if(sql.startsWith('WITH personal_events')){
       if(historyFails)throw Error('history unavailable');
@@ -96,9 +103,54 @@ function todayFake({extraSubmissions=[],extraDiscards=[]}={}) {
     {event_key:'image-review:4',task_id:1,stage:'IMAGE',account_id:actor.userId,
       kind:'QA_REVIEW',occurred_at:new Date(),data:{outcome:'PASS',samplingItemId:4,sampleKind:'RANDOM',exclusion:'SELF_REVIEW'},effective_sample_kind:'RANDOM'},
   ];
+  const oracleFacts=values=>{
+    const selected=row=>Date.parse(row.at??row.occurred_at)>=Date.parse(values[1])
+      && Date.parse(row.at??row.occurred_at)<Date.parse(values[2]);
+    return {
+      submissions:submissions.filter(selected).map(row=>({...row,taskId:row.task_id,kind:'COMPLETE',firstSubmission:row.first_submission})),
+      quality:verdicts.filter(selected).map(row=>({...row.data,id:row.event_key,kind:'ANNOTATION_QUALITY',stage:row.stage,
+        accountId:row.account_id,at:row.occurred_at,outcome:row.action,firstPassed:row.action==='PASS' && !row.had_return
+          && row.data.sampleKind!=='MANDATORY_RECHECK'})),
+      qa:reviews.filter(selected).map(row=>({...row.data,id:row.event_key,taskId:row.task_id,accountId:row.account_id,
+        stage:row.stage,kind:row.kind,at:row.occurred_at,sampleKind:row.effective_sample_kind})),
+      discarded:discards.filter(row=>selected(row)&&row.account_id===values[0]&&row.stage==='COPY'
+        && Date.parse(row.occurred_at)<=Date.parse(values[3])).map(row=>({...row,id:'annotation-discard:'+row.event_key,
+        kind:'ANNOTATION_DISCARD',accountId:row.account_id,taskId:row.task_id,at:row.occurred_at,outcome:'DISCARD'})),
+    };
+  };
   const client={release(){},async query(sql,values){
     calls.push({sql,values});
     if(sql=== 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY' || sql==='COMMIT' || sql.startsWith('SET LOCAL'))return{rows:[]};
+    if(sql.startsWith('WITH personal_submissions')){
+      const facts=oracleFacts(values),range={startMs:Date.parse(values[1]),endMs:Date.parse(values[2])};
+      const report=summarizePersonalToday(facts.submissions,facts.quality,facts.qa,range,Date.parse(values[3]),[],facts.discarded);
+      return{rows:['COPY','IMAGE'].map(stage=>{
+        const a=report.annotation[stage],q=report.qa[stage];return{stage,submissions:a.submissions,first_submissions:a.firstSubmissions,
+          rework_submissions:a.reworkSubmissions,annotation_discarded:a.discarded,decided:a.quality.decided,
+          annotation_passed:a.quality.passed,first_passed:a.quality.firstPassed,reviews:q.reviews,actual_operations:q.actualOperations,
+          processing_coverage:q.processingCoverage,qa_first:q.firstReviews,rechecks:q.rechecks,passed:q.passed,returned:q.returned,
+          batch_returned:q.batchReturned,batch_released:q.batchReleased,batch_actions:q.batchActions,discarded:q.discarded,
+          escalated:q.escalated,coverage_incomplete:q.coverageIncomplete};
+      })};
+    }
+    if(sql.startsWith('/* personal_receipts:')) {
+      const[,metric,sampleSet]=sql.match(/^\/\* personal_receipts:([a-zA-Z]+):([a-zA-Z]*)/u),facts=oracleFacts(values);
+      let rows;
+      if(metric.startsWith('submit')||metric==='copyFirstReview'||metric==='annotationDiscarded') {
+        rows=facts.submissions.filter(row=>(!values[4]||row.stage===values[4]) && (metric==='copyFirstReview'
+          ? row.stage==='COPY'&&row.firstSubmission&&!row.rework:metric==='submitFirst'?row.firstSubmission&&!row.rework
+          :metric==='submitRework'?row.rework:true)).map(row=>({...row,kind:'SUBMIT',submissionType:row.rework?'REWORK':row.firstSubmission?'FIRST':'REPEAT'}));
+        if(metric==='annotationDiscarded')rows=facts.discarded;
+        if(metric==='copyFirstReview')rows.push(...facts.discarded);
+      } else if(metric==='annotationOverall')rows=facts.quality.filter(row=>(!values[4]||row.stage===values[4])&&
+        (sampleSet==='first'?row.firstPassed:sampleSet==='passed'?row.outcome==='PASS':sampleSet==='failed'?row.outcome==='RETURN':true));
+      else rows=personalQaMetricRows(facts.qa,[],metric,values[4]);
+      rows.sort((a,b)=>Date.parse(b.at)-Date.parse(a.at)||a.id.localeCompare(b.id));
+      if(sql.includes('SELECT count(*) AS total'))return{rows:[{total:rows.length,coverage_incomplete:false}]};
+      return{rows:rows.slice(values[6],values[6]+values[5]).map(row=>({...row,sample_kind:row.sampleKind??null,
+        submission_type:row.submissionType??null,first_passed:row.firstPassed===true,coverage_sources:row.coverageSources,manual_kinds:row.manualKinds}))};
+    }
+    if(sql.startsWith('WITH facts AS') && sql.includes('FROM filtered f'))return{rows:[{ALL:1,actionable:1,review:1,copyInitial:1}]};
     if(sql.startsWith('SELECT e.event_key AS id,e.task_id,e.stage'))return{rows:submissions.filter(row=>
       Date.parse(row.at)>=Date.parse(values[1]) && Date.parse(row.at)<Date.parse(values[2]))};
     if(sql.startsWith('WITH discards AS'))return{rows:discards.filter(row=>
@@ -136,13 +188,14 @@ test('personal statistics honor the selected period and jobs read only their own
   assert.equal(today.qa.IMAGE.reviews,1,'excluded self review does not count');
   assert.equal(db.calls.some(call=>call.sql.startsWith('SELECT task.id')),false);
   assert.equal(db.calls.some(call=>call.sql.startsWith('SELECT b.id AS batch_id')),false);
-  const discardQuery=db.calls.find(call=>call.sql.startsWith('WITH discards AS'));
-  assert.equal(discardQuery.values[3],actor.userId,'discard attribution uses the historical actor account');
-  assert.equal(discardQuery.values[4],'COPY','only annotation copy discards contribute');
+  const aggregateQuery=db.calls.find(call=>call.sql.startsWith('WITH personal_submissions'));
+  assert.equal(aggregateQuery.values[0],actor.userId,'all sources use the historical actor account');
+  assert.match(aggregateQuery.sql,/discard\.stage='COPY'/u,'only annotation copy discards contribute');
+  assert.doesNotMatch(aggregateQuery.sql,/LIMIT 50001/u,'the aggregate remains complete above the old event cap');
   db.calls.length=0;
   const jobs=await readPersonalWorkspace(db.pool,actor,{section:'jobs'}, {report:true,blindSql:'false'});
   assert.equal(jobs.section,'jobs');assert.equal(jobs.counts.copyInitial,1);
-  assert.equal(db.calls.some(call=>call.sql.startsWith('SELECT task.id')),true);
+  assert.equal(db.calls.some(call=>call.sql.startsWith('WITH facts AS')),true);
   assert.equal(db.calls.some(call=>call.sql.startsWith('SELECT e.event_key AS id')),false);
   assert.equal(db.calls.some(call=>call.sql.startsWith('WITH decisions AS')),false);
   assert.equal(db.calls.some(call=>call.sql.startsWith('WITH discards AS')),false);
@@ -192,10 +245,9 @@ test('seven-day statistics pass the same Shanghai range to submissions and disca
   assert.deepEqual(report.range,{from:range.from,to:range.to});
   assert.equal(report.annotation.COPY.firstSubmissions,2);assert.equal(report.annotation.COPY.discarded,3);
   assert.equal(report.annotation.COPY.firstReviews,5);
-  const submissionQuery=db.calls.find(call=>call.sql.startsWith('SELECT e.event_key AS id,e.task_id,e.stage'));
-  const discardQuery=db.calls.find(call=>call.sql.startsWith('WITH discards AS'));
-  assert.deepEqual(submissionQuery.values.slice(1),[at,new Date(range.endMs).toISOString()]);
-  assert.deepEqual(discardQuery.values.slice(0,2),submissionQuery.values.slice(1));
+  const aggregateQuery=db.calls.find(call=>call.sql.startsWith('WITH personal_submissions'));
+  assert.deepEqual(aggregateQuery.values.slice(1,3),[at,new Date(range.endMs).toISOString()]);
+  assert.match(aggregateQuery.sql,/assessment\.created_at>=\$2 AND assessment\.created_at<\$3/u);
   const detail=await readPersonalQualityActivity(db.pool,actor,{period:'7d',metric:'copyFirstReview'});
   assert.equal(detail.total,report.annotation.COPY.firstReviews);
 });

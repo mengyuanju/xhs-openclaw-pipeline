@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { runDoubaoWebSearch } from '../src/doubao-search.mjs';
+import { withModelCallTracing } from '../src/model-call-trace.mjs';
 
 const KEY = 'offline-fixture-key';
 const QUERY = '绵阳到北京自驾8天行程';
@@ -29,6 +30,36 @@ function customPayload(webResults = [{
 function runWith(fetchImpl, options = {}, input = {}) {
   return runDoubaoWebSearch({ apiKey: KEY, timeoutMs: 5_000, fetchImpl, ...options },
     { query: QUERY, ...input });
+}
+
+function traceFixture() {
+  const records = [];
+  const executionId = 'doubao-offline-execution';
+  const controlPlane = {
+    recordModelCall: async (id, _callId, record) => {
+      assert.equal(id, executionId);
+      records.push(structuredClone(record));
+    },
+    updateProgress: async () => {},
+  };
+  return { records, run: (action) => withModelCallTracing({ executionId, controlPlane }, async (plane) => {
+    await plane.updateProgress(executionId, { stage: 'WEB_SEARCH', details: { mode: 'fixture' } });
+    return action();
+  }) };
+}
+
+function completedTrace(fixture, status) {
+  assert.deepEqual(fixture.records.map((record) => record.status), ['RUNNING', status]);
+  assert.equal(fixture.records[0].id, fixture.records[1].id);
+  const record = fixture.records[1];
+  assert.equal(record.sequence, 1);
+  assert.equal(record.stage, 'WEB_SEARCH');
+  assert.equal(record.provider, 'Doubao');
+  assert.equal(record.operation, 'WEB_SEARCH');
+  assert.equal(record.model, '');
+  assert.ok(record.finishedAt);
+  assert.ok(record.durationMs >= 0);
+  return record;
 }
 
 test('Doubao requests web search with domestic ICP scope and returns grounded source excerpts', async () => {
@@ -239,4 +270,209 @@ test('Doubao limits upstream response size and propagates execution cancellation
   controller.abort(new Error('task cancelled'));
   await assert.rejects(runWith(async () => { throw new Error('unexpected network call'); }, {},
     { signal: controller.signal }), /task cancelled/u);
+});
+
+test('Doubao traces each mode with the exact normalized Unicode query and HTTP request body', async (t) => {
+  const query = `  ${'自驾🚗'.repeat(45)}\n 行程  `;
+  const expectedQuery = [...query.replace(/\s+/gu, ' ').trim()].slice(0, 100).join('');
+  for (const mode of ['GLOBAL', 'CUSTOM']) {
+    await t.test(mode, async () => {
+      const f = traceFixture();
+      let calls = 0;
+      let request;
+      const body = mode === 'GLOBAL' ? payload() : customPayload();
+      const result = await f.run(() => runWith(async (_url, init) => {
+        calls += 1;
+        request = JSON.parse(init.body);
+        return Response.json(body);
+      }, { mode }, { query, limit: 7 }));
+      const record = completedTrace(f, 'SUCCEEDED');
+      const envelope = JSON.parse(record.request);
+      assert.equal(calls, 1);
+      assert.equal(record.prompt, expectedQuery);
+      assert.equal([...record.prompt].length, 100);
+      assert.equal(envelope.scope, 'HTTP_BODY');
+      assert.deepEqual(envelope.stageContext, { name: 'WEB_SEARCH', details: { mode: 'fixture' } });
+      assert.deepEqual(envelope.payload, request);
+      assert.equal(envelope.payload.Query, record.prompt);
+      assert.equal(mode === 'GLOBAL' ? request.DocCount : request.Count, 7);
+      assert.equal(record.error, null);
+      assert.deepEqual(JSON.parse(record.response), {
+        httpStatus: 200, scope: 'NORMALIZED_SEARCH_EVIDENCE', result: result.result,
+      });
+      assert.equal(result.provider, 'doubao');
+    });
+  }
+});
+
+test('Doubao traces semantic failures as failed even when HTTP succeeds', async (t) => {
+  const cases = [
+    ['GLOBAL', { Result: { ErrorCode: 9001, ErrorMsg: 'untrusted error' } }, /service code 9001/u],
+    ['CUSTOM', { Result: { ErrorCode: 'QuotaExceeded' } }, /service code QuotaExceeded/u],
+    ['GLOBAL', { ResponseMetadata: { Error: { Code: 'PermissionDenied' } } }, /API code PermissionDenied/u],
+    ['CUSTOM', { ResponseMetadata: { Error: { CodeN: 10409 } } }, /API code 10409/u],
+    ['GLOBAL', { unrelated: 'upstream diagnostic' }, /missing Result/u],
+    ['GLOBAL', { Result: {} }, /missing ErrorCode/u],
+    ['GLOBAL', { Result: { ErrorCode: '0' } }, /invalid ErrorCode/u],
+    ['GLOBAL', payload([]), /no source evidence/u],
+    ['CUSTOM', customPayload([]), /no source evidence/u],
+  ];
+  for (const [mode, body, message] of cases) {
+    await t.test(`${mode} ${message.source}`, async () => {
+      const f = traceFixture();
+      let calls = 0;
+      await f.run(() => assert.rejects(runWith(async () => {
+        calls += 1;
+        return Response.json(body);
+      }, { mode }), message));
+      const record = completedTrace(f, 'FAILED');
+      assert.equal(calls, 1);
+      assert.match(record.error, message);
+      assert.deepEqual(JSON.parse(record.response), { httpStatus: 200 });
+    });
+  }
+});
+
+test('Doubao traces transport, HTTP and response-read failures without repeating a request', async (t) => {
+  const encoder = new TextEncoder();
+  const cases = [
+    ['network', async () => { throw new Error(`transport ${KEY}`); }, /network request failed/u],
+    ['HTTP', async () => new Response(`upstream ${KEY}`, { status: 429 }), /HTTP 429/u],
+    ['invalid JSON', async () => new Response('<html>upstream</html>'), /not valid JSON/u],
+    ['empty body', async () => new Response(null), /empty response body/u],
+    ['interrupted body', async () => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(`partial ${KEY}`));
+        controller.error(new Error(`read interrupted ${KEY}`));
+      },
+    })), /transfer was interrupted/u],
+    ['oversized body', async () => new Response('x'.repeat(2_000_001)), /response is too large/u],
+  ];
+  for (const [name, fetchImpl, message] of cases) {
+    await t.test(name, async () => {
+      const f = traceFixture();
+      let calls = 0;
+      await f.run(() => assert.rejects(runWith(async (...args) => {
+        calls += 1;
+        return fetchImpl(...args);
+      }), message));
+      const record = completedTrace(f, 'FAILED');
+      assert.equal(calls, 1);
+      assert.match(record.error, message);
+      assert.deepEqual(record.response === null ? null : JSON.parse(record.response),
+        name === 'network' ? null : { httpStatus: name === 'HTTP' ? 429 : 200 });
+      assert.doesNotMatch(JSON.stringify(f.records), new RegExp(KEY, 'u'));
+    });
+  }
+});
+
+test('Doubao traces execution cancellation while preserving the caller cancellation error', async () => {
+  const f = traceFixture();
+  const controller = new AbortController();
+  const cancellation = new Error('task cancelled during search');
+  let calls = 0;
+  await f.run(() => assert.rejects(runWith(async () => {
+    calls += 1;
+    controller.abort(cancellation);
+    throw new Error('fetch aborted');
+  }, {}, { signal: controller.signal }), (error) => error === cancellation));
+  const record = completedTrace(f, 'FAILED');
+  assert.equal(calls, 1);
+  assert.equal(record.error, cancellation.message);
+});
+
+test('Doubao trace evidence redacts direct, mixed-case and nested percent-encoded credentials in both modes', async (t) => {
+  const key = 'offline/fixture+key';
+  const variants = new Set([key]);
+  let encoded = [key];
+  function mixedCase(value, firstLowercase) {
+    let index = 0;
+    return value.replace(/%[0-9A-F]{2}/gu, (escape) =>
+      (index++ % 2 === 0) === firstLowercase ? escape.toLowerCase() : escape.toUpperCase());
+  }
+  for (let depth = 0; depth < 3; depth += 1) {
+    encoded = [...new Set(encoded.flatMap((value) => {
+      const escaped = encodeURIComponent(value);
+      return [escaped, escaped.replace(/%[0-9A-F]{2}/gu, (escape) => escape.toLowerCase()),
+        mixedCase(escaped, true), mixedCase(escaped, false)];
+    }))];
+    for (const value of encoded) variants.add(value);
+  }
+  assert.ok(variants.has('offline%2ffixture%2Bkey'));
+  assert.ok(variants.has('offline%25252ffixture%25252Bkey'));
+  const fullyEncoded = [...Buffer.from(key, 'utf8')]
+    .map((byte) => `%${byte.toString(16).padStart(2, '0').toUpperCase()}`).join('');
+  for (const value of [fullyEncoded, mixedCase(fullyEncoded, true)]) {
+    variants.add(value);
+    variants.add(encodeURIComponent(value));
+  }
+  const echo = [...variants, 'offline%2f<b>fixture</b>%2Bkey'].join(' ');
+  for (const mode of ['GLOBAL', 'CUSTOM']) {
+    await t.test(mode, async () => {
+      const f = traceFixture();
+      const body = mode === 'GLOBAL' ? payload([document(1, {
+        Title: `title ${echo}`, Snippet: [{ Type: 'text', Text: `summary ${echo}` }],
+      })]) : customPayload([{
+        Title: `title ${echo}`, Url: 'https://example.cn/route', Summary: `summary ${echo}`,
+      }]);
+      // Unknown payload fields and error metadata are untrusted, and should never enter the trace.
+      body.unknown = echo;
+      await f.run(() => runWith(async () => Response.json(body), { mode, apiKey: key }));
+      const record = completedTrace(f, 'SUCCEEDED');
+      const evidence = JSON.parse(record.response);
+      assert.equal(evidence.scope, 'NORMALIZED_SEARCH_EVIDENCE');
+      assert.equal(evidence.unknown, undefined);
+      for (const credential of variants) {
+        assert.ok(!JSON.stringify(f.records).includes(credential), `trace leaked credential variant: ${credential}`);
+      }
+      assert.match(record.response, /REDACTED/u);
+    });
+  }
+  for (const [name, fetchImpl, message] of [
+    ['HTTP', async () => new Response(echo, { status: 403 }), /HTTP 403/u],
+    ['API', async () => Response.json({ ResponseMetadata: { Error: {
+      Code: 'PermissionDenied', Message: echo,
+    } }, unknown: echo }), /API code PermissionDenied/u],
+  ]) {
+    await t.test(name, async () => {
+      const f = traceFixture();
+      await f.run(() => assert.rejects(runWith(fetchImpl, { apiKey: key }), message));
+      completedTrace(f, 'FAILED');
+      for (const credential of variants) {
+        assert.ok(!JSON.stringify(f.records).includes(credential), `trace leaked credential variant: ${credential}`);
+      }
+    });
+  }
+});
+
+test('Doubao percent-escape redaction preserves literal credential character case', async (t) => {
+  const cases = [
+    ['literal letters', 'AbC/Def+GhI', 'abc%2fDef%2BGhI', 'AbC%2fDef%2BGhI'],
+    ['literal percent escape', 'AbC%2F/Def+GhI', 'AbC%252f%2FDef%2BGhI', 'AbC%252F%2fDef%2BGhI'],
+  ];
+  for (const [name, key, differentValue, credential] of cases) {
+    await t.test(name, async () => {
+      const f = traceFixture();
+      const result = await f.run(() => runWith(async () => Response.json(payload([document(1, {
+        Title: differentValue, Snippet: [{ Type: 'text', Text: credential }],
+      })])), { apiKey: key }));
+      const record = completedTrace(f, 'SUCCEEDED');
+      assert.equal(result.result.sources[0].title, differentValue);
+      assert.equal(result.result.sources[0].snippet, '[REDACTED_API_KEY]');
+      assert.ok(record.response.includes(differentValue));
+      assert.ok(!record.response.includes(credential));
+    });
+  }
+});
+
+test('Doubao trace recording outages never replay or fail the upstream search', async (t) => {
+  t.mock.method(console, 'warn', () => {});
+  let calls = 0;
+  let uploads = 0;
+  const result = await withModelCallTracing({ executionId: 'doubao-recording-outage', controlPlane: {
+    recordModelCall: async () => { uploads += 1; throw new Error('recording unavailable'); },
+  } }, () => runWith(async () => { calls += 1; return Response.json(payload()); }));
+  assert.equal(calls, 1);
+  assert.equal(uploads, 4);
+  assert.equal(result.result.sources.length, 2);
 });

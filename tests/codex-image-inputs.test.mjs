@@ -28,7 +28,7 @@ async function fixture(t) {
 
 // Deterministic photographic noise makes the byte-budget transition real;
 // solid corner markers reveal clipping and preserve observable alpha values.
-function framePixels(width, height, { alpha = false, noise = 'soft' } = {}) {
+function framePixels(width, height, { alpha = false, opaqueAlpha = false, noise = 'soft' } = {}) {
   const channels = alpha ? 4 : 3;
   const data = Buffer.alloc(width * height * channels);
   let state = 0x91a73b;
@@ -41,14 +41,14 @@ function framePixels(width, height, { alpha = false, noise = 'soft' } = {}) {
     const rgb = noise === 'soft' ? [grey, grey, grey]
       : [state & 255, (state >>> 8) & 255, (state >>> 16) & 255];
     for (let channel = 0; channel < 3; channel++) data[index + channel] = rgb[channel];
-    if (alpha) data[index + 3] = 32 + ((state >>> 24) % 224);
+    if (alpha) data[index + 3] = opaqueAlpha ? 255 : 32 + ((state >>> 24) % 224);
     const left = x < width / 8, right = x >= width * 7 / 8;
     const top = y < height / 8, bottom = y >= height * 7 / 8;
     const corner = top && left ? CORNERS[0] : top && right ? CORNERS[1]
       : bottom && left ? CORNERS[2] : bottom && right ? CORNERS[3] : null;
     if (corner) {
       for (let channel = 0; channel < 3; channel++) data[index + channel] = corner.rgb[channel];
-      if (alpha) data[index + 3] = corner.alpha;
+      if (alpha) data[index + 3] = opaqueAlpha ? 255 : corner.alpha;
     }
   }
   return { data, info: { width, height, channels } };
@@ -131,6 +131,31 @@ test('opaque oversized PNGs use high-quality JPEG while retaining the full origi
   assert.deepEqual(await readFile(source), original);
   await checkDiagnostics(result);
   await checkFrame(result.paths[0]);
+});
+
+test('oversized RGBA with only opaque pixels uses full-size JPEG without modifying its original', async t => {
+  const { root, directory } = await fixture(t);
+  const source = join(root, 'opaque-rgba.png');
+  const original = await writeFrame(source, 1600, 1200, { alpha: true, opaqueAlpha: true });
+  assert.ok(original.length > CODEX_NATIVE_IMAGE_MAX_BYTES);
+  assert.equal((await sharp(original).metadata()).hasAlpha, true);
+  const result = await prepareCodexImageInputs([source], directory, { preview: false });
+  assert.equal(result.diagnostics[0].format, 'jpeg');
+  assert.equal(result.diagnostics[0].resized, false);
+  assert.equal(result.diagnostics[0].width, 1600);
+  assert.equal(result.diagnostics[0].height, 1200);
+  assert.deepEqual(await readFile(source), original);
+  await checkDiagnostics(result);
+  await checkFrame(result.paths[0]);
+});
+
+test('small opaque RGBA remains lossless PNG', async t => {
+  const { root, directory } = await fixture(t);
+  const source = join(root, 'small-opaque-rgba.png');
+  const original = await writeFrame(source, 96, 64, { alpha: true, opaqueAlpha: true });
+  const result = await prepareCodexImageInputs([source], directory, { preview: false });
+  assert.equal(result.diagnostics[0].format, 'png');
+  assert.deepEqual(await sharp(result.paths[0]).raw().toBuffer(), await sharp(original).raw().toBuffer());
 });
 
 test('opaque images that remain oversized after JPEG compression shrink proportionally without clipping', async t => {

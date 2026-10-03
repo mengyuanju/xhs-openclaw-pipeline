@@ -155,7 +155,7 @@ export function PersonalStatisticsDashboard({ canDeliver = false }: { canDeliver
   }, [queryKey, refreshInterval, tab, scope, rangePeriod, rangeFrom, rangeTo, today, period]);
 
   useEffect(() => { refreshLatest.current = refresh; }, [refresh]);
-  useEffect(() => subscribeWorkspaceUpdates(() => void refreshLatest.current('change')), []);
+  useEffect(() => subscribeWorkspaceUpdates(() => void refreshLatest.current('change'), {scopes:['tasks','quality','statistics','delivery']}), []);
 
   useEffect(() => {
     setLoadingKey(null);

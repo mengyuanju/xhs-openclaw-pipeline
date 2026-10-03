@@ -1,6 +1,6 @@
 const LIMIT=50_000;
 
-const DISCARDS_SQL=`WITH discards AS (
+export const DISCARDS_SQL=`WITH discards AS (
   WITH discard_assessments AS (
     SELECT DISTINCT ON(task_id,assessment_id) * FROM (
       SELECT task_id,id AS assessment_id,stage,created_at,reviewer_username,copy_revision_id,

@@ -5,13 +5,17 @@ import test from 'node:test';
 const source = (path) => readFile(new URL(path, import.meta.url), 'utf8');
 
 test('administrators receive a global Xiaohongshu login alert backed by polling status', async () => {
-  const [frame, alert] = await Promise.all([
+  const [frame, alert, shared] = await Promise.all([
     source('../app/components/app-frame.tsx'),
     source('../app/components/xhs-account-alert.tsx'),
+    source('../app/components/use-xhs-search-nodes.ts'),
   ]);
   assert.match(frame, /XhsAccountAlert enabled=\{session\?\.roles\?\.includes\('ADMIN'\) === true\}/u);
-  assert.match(alert, /\/api\/control-plane\/v1\/xhs-search-statuses/u);
-  assert.match(alert, /window\.setInterval[\s\S]*STATUS_POLL_MS/u);
+  assert.match(alert, /useXhsSearchNodes\(enabled, undefined, deferInitialRead\)/u);
+  assert.match(shared, /\/api\/control-plane\/v1\/xhs-search-statuses/u);
+  assert.match(shared, /window\.setInterval\(visible, POLL_MS\)/u);
+  assert.match(shared, /document\.visibilityState === 'visible'/u);
+  assert.match(shared, /scope: browserSessionGeneration/u);
   assert.match(alert, /LOGIN_REQUIRED|xhsSearchNeedsAttention/u);
   assert.match(alert, /小红书账号需要人工处理/u);
   assert.match(alert, /href="\/executors"/u);

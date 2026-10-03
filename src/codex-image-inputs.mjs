@@ -12,9 +12,14 @@ async function nativeImage(path) {
   const original = await sharp(path, { failOn: 'error', limitInputPixels: 40_000_000 })
     .rotate().png({ compressionLevel: 9 }).toBuffer({ resolveWithObject: true });
   let data = original.data, info = original.info;
-  const alpha = [2, 4].includes(info.channels);
+  let alpha = [2, 4].includes(info.channels);
+  if (data.length > CODEX_NATIVE_IMAGE_MAX_BYTES && alpha) {
+    // A stored alpha channel can contain only opaque pixels. Inspect pixels only
+    // when the PNG exceeds the transport budget; small inputs remain lossless.
+    alpha = !(await sharp(original.data).stats()).isOpaque;
+  }
   const encode = pipeline => alpha ? pipeline.png({ compressionLevel: 9 })
-    : pipeline.jpeg({ quality: 95, chromaSubsampling: '4:4:4' });
+    : pipeline.removeAlpha().jpeg({ quality: 95, chromaSubsampling: '4:4:4' });
   // High-quality JPEG preserves full-size text on opaque photographic PNGs
   // before reducing resolution. Transparent images must remain PNG.
   if (data.length > CODEX_NATIVE_IMAGE_MAX_BYTES && !alpha) {

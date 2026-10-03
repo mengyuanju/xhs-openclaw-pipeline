@@ -86,6 +86,9 @@ function fixture(overrides = {}, {
         revisions.push(row);
         return { rows: [row] };
       }
+      if (sql === 'SELECT id FROM executor_nodes WHERE id = $1') {
+        return { rows: [{ id: values[0] }] };
+      }
       if (sql.includes('INSERT INTO copy_qc_revision_inheritances')) {
         const row = {
           target_revision_id: values[0],
@@ -140,6 +143,14 @@ function fixture(overrides = {}, {
         };
         deliveries.push(row);
         return { rows: [row] };
+      }
+      if (sql.includes('INSERT INTO delivery_model_call_cleanup')) {
+        assert.ok(deliveries.some(row => row.id === Number(values[0]) && row.task_id === Number(values[1])));
+        return { rows: [] };
+      }
+      if (sql === 'DELETE FROM copy_review_drafts WHERE task_id=$1') {
+        assert.equal(Number(values[0]), task.id);
+        return { rows: [], rowCount: 0 };
       }
       if (sql.includes('FROM delivery_entries') && sql.includes('reference_asset_id_cutoff')) {
         return { rows: deliveries.slice(-1) };
@@ -203,7 +214,8 @@ for (const [decision, expected] of [['APPROVE', 'REVIEWED'], ['RETRY', 'IMAGE_QU
     if (decision === 'RETRY') assert.equal(task.pending_snapshot, null);
     assert.ok(queries.some(({ sql }) => sql.includes('FOR UPDATE')));
     assert.equal(queries.at(-1).sql, 'COMMIT');
-    assert.ok(queries.every(({ sql }) => !/DELETE|UPDATE image_runs|UPDATE copy_revisions/u.test(sql)));
+    assert.ok(queries.every(({ sql }) => !/DELETE|UPDATE image_runs|UPDATE copy_revisions/u.test(sql)
+      || (decision === 'APPROVE' && sql === 'DELETE FROM copy_review_drafts WHERE task_id=$1')));
     assert.equal(assessments.length, 1);
     assert.equal(assessments[0].score_x10, decision === 'APPROVE' ? 25 : 20);
     assert.deepEqual(assessments[0].reason_codes, []);

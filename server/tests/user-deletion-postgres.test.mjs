@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import test from 'node:test';
+import pg from 'pg';
 
 import { applyMigrations, loadMigrations } from '../src/database-migrations.mjs';
 import { createControlPlaneApp } from '../src/http-server.mjs';
@@ -57,8 +58,14 @@ test('PostgreSQL user deletion upgrades historical identities without losing dat
 }, async t => {
   const postgres = await startTemporaryPostgres18('xhs-user-deletion-');
   const storageRoot = await mkdtemp(join(tmpdir(), 'xhs-user-deletion-storage-'));
-  const repository = new PostgresControlPlaneRepository({ connectionString: postgres.connectionString });
-  const pool = repository.pool;
+  const pool = new pg.Pool({ connectionString: postgres.connectionString });
+  // This fixture deliberately keeps the 0098 account foreign keys until the
+  // upgrade below. Delegate every repository query/transaction to real PG,
+  // without enabling current-schema maintenance workers (0100 and later).
+  const repository = new PostgresControlPlaneRepository({ pool: {
+    query: pool.query.bind(pool),
+    connect: pool.connect.bind(pool),
+  } });
   let server;
   let app;
   try {

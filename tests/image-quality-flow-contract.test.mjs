@@ -1,3 +1,6 @@
+import { readTaskReviewSource } from './helpers/task-review-source.mjs';
+import { readRepositorySource } from '../server/tests/helpers/repository-source.mjs';
+import { readControlPlaneHttpSource } from './control-plane-http-source.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
@@ -6,20 +9,20 @@ const source = (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8'
 
 test('image initial review, independent QA and delivery have non-overlapping role boundaries', async () => {
   const [server, imageQuality, editing, delivery, proxy, navigation, page, taskReview, imageQa, pendingEditsDialog] = await Promise.all([
-    source('server/src/http-server.mjs'),
+    readControlPlaneHttpSource(),
     source('server/src/image-quality-control.mjs'),
     source('server/src/image-editing.mjs'),
     source('server/src/final-delivery.mjs'),
     source('src/admin/proxy-policy.mjs'),
     source('app/components/side-nav.tsx'),
     source('app/image-qa/page.tsx'),
-    source('app/workbench/task-review-dialog.tsx'),
+    readTaskReviewSource(),
     source('app/image-qa/image-qa-workbench.tsx'),
     source('app/components/pending-image-edits-dialog.tsx'),
   ]);
 
   assert.match(server, /router\.post\('\/v1\/tasks\/:taskId\/submit-image-self-review'[\s\S]{0,160}requestActor\(ctx, \['ADMIN', 'USER'\]\)/u);
-  assert.match(server, /submit-image-self-review'[\s\S]{0,220}assertTaskAccess\(ctx, repository, \{ ownerOnly: true \}\)/u);
+  assert.match(server, /submit-image-self-review'[\s\S]{0,220}assertTaskAccess\(ctx, repository, \{[^}]*\bownerOnly: true\b/u);
   assert.match(server, /router\.get\('\/v1\/image-qa\/items'[\s\S]{0,120}requestActor\(ctx, \['ADMIN', 'REVIEWER'\]\)/u);
   assert.match(server, /router\.post\('\/v1\/tasks\/:taskId\/review-images'[\s\S]{0,120}IMAGE_REVIEW_MOVED/u);
   assert.match(server, /router\.get\('\/v1\/delivery-pool'[\s\S]{0,120}requestActor\(ctx, \['ADMIN', 'USER'\]\)/u);
@@ -84,8 +87,8 @@ test('an enabled image-return reason switch cannot be saved without an option', 
 test('image QA returns round-trip their target, labels, copy fields, problem images and instructions', async () => {
   const [quality, repository, taskReview, styles] = await Promise.all([
     source('server/src/image-quality-control.mjs'),
-    source('server/src/postgres-repository.mjs'),
-    source('app/workbench/task-review-dialog.tsx'),
+    readRepositorySource(),
+    readTaskReviewSource(),
     source('app/globals.css'),
   ]);
 

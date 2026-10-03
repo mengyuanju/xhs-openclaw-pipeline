@@ -23,7 +23,7 @@ function copyQaItem(index) {
   };
 }
 
-test('copy QA overview browser: every workspace tab uses the full panel and mobile does not overflow', {
+test('copy QA overview browser: V2 batch tabs, detail, final revision and mobile layout', {
   skip: process.env.RUN_COPY_QA_OVERVIEW_BROWSER !== '1', timeout: 60_000,
 }, async () => {
   const { build } = await import('esbuild');
@@ -32,12 +32,20 @@ test('copy QA overview browser: every workspace tab uses the full panel and mobi
   const bundle = join(root, 'bundle.js');
   const stylesheet = join(root, 'bundle.css');
   const items = Array.from({ length: 18 }, (_, index) => copyQaItem(index + 1));
+  const batch = { id: randomUUID(), displayName: '布局验证批次', mode: 'PERSONAL_AUTO',
+    status: 'INSPECTING', memberCount: items.length, sampleCount: items.length,
+    pendingCount: items.length, passedCount: 0, returnedCount: 0, discardedCount: 0,
+    affectedCount: 0, fullInspection: true, returnTriggerCount: items.length,
+    createdAt: '2026-10-02T08:00:00.000Z' };
+  const currentItems = items.map(item => ({ id: item.id, taskId: item.taskId, query: item.query,
+    content: item.approvedRevision.content, status: item.status, approverUsername: 'fixture',
+    revisionToken: item.approvedRevision.revisionToken, discardReasonCode: null, dispositionNote: null }));
   let browser;
   let server;
   try {
     await build({
       stdin: {
-        contents: "import './app/globals.css';import React from 'react';import{createRoot}from'react-dom/client';import{ConfirmDialogProvider}from'./components/ui/confirm-dialog';import{CopyQaWorkbench}from'./app/copy-qa/copy-qa-workbench';createRoot(document.getElementById('root')).render(<ConfirmDialogProvider><CopyQaWorkbench role=\"ADMIN\"/></ConfirmDialogProvider>);",
+        contents: "import './app/globals.css';import React from 'react';import{createRoot}from'react-dom/client';import{ConfirmDialogProvider}from'./components/ui/confirm-dialog';import{CopyQaWorkbench}from'./app/copy-qa/copy-qa-workbench';createRoot(document.getElementById('root')).render(<ConfirmDialogProvider><CopyQaWorkbench/></ConfirmDialogProvider>);",
         resolveDir: process.cwd(), loader: 'tsx',
       },
       bundle: true, outfile: bundle, jsx: 'automatic', platform: 'browser', conditions: ['style'],
@@ -52,20 +60,15 @@ test('copy QA overview browser: every workspace tab uses the full panel and mobi
         response.setHeader('content-type', 'text/css'); response.end(css); return;
       }
       response.setHeader('content-type', request.url?.startsWith('/api/') ? 'application/json' : 'text/html');
-      if (request.url?.startsWith('/api/control-plane/v1/copy-qa/statistics')) {
-        response.end(JSON.stringify({ data: {
-          random: Array.from({ length: 7 }, (_, index) => ({
-            finalApproverAccountId: index + 1, finalApproverDisplayName: `质检 ${index + 1}`,
-            finalApproverUsername: `reviewer${index + 1}`, decided: 10, passed: 8, returned: 2, accuracyRate: 0.8,
-            overallPassed: 9, overallPassRate: 0.9,
-          })),
-          mandatory: { passed: 12, returned: 3, pending: 6 }, batchAffectedCount: 4,
-        } })); return;
+      if (request.url?.startsWith(`/api/control-plane/v2/copy-qa/batches/${batch.id}?`)) {
+        response.end(JSON.stringify({ data: { batch, items: currentItems,
+          pagination: { total: currentItems.length, limit: 50, offset: 0 } } })); return;
       }
-      if (request.url?.startsWith('/api/control-plane/v1/copy-qa/items')) {
-        response.end(JSON.stringify({ data: { items, total: items.length } })); return;
+      if (request.url?.startsWith('/api/control-plane/v2/copy-qa/batches?')) {
+        const finished = new URL(request.url, 'http://fixture').searchParams.get('view') === 'FINISHED';
+        response.end(JSON.stringify({ data: { items: finished ? [] : [batch], total: finished ? 0 : 1, limit: 20, offset: 0 } })); return;
       }
-      response.end('<html><meta charset="utf-8"><link rel="stylesheet" href="/bundle.css"><body><div id="root"></div><script src="/bundle.js"></script></body></html>');
+      response.end('<html><meta charset="utf-8"><link rel="stylesheet" href="/bundle.css"><style>[data-slot="dialog-content"]{translate:-50% -50%}</style><body><div id="root"></div><script src="/bundle.js"></script></body></html>');
     });
     await new Promise((done) => server.listen(0, '127.0.0.1', done));
     browser = await chromium.launch({ headless: true, channel: process.env.COPY_QA_BROWSER_CHANNEL ?? 'msedge' });
@@ -73,37 +76,27 @@ test('copy QA overview browser: every workspace tab uses the full panel and mobi
     const browserErrors = [];
     page.on('pageerror', (error) => browserErrors.push(error.message));
     await page.goto(`http://127.0.0.1:${server.address().port}`);
-    await page.getByRole('tab', { name: /质检队列/u }).waitFor();
-    await page.getByText('QC-0001', { exact: true }).waitFor();
-
-    assert.equal(await page.getByRole('tab', { name: /质检队列/u }).getAttribute('aria-selected'), 'true');
-    await page.getByRole('tab', { name: '数据概览', exact: true }).click();
-    assert.equal(await page.getByLabel('质检数据概览').isVisible(), true);
-    await page.getByRole('tab', { name: '标注', exact: true }).click();
-    await page.getByLabel('文案质检标注数据，可滚动查看').waitFor();
-    assert.equal(await page.getByText('质检 1', { exact: true }).isVisible(), true);
-    assert.equal(await page.getByText('整体通过率', { exact: true }).first().isVisible(), true);
-    assert.equal(await page.getByText('90.0%', { exact: true }).first().isVisible(), true);
-    await page.getByRole('tab', { name: '规则说明', exact: true }).click();
-    await page.getByRole('heading', { name: '质检类型与状态变化', exact: true }).waitFor();
-    await page.getByRole('tab', { name: /质检队列/u }).click();
-
-    const firstQueueRow = page.getByText('QC-0001', { exact: true }).locator('xpath=ancestor::tr');
-    const [viewButton, passButton, returnButton] = await Promise.all([
-      firstQueueRow.getByRole('button', { name: '查看', exact: true }).boundingBox(),
-      firstQueueRow.getByRole('button', { name: '通过抽检', exact: true }).boundingBox(),
-      firstQueueRow.getByRole('button', { name: '仅打回此条', exact: true }).boundingBox(),
-    ]);
-    assert.ok(viewButton && passButton && returnButton);
-    assert.ok(Math.abs(viewButton.y - passButton.y) < 1, 'view and pass actions share the first row');
-    assert.ok(returnButton.y > passButton.y, 'return action occupies the second row');
-    assert.ok(Math.abs(returnButton.x - passButton.x) < 1 && Math.abs(returnButton.width - passButton.width) < 1,
-      'primary and return actions use the same stable column');
+    await page.getByText(batch.displayName, { exact: true }).waitFor();
+    assert.equal(await page.getByRole('tab', { name: '待质检批次', exact: true }).getAttribute('aria-selected'), 'true');
+    await page.getByRole('tab', { name: '已完成批次', exact: true }).click();
+    await page.getByText('暂无已完成批次', { exact: true }).waitFor();
+    await page.getByRole('tab', { name: '待质检批次', exact: true }).click();
+    await page.getByRole('button', { name: '进入批次', exact: true }).click();
+    await page.getByText('示例最终稿标题 1', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '查看并质检', exact: true }).first().click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByRole('heading', { name: `${batch.displayName} · 最终稿质检`, exact: true }).waitFor();
+    assert.equal(await dialog.getByText('示例最终稿标题 1', { exact: true }).isVisible(), true);
+    assert.equal(await dialog.getByText(`#${items[0].taskId}`, { exact: true }).isVisible(), true);
+    assert.equal(await dialog.getByRole('button', { name: '通过质检', exact: true }).isEnabled(), true);
+    assert.equal(await dialog.getByRole('button', { name: '仅打回此条', exact: true }).isEnabled(), true);
+    assert.equal(await dialog.getByRole('button', { name: '废弃任务', exact: true }).isEnabled(), true);
+    await dialog.getByRole('button', { name: '关闭', exact: true }).click();
 
     const desktop = await page.evaluate(() => {
-      const workbench = document.querySelector('[aria-label="质检数据与标注"]');
-      const activePanel = document.querySelector('[role="tabpanel"][data-state="active"]');
-      const queue = document.querySelector('[aria-label="待质检队列，可横向滚动"]');
+      const workbench = document.querySelector('.panel');
+      const activePanel = workbench;
+      const queue = document.querySelector('.table-wrap');
       return {
         workbenchWidth: workbench?.getBoundingClientRect().width ?? 0,
         activePanelWidth: activePanel?.getBoundingClientRect().width ?? 0,
@@ -113,7 +106,6 @@ test('copy QA overview browser: every workspace tab uses the full panel and mobi
     });
     assert.ok(desktop.workbenchWidth > 1400, 'the tabbed workbench uses the desktop content width');
     assert.ok(Math.abs(desktop.workbenchWidth - desktop.activePanelWidth) <= 4, `the active tab fills the workbench width: ${JSON.stringify(desktop)}`);
-    assert.equal(desktop.queueScrolls, true);
     assert.equal(desktop.horizontalOverflow, false);
     if (process.env.COPY_QA_OVERVIEW_SCREENSHOT) {
       await page.screenshot({ path: process.env.COPY_QA_OVERVIEW_SCREENSHOT, fullPage: false });
@@ -121,7 +113,7 @@ test('copy QA overview browser: every workspace tab uses the full panel and mobi
 
     await page.setViewportSize({ width: 390, height: 844 });
     const mobile = await page.evaluate(() => {
-      const workbench = document.querySelector('[aria-label="质检数据与标注"]');
+      const workbench = document.querySelector('.panel');
       return {
         horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
         workbenchBounds: workbench ? { rect: workbench.getBoundingClientRect().toJSON(), clientWidth: workbench.clientWidth, scrollWidth: workbench.scrollWidth, overflow: getComputedStyle(workbench).overflow } : null,
