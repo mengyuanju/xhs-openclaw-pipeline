@@ -51,6 +51,13 @@ export const LEGACY_MIGRATION_UPGRADES = Object.freeze([
 export function isAppliedMigrationCompatible(entry, source, migrations) {
   if (!source) return false;
   if (source.sha256 === entry.sha256) return true;
+  // The 2026-10-01/02 backup packages preserve this exact 0104 source with one
+  // additional trailing LF. Accept only that verified pair, keeping its ledger
+  // checksum intact; other formatting or SQL changes still require a repair.
+  if (entry.id === '0104_persistent_report_exports'
+    && entry.sha256 === '19ec5722b874ac43433abcbcc4032b9611fe0f8977c6a14d67bd5f9ea9bc1dff'
+    && source.sha256 === '9473e9be624e3519cf01ea7d4b35e27718dbe2532a8c70aadb0df0bd22e92e5c'
+    && sha256(`${source.sql}\n`) === entry.sha256) return true;
   const upgrade = LEGACY_MIGRATION_UPGRADES.find((candidate) => (
     candidate.id === entry.id
     && candidate.fromSha256 === entry.sha256
