@@ -930,7 +930,7 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
 .executor-refresh-area { display: flex; align-items: center; gap: 10px; }
 .executor-refresh-area > span { color: var(--muted); font-size: 10px; white-space: nowrap; }
 .executor-panel > .notice { margin: 14px 18px 0; }
-.executor-table-wrap { margin: 18px; }
+.executor-table-wrap { width: auto; margin: 18px; }
 .executor-table-wrap td { vertical-align: middle; }
 .executor-identity, .executor-capacity { min-width: 0; display: grid; gap: 4px; }
 .executor-identity strong, .executor-capacity strong { font-size: 12px; }
