@@ -323,11 +323,19 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
       assert.ok(copy && plan && plan.x >= copy.x + copy.width && Math.abs(plan.y - copy.y) < 2, 'copy and image plan must be visible side by side');
       assert.ok(Math.abs(copy.width / (copy.width + plan.width) - .68) < .01, 'copy gets the wider 68 percent column');
       await page.waitForFunction(() => {
-        const body = document.querySelector('.workbench-copy-body-field'), plan = document.querySelector('.workbench-image-plan-section');
+        const rating = document.querySelector('#review-plan-pane > .workbench-copy-original-rating');
+        const plan = document.querySelector('.workbench-image-plan-section');
         const editor = document.querySelector('#review-copy-body');
-        if (!body || !plan || !editor || editor.scrollHeight > editor.clientHeight + 1) return false;
-        return Math.abs(body.getBoundingClientRect().top - plan.getBoundingClientRect().top) < 2;
+        if (!rating || !plan || !editor || editor.scrollHeight > editor.clientHeight + 1) return false;
+        const gap = plan.getBoundingClientRect().top - rating.getBoundingClientRect().bottom;
+        return gap >= 0 && gap <= 16;
       });
+      const [rating, planSection] = await Promise.all([
+        page.locator('#review-plan-pane > .workbench-copy-original-rating').boundingBox(),
+        page.locator('.workbench-image-plan-section').boundingBox(),
+      ]);
+      const gap = planSection.y - rating.y - rating.height;
+      assert.ok(gap >= 0 && gap <= 16, 'image planning follows the rating card without a blank shared row');
       await assertAutosizedEditor(planBullets);
       return copy.width;
     };

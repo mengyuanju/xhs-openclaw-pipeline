@@ -237,7 +237,7 @@ try {
       await page.getByRole('alertdialog').getByRole('button', { name: '放弃修改并关闭', exact: true }).click();
       await dialog().waitFor({ state: 'detached' });
     });
-    await check('desktop panes scroll independently and page edits survive switching', async () => {
+    await check('desktop review scrolls as one area and page edits survive switching', async () => {
       await open();
       await page.setViewportSize({ width: 1440, height: 800 });
       await rateOriginalCopy();
@@ -251,11 +251,13 @@ try {
       await page.locator('#review-plan-headline-1').fill('修改后的步骤');
       await page.getByRole('button', { name: /^第 1 页 ·/ }).click();
       assert.equal(await page.locator('#review-plan-headline-0').inputValue(), '修改后的封面');
-      const leftScroll = await left.evaluate(node => node.scrollTop);
+      const scroll = page.locator('.workbench-review-scroll');
+      await scroll.evaluate(node => { node.scrollTop = 0; });
       await right.hover(); await page.mouse.wheel(0, 800);
       await page.waitForTimeout(150);
-      assert.equal(await left.evaluate(node => node.scrollTop), leftScroll);
-      assert.ok(await right.evaluate(node => node.scrollTop > 0));
+      assert.ok(await scroll.evaluate(node => node.scrollTop > 0));
+      assert.equal(await left.evaluate(node => node.scrollTop), 0);
+      assert.equal(await right.evaluate(node => node.scrollTop), 0);
     });
     await check('close and refresh protect unsaved edits without posting', async () => {
       await page.getByRole('button', { name: '关闭', exact: true }).click();
