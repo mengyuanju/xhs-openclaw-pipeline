@@ -465,7 +465,7 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.match(styles, /\.workbench-copy-body-editor \{[^}]*overflow-y: auto;[^}]*scrollbar-width: none/u);
   assert.match(styles, /\.workbench-scroll-textarea-track/u);
   assert.match(styles, /\.workbench-image-plan-fields \{[^}]*align-items: start/u);
-  assert.match(styles, /\.workbench-review-pane\[data-review-pane="plan"\] \{[^}]*position: sticky/u);
+  assert.doesNotMatch(styles, /\.workbench-review-pane\[data-review-pane="plan"\] \{[^}]*position: sticky/u);
   assert.match(reviewDialog, /decision === 'REWORK' && reworkTarget !== 'COPY' && imagePlanChanged[\s\S]*revisionId: revision!\.id[\s\S]*imagePlan: draft!\.imagePlan/u);
   assert.match(reviewDialog, /reviewImagePlanEdits !== true/u);
   assert.match(reviewDialog, /评分后重试会创建新的人工批准版本/u);

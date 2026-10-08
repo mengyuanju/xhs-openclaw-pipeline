@@ -69,7 +69,7 @@ export function TaskHistory({ taskId, admin }: { taskId: number; admin: boolean 
       .then(result => { if (!abort.signal.aborted) setData(result); }).catch(cause => { if (!abort.signal.aborted) setError(cause.message); });
     return () => abort.abort();
   }, [open, taskId, kind, cursor, revision]);
-  return <Disclosure open={open} onOpenChange={setOpen} className="workbench-review-section">
+  return <Disclosure open={open} onOpenChange={setOpen} className="workbench-review-section workbench-review-history">
     <DisclosureTrigger><strong>历史版本与审核记录</strong><span>展开后分批加载</span></DisclosureTrigger>
     <DisclosureContent>{open && <div className="model-call-trace-content">
       <div className="model-call-toolbar">{(Object.keys(labels) as Kind[]).filter(value => admin || value !== 'executions').map(value =>
