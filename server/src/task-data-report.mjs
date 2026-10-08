@@ -312,6 +312,7 @@ export function buildTaskDataReportFilter(query) {
 
 const DETAIL_SQL = `SELECT t.id,t.query,t.state,t.created_at,t.production_batch_id,t.source_query_package_name,
   t.assigned_to_user_id,t.copy_qc_released_revision_id,t.current_copy_revision_id,
+  qa_record.qa_method AS copy_qa_record_method,qa_record.passed AS copy_qa_record_passed,
   t.image_qc_released_approval_event_id,t.current_image_run_id,t.image_reviewed_at,
   t.copy_qa_rework_pending,t.updated_at,
   ${FIRST_MANUAL_SQL} AS first_manual_copy_assignment_at,
@@ -342,6 +343,9 @@ const DETAIL_SQL = `SELECT t.id,t.query,t.state,t.created_at,t.production_batch_
   assignee_user.id AS current_annotator_id,assignee_user.display_name AS current_annotator_name,
   copy_user.display_name AS copy_reviewer_name,image_user.display_name AS image_reviewer_name
 FROM tasks t
+LEFT JOIN LATERAL(SELECT qa_method,passed FROM copy_qa_inspection_records
+  WHERE task_id=t.id AND copy_revision_id=t.current_copy_revision_id
+  ORDER BY recorded_at DESC,id DESC LIMIT 1) qa_record ON true
 LEFT JOIN LATERAL(SELECT a.* FROM copy_approval_events a WHERE a.task_id=t.id
   AND a.copy_revision_id=t.current_copy_revision_id ORDER BY a.approved_at DESC,a.id DESC LIMIT 1) ca ON true
 LEFT JOIN LATERAL(SELECT a.* FROM image_approval_events a WHERE a.task_id=t.id
@@ -423,14 +427,18 @@ function person(accountId, username, displayName) {
 function rowFrom(row) {
   const copyReleased = row.copy_qa_released_at != null;
   const imageReleased = row.image_qa_released_at != null;
-  const copyQaStatus = row.copy_v2_status ?? row.copy_legacy_status
+  const systemPassed = copyReleased && row.copy_qa_record_method === 'SYSTEM'
+    && row.copy_qa_record_passed === true;
+  const copyQaStatus = systemPassed ? 'SYSTEM_PASSED' : row.copy_v2_status ?? row.copy_legacy_status
     ?? (copyReleased ? 'NOT_REQUIRED_OR_LEGACY' : null);
   const imageQaStatus = row.image_qa_status
     ?? (imageReleased ? 'NOT_REQUIRED_OR_LEGACY' : null);
   const copyQaHumanPassedAt = row.copy_v2_status === 'PASSED' ? row.copy_v2_decided_at
     : row.copy_legacy_status === 'PASSED' ? row.copy_legacy_reviewed_at : null;
   const imageQaHumanPassedAt = row.image_qa_status === 'PASSED' ? row.image_qa_reviewed_at : null;
-  const copyQaReleaseMode = !copyReleased ? null : row.copy_v2_status === 'RELEASED' || row.copy_legacy_status === 'RELEASED'
+  const copyQaReleaseMode = !copyReleased ? null
+    : systemPassed ? 'ACCOUNT_AUTO_PASS'
+    : row.copy_v2_status === 'RELEASED' || row.copy_legacy_status === 'RELEASED'
     ? 'BATCH_RELEASE' : row.copy_admin_direct_id ? 'ADMIN_DIRECT'
       : copyQaHumanPassedAt ? 'HUMAN_PASS' : 'NO_QA_REQUIRED_OR_LEGACY';
   const imageQaReleaseMode = !imageReleased ? null : row.image_qa_status === 'RELEASED'
@@ -910,7 +918,8 @@ const BEIJING_CSV_TIME = new Intl.DateTimeFormat('sv-SE', {
 });
 const CSV_RELEASE_MODE_LABELS = Object.freeze({
   BATCH_RELEASE: '免检放行', HUMAN_PASS: '抽检通过',
-  ADMIN_DIRECT: '管理员直放', NO_QA_REQUIRED_OR_LEGACY: '未启用或历史放行',
+  ADMIN_DIRECT: '管理员直放', ACCOUNT_AUTO_PASS: '用户默认通过质检',
+  NO_QA_REQUIRED_OR_LEGACY: '未启用或历史放行',
 });
 
 function csvValue(value) {

@@ -134,6 +134,7 @@ export type TaskDetail = PriorityTask & {
   assignedToAccountId?: number | null;
   aiDisclosureEnabled: boolean;
   mandatoryCopyQc?: boolean;
+  copyQaAutoPassed?: boolean;
   copyQaReworkPending?: boolean;
   mandatoryCopyQcOrigin?: 'QA_RETURN' | 'FINAL_REWORK' | 'IMAGE_RETRY_REVIEW' | 'DISCARD_RESTORE' | 'SECOND_ASSIGNMENT' | null;
   mandatoryImageQc?: boolean;

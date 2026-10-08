@@ -43,6 +43,7 @@ test('central user management exposes the three fixed roles and default-password
   assert.match(styles, /\.profile-password-grid \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);[^}]*align-items: start;[^}]*max-width: 560px;/u);
   assert.match(styles, /\.forced-password-dialog \{[^}]*width: min\(calc\(100vw - 32px\), 560px\);[^}]*max-height: min\(92dvh, 720px\);/u);
   assert.match(manager, /className="user-editor-toggle-grid"[\s\S]*name="copyReviewEnabled"[\s\S]*文案审核[\s\S]*name="copyQcEnabled"[\s\S]*文案质检/u);
+  assert.match(manager, /默认通过质检[\s\S]*个人抽检比例、自动成批和全量质检不生效/u);
   assert.match(manager, /name="imageQcEnabled"[\s\S]{0,180}disabled=\{editorRole !== 'REVIEWER'\}/u);
   assert.match(styles, /\.user-editor-toggle-grid \{[^}]*display: grid;[^}]*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\);/u);
   assert.match(styles, /@media[^}]*\{[\s\S]*\.user-editor-grid, \.user-editor-toggle-grid, \.user-editor-quality-options \{ grid-template-columns: 1fr;/u);

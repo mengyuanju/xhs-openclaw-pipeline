@@ -71,6 +71,7 @@ function copyFixture({
       if (source.includes('SELECT * FROM app_users')) return { rows: [{
         id: values[0], username: values[1], role: values[2], status: 'ACTIVE', credential_version: values[3],
       }] };
+      if (source.includes('SELECT default_copy_qa_pass FROM app_users')) return { rows: [{ default_copy_qa_pass: false }] };
       if (source.includes('SELECT * FROM tasks WHERE id')) return { rows: [{ ...task }] };
       if (source.includes('INSERT INTO human_quality_review_submissions')) {
         if (submissions.some((row) => row.review_session_id === values[0])) return { rows: [] };

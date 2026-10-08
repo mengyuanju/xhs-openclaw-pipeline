@@ -327,7 +327,9 @@ export class TaskReadRepository {
     const offsetSql = usesOffset ? `OFFSET $${pageValues.length}` : '';
     const pageOrder = taskSortOrder(taskSort, 'cursor_page.', reversePage);
     const pageRequest = this.pool.query(`
-      SELECT page.*, COALESCE(e.node_id, successful_image.node_id) AS image_executor_node_id,
+      SELECT page.*, qa_record.qa_method AS copy_qa_record_method,
+        qa_record.passed AS copy_qa_record_passed,
+        COALESCE(e.node_id, successful_image.node_id) AS image_executor_node_id,
         n.name AS image_executor_node_name, creator.id AS creator_account_id,
         COALESCE(active_image_edits.executions, '[]'::jsonb) AS active_image_edit_executions,
         creator.display_name AS creator_display_name,
@@ -352,6 +354,11 @@ export class TaskReadRepository {
           LIMIT $${limitParameter} ${offsetSql}
         ) page_ids ON page_task.id = page_ids.id
       ) page
+      LEFT JOIN LATERAL (
+        SELECT qa_method, passed FROM copy_qa_inspection_records
+        WHERE task_id = page.id AND copy_revision_id = page.current_copy_revision_id
+        ORDER BY recorded_at DESC, id DESC LIMIT 1
+      ) qa_record ON true
       LEFT JOIN task_executions e ON e.id = page.current_execution_id
         AND e.kind = 'IMAGE' AND e.status = 'RUNNING' AND page.state = 'IMAGE_RUNNING'
       LEFT JOIN image_runs delivered_run ON delivered_run.id = page.current_image_run_id
@@ -556,7 +563,8 @@ export class TaskReadRepository {
         WITH task AS (
           SELECT ${currentOnly ? `${TASK_LIST_COLUMNS_SQL}, source_query_package_item_id, image_rework_source_run_id` : '*'} FROM tasks WHERE id = $1
         )
-        SELECT task.*, creator.id AS creator_account_id,
+        SELECT task.*, qa_record.qa_method AS copy_qa_record_method,
+          qa_record.passed AS copy_qa_record_passed, creator.id AS creator_account_id,
           (SELECT source.issued_query FROM query_package_items AS source
             WHERE source.id = task.source_query_package_item_id) AS issued_query,
           (SELECT jsonb_agg(jsonb_build_object(
@@ -652,6 +660,11 @@ export class TaskReadRepository {
               AND current_delivery.image_run_id = task.current_image_run_id
           ) AS delivery_ready
         FROM task
+        LEFT JOIN LATERAL (
+          SELECT qa_method, passed FROM copy_qa_inspection_records
+          WHERE task_id = task.id AND copy_revision_id = task.current_copy_revision_id
+          ORDER BY recorded_at DESC, id DESC LIMIT 1
+        ) qa_record ON true
         LEFT JOIN app_users AS creator ON creator.username = task.created_by_user_id
           AND creator.created_at < task.created_at
         LEFT JOIN app_users AS assignee ON assignee.username = task.assigned_to_user_id
@@ -916,7 +929,12 @@ export class TaskReadRepository {
   }
 
   async getTaskActionSummary(rawTaskId) {
-    const result = await this.pool.query('SELECT * FROM tasks WHERE id = $1', [normalizeTaskId(rawTaskId)]);
+    const result = await this.pool.query(`SELECT task.*,qa_record.qa_method AS copy_qa_record_method,
+      qa_record.passed AS copy_qa_record_passed FROM tasks AS task
+      LEFT JOIN LATERAL (SELECT qa_method,passed FROM copy_qa_inspection_records
+        WHERE task_id=task.id AND copy_revision_id=task.current_copy_revision_id
+        ORDER BY recorded_at DESC,id DESC LIMIT 1) AS qa_record ON true
+      WHERE task.id=$1`, [normalizeTaskId(rawTaskId)]);
     return taskFrom(result.rows[0]);
   }
 

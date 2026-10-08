@@ -111,6 +111,7 @@ type DistributedTask = PriorityTask & {
   imageExecutorNodeName?: string | null;
   activeImageEditExecutions?: { executionId: string; nodeId: string; nodeName: string | null }[];
   currentCopyRevisionId: number | null;
+  copyQaAutoPassed?: boolean;
   mandatoryCopyQc?: boolean;
   copyQaReworkPending?: boolean;
   mandatoryCopyQcOrigin?: 'QA_RETURN' | 'FINAL_REWORK' | 'IMAGE_RETRY_REVIEW' | 'DISCARD_RESTORE' | 'SECOND_ASSIGNMENT' | null;
@@ -928,6 +929,7 @@ const WorkbenchTaskRow = memo(function WorkbenchTaskRow({ task, selected, busy, 
                     <small><PrioritySummary task={task} /></small>
                     {role === 'ADMIN' && <TaskPriorityControl tasks={[task]} onChanged={() => refresh()} />}
                     <span className={`pill ${isImageRetryExhausted(task) ? 'pill-rejected' : `workbench-state-${task.state.toLowerCase()}`}${isStale(task) ? ' pill-rejected' : ''}`}>{isImageRetryExhausted(task) ? IMAGE_RETRY_EXHAUSTED_LABEL : taskStateLabel(task, role)}</span>
+                    {task.copyQaAutoPassed && <span className="pill">文案质检通过 · 系统</span>}
                     <span>{stageLabel(task, role)} · {task.state.endsWith('_FAILED') && !task.executionStartedAt && task.progressPercent === 0 ? '进度未记录' : `${task.progressPercent}%`}</span>
                     <small className="workbench-text-preview" title={isStale(task) ? '超过 30 分钟没有进度，请进入详情处理' : taskProgressMessage(task)}>{isStale(task) ? '超过 30 分钟没有进度，请进入详情处理' : taskProgressMessage(task)}</small>
                     </>}

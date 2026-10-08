@@ -54,7 +54,7 @@ export class PostgresControlPlaneRepository extends WorkflowRepository {
 
   async reconcileAutomaticCopyQaBatches() {
     const accounts = await this.pool.query(`SELECT id FROM app_users
-      WHERE status='ACTIVE' AND auto_copy_batch_enabled=true ORDER BY id`);
+      WHERE status='ACTIVE' AND auto_copy_batch_enabled=true AND default_copy_qa_pass=false ORDER BY id`);
     for (const account of accounts.rows) {
       await transaction(this.pool, client => autoCreateCopyQaBatchesV2(client, account.id));
     }

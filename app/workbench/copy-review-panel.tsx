@@ -19,7 +19,7 @@ export function CopyReviewPanel({ context, detail }: {
   return <section className="workbench-review-section workbench-copy-review-section">
                 <div className="workbench-review-section-title"><span>{isImageReviewView ? '02' : '01'}</span><div><h3>{isImageReviewView ? '已审文案对照' : '标题、正文与标签'}</h3><p>{editable
                   ? isCopyRework
-                    ? '按返工原因修改标题、正文或标签；无需重新评分。实际修改后提交强制复检，复检通过后才会进入待生图队列。'
+                    ? '按返工原因修改标题、正文或标签；无需重新评分。提交后按该账号的质检设置进入强制复检或直接生图。'
                     : '先评价机器原稿，再决定提交达标审核结果或修改。'
                   : isImageReviewView
                     ? '文案已完成前序审核，保留标题、正文与标签用于核对图片表达。'
@@ -169,7 +169,7 @@ export function CopyReviewPanel({ context, detail }: {
                     : '提交达标后系统自动把最终修改稿记录为 3 分，并保留机器原稿评分与原因。'}</p>
                 </div>}
                 {editable && (isCopyRework ? copyReworkSatisfied : copyContentChanged) && <div className="notice success" role="status">{isCopyRework
-                  ? '返工稿无需再次评分；提交强制复检时，系统会将最终稿记录为 3 分。复检通过后才会进入待生图队列。'
+                  ? '返工稿无需再次评分；提交后系统会将最终稿记录为 3 分，并按该账号的质检设置流转。'
                   : '最终修改稿无需再次评分；提交达标审核结果时，系统会将其记录为 3 分，机器原稿评分和原因继续保留。'}</div>}
                 <HumanAssessmentHistory assessments={copyAssessments} scoreDefinitions={scoreDefinitions} reasonOptions={copyReasonOptions}
                   originalScorePresentation={COPY_MACHINE_DRAFT_SCORE_PRESENTATION}
