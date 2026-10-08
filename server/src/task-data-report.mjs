@@ -312,7 +312,9 @@ export function buildTaskDataReportFilter(query) {
 
 const DETAIL_SQL = `SELECT t.id,t.query,t.state,t.created_at,t.production_batch_id,t.source_query_package_name,
   t.assigned_to_user_id,t.copy_qc_released_revision_id,t.current_copy_revision_id,
-  qa_record.qa_method AS copy_qa_record_method,qa_record.passed AS copy_qa_record_passed,
+  qa_record.qa_method AS copy_qa_record_method,
+  qa_record.decision_mode AS copy_qa_record_mode,
+  qa_record.passed AS copy_qa_record_passed,
   t.image_qc_released_approval_event_id,t.current_image_run_id,t.image_reviewed_at,
   t.copy_qa_rework_pending,t.updated_at,
   ${FIRST_MANUAL_SQL} AS first_manual_copy_assignment_at,
@@ -343,7 +345,7 @@ const DETAIL_SQL = `SELECT t.id,t.query,t.state,t.created_at,t.production_batch_
   assignee_user.id AS current_annotator_id,assignee_user.display_name AS current_annotator_name,
   copy_user.display_name AS copy_reviewer_name,image_user.display_name AS image_reviewer_name
 FROM tasks t
-LEFT JOIN LATERAL(SELECT qa_method,passed FROM copy_qa_inspection_records
+LEFT JOIN LATERAL(SELECT qa_method,decision_mode,passed FROM copy_qa_inspection_records
   WHERE task_id=t.id AND copy_revision_id=t.current_copy_revision_id
   ORDER BY recorded_at DESC,id DESC LIMIT 1) qa_record ON true
 LEFT JOIN LATERAL(SELECT a.* FROM copy_approval_events a WHERE a.task_id=t.id
@@ -428,6 +430,7 @@ function rowFrom(row) {
   const copyReleased = row.copy_qa_released_at != null;
   const imageReleased = row.image_qa_released_at != null;
   const systemPassed = copyReleased && row.copy_qa_record_method === 'SYSTEM'
+    && row.copy_qa_record_mode === 'ACCOUNT_DEFAULT'
     && row.copy_qa_record_passed === true;
   const copyQaStatus = systemPassed ? 'SYSTEM_PASSED' : row.copy_v2_status ?? row.copy_legacy_status
     ?? (copyReleased ? 'NOT_REQUIRED_OR_LEGACY' : null);

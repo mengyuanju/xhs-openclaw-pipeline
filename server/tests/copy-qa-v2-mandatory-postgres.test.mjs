@@ -56,9 +56,10 @@ test('manual and automatic batches select mandatory legacy candidates and refuse
     await decideCopyQaItemV2(db,manualMember.public_id,{
       requestId:randomUUID(),revisionToken:manualMember.content_sha256,decision:'PASS',
     },reviewer);
-    const humanPass=(await db.query(`SELECT qa_method,passed,verdict FROM copy_qa_inspection_records
+    const humanPass=(await db.query(`SELECT qa_method,decision_mode,passed,verdict FROM copy_qa_inspection_records
       WHERE source_key=$1`,[`v2:${manualMember.id}`])).rows[0];
-    assert.deepEqual(humanPass,{qa_method:'HUMAN',passed:true,verdict:'PASS'});
+    assert.deepEqual(humanPass,{qa_method:'HUMAN',decision_mode:'HUMAN_REVIEW',
+      passed:true,verdict:'PASS'});
 
     await db.query('UPDATE workflow_quality_settings SET copy_sampling_enabled=true,copy_sampling_rate_bps=0');
     await db.query('UPDATE app_users SET auto_copy_batch_enabled=true,auto_copy_batch_size=1 WHERE id=$1',[worker.userId]);
@@ -75,6 +76,27 @@ test('manual and automatic batches select mandatory legacy candidates and refuse
     assert.equal(automaticMember.status,'PENDING');
     assert.equal(automaticMember.sample_count,1);
 
+    const sampled=await candidate({mandatory:false});
+    const batchReleased=await candidate({mandatory:false});
+    await createCopyQaBatchV2(db,{mode:'PERSONAL_MANUAL',accountId:worker.userId,
+      taskIds:[sampled,batchReleased],sampleTaskIds:[sampled],requestId:randomUUID()},admin);
+    const sampledMember=await member(sampled);
+    const releasedMember=await member(batchReleased);
+    assert.equal(releasedMember.status,'NOT_SELECTED');
+    await decideCopyQaItemV2(db,sampledMember.public_id,{
+      requestId:randomUUID(),revisionToken:sampledMember.content_sha256,decision:'PASS',
+    },reviewer);
+    assert.equal((await member(batchReleased)).status,'RELEASED');
+    const releaseRecord=(await db.query(`SELECT qa_method,decision_mode,passed,verdict
+      FROM copy_qa_inspection_records WHERE source_key=$1`,[`v2:${releasedMember.id}`])).rows[0];
+    assert.deepEqual(releaseRecord,{qa_method:'SYSTEM',decision_mode:'BATCH_RELEASE',
+      passed:true,verdict:'PASS'});
+    const releasedTask=(await repository.listTasks({taskIds:[batchReleased]}))[0];
+    assert.equal(releasedTask.copyQaAutoPassed,false);
+    assert.equal(releasedTask.copyQaPassMode,'BATCH_RELEASE');
+    assert.equal((await repository.listTasks({taskIds:[sampled]}))[0].copyQaPassMode,
+      'HUMAN_REVIEW');
+
     const protectedTask=await candidate();
     const returnedTask=await candidate({mandatory:false});
     await createCopyQaBatchV2(db,{mode:'PERSONAL_MANUAL',accountId:worker.userId,
@@ -86,9 +108,10 @@ test('manual and automatic batches select mandatory legacy candidates and refuse
       requestId:randomUUID(),revisionToken:returnedMember.content_sha256,
       decision:'RETURN',reasonCodes:['TITLE_AI_TONE'],note:'普通成员质检打回',
     },reviewer);
-    const humanReturn=(await db.query(`SELECT qa_method,passed,verdict FROM copy_qa_inspection_records
+    const humanReturn=(await db.query(`SELECT qa_method,decision_mode,passed,verdict FROM copy_qa_inspection_records
       WHERE source_key=$1`,[`v2:${returnedMember.id}`])).rows[0];
-    assert.deepEqual(humanReturn,{qa_method:'HUMAN',passed:false,verdict:'RETURN'});
+    assert.deepEqual(humanReturn,{qa_method:'HUMAN',decision_mode:'HUMAN_REVIEW',
+      passed:false,verdict:'RETURN'});
     assert.equal((await member(protectedTask)).status,'PENDING');
     assert.equal((await member(protectedTask)).batch_status,'INSPECTING',
       'the return threshold cannot auto-return an unreviewed mandatory member');

@@ -255,11 +255,12 @@ export async function routeCopyApprovalV2(client,{task,revision,approval,actor,a
     if (!result.rows[0]) conflict('TASK_NOT_FOUND','文案质检系统通过时任务不存在');
     await client.query(`INSERT INTO copy_qa_inspection_records(
       source_key,task_id,copy_revision_id,approval_event_id,
-      qa_method,passed,verdict,reviewer_username)
-      VALUES ($1,$2,$3,$4,'SYSTEM',true,'PASS','system')
+      qa_method,decision_mode,passed,verdict,reviewer_username)
+      VALUES ($1,$2,$3,$4,'SYSTEM','ACCOUNT_DEFAULT',true,'PASS','system')
       ON CONFLICT (source_key) DO NOTHING`,
     [`account-default:${task.id}:${revision.id}`,task.id,revision.id,approval.id]);
     result.rows[0].copy_qa_record_method = 'SYSTEM';
+    result.rows[0].copy_qa_record_mode = 'ACCOUNT_DEFAULT';
     result.rows[0].copy_qa_record_passed = true;
     return {task:result.rows[0],approval};
   }

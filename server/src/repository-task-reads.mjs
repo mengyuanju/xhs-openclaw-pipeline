@@ -328,6 +328,7 @@ export class TaskReadRepository {
     const pageOrder = taskSortOrder(taskSort, 'cursor_page.', reversePage);
     const pageRequest = this.pool.query(`
       SELECT page.*, qa_record.qa_method AS copy_qa_record_method,
+        qa_record.decision_mode AS copy_qa_record_mode,
         qa_record.passed AS copy_qa_record_passed,
         COALESCE(e.node_id, successful_image.node_id) AS image_executor_node_id,
         n.name AS image_executor_node_name, creator.id AS creator_account_id,
@@ -355,7 +356,7 @@ export class TaskReadRepository {
         ) page_ids ON page_task.id = page_ids.id
       ) page
       LEFT JOIN LATERAL (
-        SELECT qa_method, passed FROM copy_qa_inspection_records
+        SELECT qa_method, decision_mode, passed FROM copy_qa_inspection_records
         WHERE task_id = page.id AND copy_revision_id = page.current_copy_revision_id
         ORDER BY recorded_at DESC, id DESC LIMIT 1
       ) qa_record ON true
@@ -564,6 +565,7 @@ export class TaskReadRepository {
           SELECT ${currentOnly ? `${TASK_LIST_COLUMNS_SQL}, source_query_package_item_id, image_rework_source_run_id` : '*'} FROM tasks WHERE id = $1
         )
         SELECT task.*, qa_record.qa_method AS copy_qa_record_method,
+          qa_record.decision_mode AS copy_qa_record_mode,
           qa_record.passed AS copy_qa_record_passed, creator.id AS creator_account_id,
           (SELECT source.issued_query FROM query_package_items AS source
             WHERE source.id = task.source_query_package_item_id) AS issued_query,
@@ -661,7 +663,7 @@ export class TaskReadRepository {
           ) AS delivery_ready
         FROM task
         LEFT JOIN LATERAL (
-          SELECT qa_method, passed FROM copy_qa_inspection_records
+          SELECT qa_method, decision_mode, passed FROM copy_qa_inspection_records
           WHERE task_id = task.id AND copy_revision_id = task.current_copy_revision_id
           ORDER BY recorded_at DESC, id DESC LIMIT 1
         ) qa_record ON true
@@ -930,8 +932,9 @@ export class TaskReadRepository {
 
   async getTaskActionSummary(rawTaskId) {
     const result = await this.pool.query(`SELECT task.*,qa_record.qa_method AS copy_qa_record_method,
+      qa_record.decision_mode AS copy_qa_record_mode,
       qa_record.passed AS copy_qa_record_passed FROM tasks AS task
-      LEFT JOIN LATERAL (SELECT qa_method,passed FROM copy_qa_inspection_records
+      LEFT JOIN LATERAL (SELECT qa_method,decision_mode,passed FROM copy_qa_inspection_records
         WHERE task_id=task.id AND copy_revision_id=task.current_copy_revision_id
         ORDER BY recorded_at DESC,id DESC LIMIT 1) AS qa_record ON true
       WHERE task.id=$1`, [normalizeTaskId(rawTaskId)]);

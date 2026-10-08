@@ -170,7 +170,10 @@ const imageActions = selectedAsset && detail && <div className="workbench-image-
               </div>}
               {!editable && !isImageReviewView && currentImageRun && <TaskQualitySummary result={currentImageRun.result}
                 onShowImages={assets.length ? () => { imageSectionRef.current?.scrollIntoView({ block: 'start' }); imageSectionRef.current?.focus({ preventScroll: true }); } : undefined} />}
-              {detail.copyQaAutoPassed && <div className="notice" role="status">文案质检通过 · 系统默认通过，已直接进入生图阶段。</div>}
+              {detail.copyQaPassMode && <div className="notice" role="status">文案质检通过 · {{
+                ACCOUNT_DEFAULT: '系统默认通过', HUMAN_REVIEW: '人工质检',
+                BATCH_RELEASE: '批次放行', ADMIN_DIRECT: '管理员单独通过',
+              }[detail.copyQaPassMode]}，已进入生图阶段。</div>}
               {!imageWorkMode && <CopyReviewPanel context={viewContext} detail={detail} />}
               {!imageWorkMode && !editable && <ReviewReferences detail={detail} research={research} xiaohongshuLinks={xiaohongshuLinks} isAdmin={isAdmin} />}
             {!imageWorkMode && <VisualPlanSummary value={currentImageRun?.result?.visualPlan?.value} />}
