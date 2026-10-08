@@ -1,5 +1,6 @@
 'use client';
 
+import type { ReactNode } from 'react';
 import { Input, Textarea } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight, LoaderCircle, RefreshCw, Trash2 } from "lucide-react";
@@ -12,12 +13,14 @@ import { imagePlanBlankBulletLines, imagePlanBulletLengthWarnings, imagePlanPage
 import { type ImagePlanItem, type ReviewDraft, type TaskDetail, IMAGE_KINDS, IMAGE_KIND_LABELS, AutosizeTextarea, ReviewReferences } from './task-review-model';
 import type { TaskReviewViewContext } from './task-review-dialog';
 
-export function ImagePlanReviewPanel({ context, detail, draft }: {
+export function ImagePlanReviewPanel({ context, detail, draft, ratingPanel }: {
   context: Pick<TaskReviewViewContext, 'assets' | 'canEditApprovedImagePlan' | 'editable' | 'loading' | 'submitting' | 'regeneratingImagePlan' | 'regenerateImagePlan' | 'imagePlanComparison' | 'imagePlanChanged' | 'imagePlanGenerationNotice' | 'backgroundPlan' | 'completedPlan' | 'canLoadCompletedPlan' | 'appliedPlanIdRef' | 'draftSaveStatus' | 'confirm' | 'loadCompletedPlan' | 'activePlanIndex' | 'setActivePlanIndex' | 'planEditBlockMessage' | 'copyEditPointerAtRef' | 'revealCopyEditNotice' | 'deleteImagePlanPage' | 'planKindDisabled' | 'updateImagePlan' | 'planFieldsReadOnly' | 'expandedPrompts' | 'setExpandedPrompts' | 'research' | 'xiaohongshuLinks' | 'isAdmin' | 'imageSettingsPanel' | 'role' | 'revision'>;
-  detail: TaskDetail; draft: ReviewDraft;
+  detail: TaskDetail; draft: ReviewDraft; ratingPanel?: ReactNode;
 }) {
   const { assets, canEditApprovedImagePlan, editable, loading, submitting, regeneratingImagePlan, regenerateImagePlan, imagePlanComparison, imagePlanChanged, imagePlanGenerationNotice, backgroundPlan, completedPlan, canLoadCompletedPlan, appliedPlanIdRef, draftSaveStatus, confirm, loadCompletedPlan, activePlanIndex, setActivePlanIndex, planEditBlockMessage, copyEditPointerAtRef, revealCopyEditNotice, deleteImagePlanPage, planKindDisabled, updateImagePlan, planFieldsReadOnly, expandedPrompts, setExpandedPrompts, research, xiaohongshuLinks, isAdmin, imageSettingsPanel, role, revision } = context;
   return <div id="review-plan-pane" className="workbench-review-pane" data-review-pane="plan">
+              {ratingPanel}
+              <div className="workbench-review-plan-content">
               <section className="workbench-review-section workbench-image-plan-section">
                 <div className="workbench-review-section-title"><span>{assets.length > 0 ? '03' : '02'}</span><div><h3>图片文案规划</h3><p>{canEditApprovedImagePlan
                   ? '可修正逐页文字与画面指令；页面类型保持锁定，评分后重试会创建新的人工批准版本。'
@@ -141,5 +144,6 @@ export function ImagePlanReviewPanel({ context, detail, draft }: {
               {editable && <ReviewReferences detail={detail} research={research} xiaohongshuLinks={xiaohongshuLinks} isAdmin={isAdmin} />}
               {imageSettingsPanel}
               {role === 'ADMIN' && <TaskReviewModelHistory detail={detail} research={research} revision={revision} />}
+              </div>
             </div>;
 }

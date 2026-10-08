@@ -1,4 +1,5 @@
 .page { display: grid; gap: 12px; min-width: 0; }
+.appbar { display: contents; }
 .heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .heading > div { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; }
 .heading h1 { margin: 0; font-size: 23px; letter-spacing: -.7px; }
@@ -26,6 +27,8 @@
 .queueContents { display: flex; flex-direction: column; min-height: 0; }
 .queueContents[hidden] { display: none; }
 .queueCount { align-self: center; max-width: 100%; padding: 0 4px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.queueMini { display: grid; justify-items: center; gap: 8px; padding: 6px 4px 12px; color: var(--muted); font-size: 11px; }
+.queueCurrent { display: block; max-width: 100%; padding: 6px 3px; overflow: hidden; border: 1px solid var(--line); border-left: 3px solid var(--primary); border-radius: 6px; background: var(--control-accent-bg); color: var(--ink); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .workspace[data-queue-collapsed="true"] .queueHeading { justify-content: center; padding: 12px 8px 8px; }
 .workspace[data-queue-collapsed="true"] .queueHeading strong,
 .workspace[data-queue-collapsed="true"] .queueRefresh { display: none; }
@@ -57,9 +60,9 @@
 .editor :global(.workbench-review-heading p) { font-size: 12px; }
 .editor :global(.workbench-review-heading .workbench-row-actions) { min-width: 0; max-width: 100%; }
 .editor :global(.workbench-review-heading .workbench-row-actions > span) { white-space: normal; overflow-wrap: anywhere; font-size: 12px; color: var(--muted); }
-.editor :global(.workbench-review-form[data-comparing="true"]) { grid-template-rows: minmax(0, 1fr) auto; }
-.editor :global(.workbench-review-form[data-comparing="true"] .workbench-review-scroll) { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr); align-items: stretch; align-content: stretch; overflow: hidden; padding: 14px; gap: 12px; scrollbar-gutter: auto; }
-.editor :global(.workbench-review-form[data-comparing="true"] .workbench-review-pane[data-review-pane]) { display: grid; min-height: 0; overflow-y: auto; padding: 2px; scrollbar-width: thin; scrollbar-gutter: stable; overscroll-behavior: contain; }
+.editor :global(.workbench-review-form[data-comparing="true"]:not([data-copy-layout="compact"])) { grid-template-rows: minmax(0, 1fr) auto; }
+.editor :global(.workbench-review-form[data-comparing="true"]:not([data-copy-layout="compact"]) .workbench-review-scroll) { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr); align-items: stretch; align-content: stretch; overflow: hidden; padding: 14px; gap: 12px; scrollbar-gutter: auto; }
+.editor :global(.workbench-review-form[data-comparing="true"]:not([data-copy-layout="compact"]) .workbench-review-pane[data-review-pane]) { display: grid; min-height: 0; overflow-y: auto; padding: 2px; scrollbar-width: thin; scrollbar-gutter: stable; overscroll-behavior: contain; }
 .editor :global(.workbench-review-pane-switch) { display: none; gap: 8px; padding: 8px 18px; border-bottom: 1px solid var(--line); background: var(--surface); }
 .editor :global(.workbench-review-pane-switch button) { flex: 1; min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--muted); font-size: 12px; }
 .editor :global(.workbench-review-pane-switch button[aria-pressed="true"]) { border-color: var(--primary); color: var(--primary); font-weight: 700; }
@@ -78,9 +81,9 @@
 .editor :global(.workbench-image-work-toolbar) { flex: 1 0 100%; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; min-width: 0; }
 .editor :global(.workbench-image-work-toolbar .workbench-image-review-current) { padding: 0; flex: 1 1 150px; }
 .editor :global(.workbench-image-work-toolbar .workbench-image-review-title-actions) { width: auto; margin: 0; gap: 8px; }
-.editor :global(.workbench-review-form[data-comparing="true"] .workbench-review-section) { padding: 12px; gap: 10px; }
-.editor :global(.workbench-review-form[data-comparing="true"] .workbench-review-section-title) { position: static; margin: 0; padding: 0 0 8px; gap: 8px; }
-.editor :global(.workbench-review-form[data-comparing="true"] .workbench-review-section-title p) { font-size: 11px; }
+.editor :global(.workbench-review-form[data-comparing="true"]:not([data-copy-layout="compact"]) .workbench-review-section) { padding: 12px; gap: 10px; }
+.editor :global(.workbench-review-form[data-comparing="true"]:not([data-copy-layout="compact"]) .workbench-review-section-title) { position: static; margin: 0; padding: 0 0 8px; gap: 8px; }
+.editor :global(.workbench-review-form[data-comparing="true"]:not([data-copy-layout="compact"]) .workbench-review-section-title p) { font-size: 11px; }
 .editor :global(.workbench-copy-review-section .disclosure-trigger) { min-height: 36px; padding-block: 6px; }
 .editor :global(.workbench-image-plan-current) { padding: 5px 8px; }
 .editor :global(.workbench-review-form[data-work-layout="image"] .workbench-image-review-decision .notice) { margin: 0; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
@@ -257,4 +260,82 @@
   .qualityGallery { height: auto; grid-template-rows: minmax(280px, 52dvh) auto; }
   .qualityGallery[data-has-note="true"] { grid-template-rows: minmax(280px, 52dvh) auto auto; }
   .editor :global(.workbench-review-footer), .qualityFooter { position: sticky; bottom: 0; z-index: 2; background: var(--surface); }
+}
+
+/* Copy work reserves the viewport for one shared, scrollable review area. */
+.page[data-work-kind="COPY"] { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 8px; }
+.page[data-work-kind="COPY"] > * { flex-shrink: 0; }
+.page[data-work-kind="COPY"] .appbar { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px 18px; min-width: 0; border-bottom: 1px solid var(--line); }
+.page[data-work-kind="COPY"] .heading { display: contents; }
+.page[data-work-kind="COPY"] .heading > div { grid-column: 1; grid-row: 1; gap: 4px 8px; }
+.page[data-work-kind="COPY"] .heading h1 { font-size: 21px; }
+.page[data-work-kind="COPY"] .heading p { font-size: 11px; }
+.page[data-work-kind="COPY"] .historyButton { grid-column: 3; grid-row: 1; border: 0; padding: 6px 0 6px 8px; background: transparent; }
+.page[data-work-kind="COPY"] .historyButton strong { font-size: 16px; }
+.page[data-work-kind="COPY"] .types { grid-column: 2; grid-row: 1; gap: 18px; border: 0; min-width: 0; }
+.page[data-work-kind="COPY"] .types button { padding: 8px 0; white-space: nowrap; }
+.page[data-work-kind="COPY"] .workspace { flex: 1; min-height: 0; grid-template-columns: 176px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); align-items: stretch; overflow: hidden; }
+.page[data-work-kind="COPY"] .workspace[data-queue-collapsed="true"] { grid-template-columns: 56px minmax(0, 1fr); }
+.page[data-work-kind="COPY"] .queue { min-height: 0; border-radius: 12px 0 0 12px; overflow: hidden; max-height: none; }
+.page[data-work-kind="COPY"] .queueHeading { padding: 10px 8px; gap: 4px; }
+.page[data-work-kind="COPY"] .queueHeading button { width: 26px; height: 28px; }
+.page[data-work-kind="COPY"] .queueContents { flex: 1; }
+.page[data-work-kind="COPY"] .list { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; }
+.page[data-work-kind="COPY"] .item { padding: 10px 8px; gap: 4px; }
+.page[data-work-kind="COPY"] .queueCurrent { width: 42px; padding-block: 8px; text-align: center; }
+.page[data-work-kind="COPY"] .queueCount { display: inline-grid; place-items: center; min-width: 20px; height: 20px; border-radius: 5px; background: var(--control-accent-bg); color: var(--primary); }
+.page[data-work-kind="COPY"] .editor { min-height: 0; overflow: hidden; }
+.page[data-work-kind="COPY"] .editor :global(.workbench-review-dialog[data-embedded="true"]) { height: 100%; max-height: none; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; border-radius: 0 12px 12px 0; }
+.page[data-work-kind="COPY"] .editor :global(.workbench-review-heading) { padding: 7px 12px; gap: 6px 10px; }
+.page[data-work-kind="COPY"] .editor :global(.workbench-review-heading > div:first-child) { flex: 1 1 220px; }
+.page[data-work-kind="COPY"] .editor :global(.workbench-review-heading h2) { font-size: 16px; }
+.page[data-work-kind="COPY"] .editor :global(.workbench-review-heading p) { font-size: 11px; }
+.page[data-work-kind="COPY"] .editor :global(.workbench-review-heading .button) { min-height: 32px; padding: 6px 9px; font-size: 12px; }
+.page[data-work-kind="COPY"] .editor :global(.workbench-review-form[data-copy-layout="compact"]) { min-height: 0; overflow: hidden; grid-template-rows: minmax(0, 1fr) auto; }
+.page[data-work-kind="COPY"] .editor :global(.workbench-review-form[data-copy-layout="compact"] .workbench-review-scroll) { min-height: 0; grid-template-columns: minmax(0, 68fr) minmax(0, 32fr); align-items: start; align-content: start; overflow-x: hidden; overflow-y: auto; padding: 10px 12px; gap: 12px; scrollbar-gutter: stable; overscroll-behavior-y: contain; }
+.page[data-work-kind="COPY"] .editor :global(.workbench-review-form[data-copy-layout="compact"] .workbench-review-pane[data-review-pane]) { min-height: auto; overflow: visible; padding: 0; scrollbar-gutter: auto; }
+.page[data-work-kind="COPY"] .editor :global(.workbench-review-form[data-copy-layout="compact"] [data-review-pane="plan"]) { order: initial; padding-top: 0; }
+.page[data-work-kind="COPY"] .editor :global(.workbench-review-form[data-copy-layout="compact"] .workbench-copy-review-section) { padding: 0; border: 0; border-radius: 0; }
+.page[data-work-kind="COPY"] .editor :global(.workbench-review-form[data-copy-layout="compact"] .workbench-review-section-title) { position: static; margin: 0; padding: 0; }
+.page[data-work-kind="COPY"] .editor :global(.workbench-review-form[data-copy-layout="compact"] .workbench-copy-body-field) { margin-top: 0; }
+.page[data-work-kind="COPY"] .editor :global(.workbench-review-form[data-copy-layout="compact"] .workbench-copy-tags-field) { grid-template-columns: 104px minmax(0, 1fr); }
+.page[data-work-kind="COPY"] .editor :global(.workbench-review-form[data-copy-layout="compact"] .workbench-copy-body-editor) { font-size: 16px; line-height: 1.375; }
+.page[data-work-kind="COPY"] .editor :global(.workbench-review-footer) { position: static; padding: 7px 12px; }
+.page[data-work-kind="COPY"] .editor :global(.workbench-review-footer .button) { min-height: 34px; padding: 6px 9px; font-size: 12px; }
+.page[data-work-kind="COPY"] .empty { height: 100%; min-height: 0; overflow-y: auto; }
+.page[data-work-kind="COPY"] > .history { max-height: 18dvh; overflow-y: auto; overscroll-behavior-y: contain; }
+.page[data-work-kind="COPY"] > [role="status"], .page[data-work-kind="COPY"] > [role="alert"] { max-height: 10dvh; overflow-y: auto; margin: 0; }
+.page[data-work-kind="COPY"] .caption { font-size: 11px; }
+@media (max-width: 1280px) {
+  .page[data-work-kind="COPY"] .heading p { display: none; }
+}
+@media (max-width: 1023px) {
+  .page[data-work-kind="COPY"] .editor :global(.workbench-review-form[data-copy-layout="compact"]) { grid-template-rows: auto minmax(0, 1fr) auto; }
+  .page[data-work-kind="COPY"] .editor :global(.workbench-review-form[data-copy-layout="compact"] .workbench-review-pane-switch) { display: flex; }
+  .page[data-work-kind="COPY"] .editor :global(.workbench-review-form[data-copy-layout="compact"] .workbench-review-scroll) { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 760px) {
+  .page[data-work-kind="COPY"] .appbar { grid-template-columns: minmax(0, 1fr) auto; gap: 0 10px; }
+  .page[data-work-kind="COPY"] .historyButton { grid-column: 2; }
+  .page[data-work-kind="COPY"] .types { grid-column: 1 / -1; grid-row: 2; gap: 14px; }
+  .page[data-work-kind="COPY"] .workspace, .page[data-work-kind="COPY"] .workspace[data-queue-collapsed="true"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .page[data-work-kind="COPY"] .queue { border-radius: 12px 12px 0 0; max-height: min(22dvh, 180px); }
+  .page[data-work-kind="COPY"] .workspace[data-queue-collapsed="true"] .queue { display: flex; flex-direction: row; align-items: center; gap: 8px; }
+  .page[data-work-kind="COPY"] .workspace[data-queue-collapsed="true"] .queueHeading strong { display: none; }
+  .page[data-work-kind="COPY"] .queueMini { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
+  .page[data-work-kind="COPY"] .queueCurrent { padding-block: 4px; }
+  .page[data-work-kind="COPY"] .editor :global(.workbench-review-dialog[data-embedded="true"]) { border-radius: 0 0 12px 12px; }
+}
+@container work-editor (max-width: 759px) {
+  .page[data-work-kind="COPY"] .editor :global(.workbench-review-form[data-copy-layout="compact"]) { grid-template-rows: auto minmax(0, 1fr) auto; }
+  .page[data-work-kind="COPY"] .editor :global(.workbench-review-form[data-copy-layout="compact"] .workbench-review-pane-switch) { display: flex; }
+  .page[data-work-kind="COPY"] .editor :global(.workbench-review-form[data-copy-layout="compact"] .workbench-review-scroll) { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
+  .page[data-work-kind="COPY"] .editor :global(.workbench-review-form[data-copy-layout="compact"] .workbench-review-pane),
+  .page[data-work-kind="COPY"] .editor :global(.workbench-review-form[data-copy-layout="compact"] .workbench-copy-review-section) { grid-row: auto; grid-column: auto; grid-template-rows: none; align-content: start; }
+  .page[data-work-kind="COPY"] .editor :global(.workbench-review-form[data-copy-layout="compact"] :is(.workbench-copy-review-prefix, .workbench-copy-review-content, .workbench-copy-original-rating, .workbench-review-plan-content, .workbench-review-copy-additional, .workbench-review-history)) { grid-row: auto; }
+  .page[data-work-kind="COPY"] .editor :global(.workbench-review-form[data-copy-layout="compact"] .workbench-copy-review-prefix) { grid-template-columns: minmax(0, 1fr); }
+  .page[data-work-kind="COPY"] .editor :global(.workbench-review-form[data-copy-layout="compact"] .workbench-copy-review-prefix > *) { grid-column: 1; grid-row: auto; }
+  .page[data-work-kind="COPY"] .editor :global(.workbench-review-form[data-copy-layout="compact"] [data-mobile-pane="copy"] > [data-review-pane="plan"]) { display: grid; order: -1; }
+  .page[data-work-kind="COPY"] .editor :global(.workbench-review-form[data-copy-layout="compact"] [data-mobile-pane="copy"] > [data-review-pane="plan"] > :not(.workbench-copy-original-rating)),
+  .page[data-work-kind="COPY"] .editor :global(.workbench-review-form[data-copy-layout="compact"] [data-mobile-pane="plan"] > [data-review-pane="copy"]) { display: none; }
 }

@@ -35,20 +35,27 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     kind: index === 0 ? 'hero' : ['steps', 'checklist', 'comparison', 'detail', 'summary'][(index - 1) % 5],
     headline: `桌面整理第 ${index + 1} 页`,
     subtitle: index === 0 ? '常用物品放在手边' : '逐页说明整理方法',
-    bullets: ['分类整理', '留出空间'],
+    bullets: ['分类整理', '留出空间', '常用物品放在手边', '备用物品分类放进抽屉', ...(index === 1 ? ['整理后复核取用是否方便'] : [])],
     prompt: `整洁的桌面和第 ${index + 1} 页收纳区域，文字清晰可读。`,
     layout: { mode: 'AUTO' },
   }));
+  const longCopyFixture = [
+    '桌面整理先从每天使用的物品开始。根据使用频率安排位置，再给写字、阅读和临时处理资料留出空间。先清空不必要的杂物，确认设备连接和照明不受遮挡，并保持清洁。',
+    ...['1、常用物品放在手边', '2、备用物品分类收纳', '3、给工作区域留出空间', '4、定期复核收纳位置'].map(heading => `${heading}\n${'常用物品放在手边，备用物品分类放进抽屉。给桌面留出写字和阅读的空间。'.repeat(3)}`),
+    '整理完成后检查桌面和抽屉是否方便取用，及时调整不顺手的位置，让物品能够快速拿取并放回。',
+  ].join('\n\n');
+  assert.ok([...longCopyFixture].length >= 400 && [...longCopyFixture].length <= 600);
   const tasks = [1, 2, 3].map(id => ({ id, query: `Query ${id} · 桌面收纳`, state: 'COPY_REVIEW_PENDING',
     aiDisclosureEnabled: false, assignedToUserId: 'worker', assignedToAccountId: 8,
     currentCopyRevisionId: 100 + id, currentImageRunId: null, currentExecutionId: null,
     currentStage: null, progressPercent: 100, priorityPaused: false,
     xiaohongshuLinks: [], copyRevisions: [{ id: 100 + id, revision: 1, approvedAt: null,
-      content: { copy: { title: `桌面收纳文案 ${id}`, body: '常用物品放在手边，备用物品分类放进抽屉。给桌面留出写字和阅读的空间。'.repeat(12), tags: ['桌面收纳', '空间整理', '生活技巧'] },
+      content: { copy: { title: `桌面收纳文案 ${id}`, body: longCopyFixture, tags: ['桌面收纳', '空间整理', '生活技巧'] },
         imagePlan: imagePlanFixture(id === 1 ? 5 : 3),
         imageSettings: DEFAULT_IMAGE_SETTINGS } }],
     humanQualityAssessments: [], imageRuns: [], assets: [],
   }));
+  tasks[2].copyRevisions[0].content.imagePlan[0].bullets[0] = '合成要点用于检查窄屏切换和隐藏期间内容变化后的完整换行展示。'.repeat(3);
   const qaId = randomUUID(), qaId2 = randomUUID();
   const qaItems = [qaId, qaId2].map((id, i) => ({ id, freezePublicId: randomUUID(), anonymousCode: `QA-${i+1}`, blindReview: true,
     status: 'PENDING', sampleKind: 'RANDOM', capabilities: { canPass: true, canReturnSingle: true, canReturnBatch: false },
@@ -197,6 +204,14 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     assert.equal(await page.getByRole('dialog').count(), 0, 'editor must be inline');
     const loadedSearch = page.getByRole('textbox', { name: '筛选已加载待办', exact: true });
     const loadedQueue = page.getByRole('complementary', { name: '待处理作业', exact: true });
+    assert.ok(Math.abs((await loadedQueue.boundingBox()).width - 56) < 2, 'copy work starts with the compact queue rail');
+    assert.equal(await loadedSearch.isVisible(), false, 'collapsed queue does not reserve space for search');
+    await page.getByRole('button', { name: '展开待办侧栏', exact: true }).click();
+    assert.ok(Math.abs((await loadedQueue.boundingBox()).width - 176) < 2, 'expanded copy queue stays compact');
+    await page.reload();
+    await page.locator('#review-copy-title').waitFor();
+    await loadedSearch.waitFor();
+    assert.ok(Math.abs((await loadedQueue.boundingBox()).width - 176) < 2, 'explicit queue expansion persists after reload');
     await loadedSearch.fill('没有匹配的合成需求'); assert.equal(await loadedQueue.getByRole('button', { name: /#\d+/ }).count(), 0);
     await loadedSearch.fill('Query 1'); await loadedQueue.getByRole('button', { name: /#1\b.*Query 1/ }).waitFor(); assert.equal(await loadedQueue.getByRole('button', { name: /#2\b.*Query 2/ }).count(), 0);
     await loadedSearch.fill(''); await loadedQueue.getByRole('button', { name: /#2\b.*Query 2/ }).waitFor();
@@ -214,25 +229,106 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
         }
         return scrollers;
       });
-      assert.deepEqual(nestedScrollers, [], 'small windows scroll the document without a nested editor scroll');
+      assert.deepEqual(nestedScrollers, [], 'the document scrolls without a nested editor scroll');
     };
     const assertImageFits = async (content, thumbnails) => {
       assert.equal(await content.evaluate(element => element.scrollHeight > element.clientHeight + 1), false, 'main image and thumbnails fit without vertical scrolling');
       const bounds = await thumbnails.boundingBox();
       assert.ok(bounds && bounds.height <= 75 && bounds.y + bounds.height <= page.viewportSize().height, 'compact thumbnails stay visible below the main image');
     };
-    for (const viewport of [{ width: 1366, height: 768 }, { width: 1280, height: 720 }, { width: 1000, height: 600 }]) {
-      await page.setViewportSize(viewport);
+    const copyPane = page.locator('#review-copy-pane'), planPane = page.locator('#review-plan-pane');
+    const copyBody = page.locator('#review-copy-body');
+    const scoreNote = page.locator('textarea[id^="copy-original-"][id$="-note"]');
+    const reviewScroll = page.locator('.workbench-review-scroll');
+    const planBullets = page.locator('.workbench-image-plan-card:not([hidden]) .workbench-plan-bullets-editor');
+    const assertAutosizedEditor = async editor => {
+      if (!await editor.isVisible()) return;
+      await page.waitForFunction(id => {
+        const element = document.getElementById(id);
+        return element && element.scrollHeight <= element.clientHeight + 1;
+      }, await editor.getAttribute('id'));
+      const scrollers = await editor.evaluate(element => {
+        const result = [];
+        for (let node = element; node && node !== document.body; node = node.parentElement) {
+          if (['auto', 'scroll', 'hidden'].includes(getComputedStyle(node).overflowY) && node.scrollHeight > node.clientHeight + 1) {
+            result.push(node.className);
+          }
+        }
+        return result;
+      });
+      assert.ok(scrollers.every(className => className === 'workbench-review-scroll'), 'only the central review area may scroll or clip the editor');
+      assert.equal(await editor.evaluate(element => element.scrollHeight > element.clientHeight + 1), false, 'the complete editor value fits without an inner scrollbar');
+    };
+    const assertCopyFrame = async () => {
       await assertViewportWorkspace();
+      await assertAutosizedEditor(copyBody);
+      await assertAutosizedEditor(planBullets);
+      assert.equal(await scoreNote.isVisible(), true, 'compact scoring always exposes the explanation field');
+      for (const pane of [copyPane, planPane]) {
+        if (!await pane.isVisible()) continue;
+        assert.equal(await pane.evaluate(element => element.scrollHeight > element.clientHeight + 1), false, 'review panes grow with content');
+        assert.equal(await pane.evaluate(element => element.scrollWidth > element.clientWidth + 1), false, 'review panes fit horizontally');
+      }
+      const [scroll, header, footer] = await Promise.all([reviewScroll.boundingBox(), page.locator('.workbench-review-heading').boundingBox(), page.locator('.workbench-review-footer').boundingBox()]);
+      assert.ok(scroll.y >= header.y + header.height - 1, 'the central scroll starts below the task header');
+      assert.ok(scroll.y + scroll.height <= footer.y + 1, 'the central scroll ends above the fixed actions');
+      assert.equal(await reviewScroll.evaluate(element => getComputedStyle(element).overflowY), 'auto');
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false, 'copy work has no horizontal overflow');
+    };
+    const assertFixedCopyScroll = async () => {
+      const canScroll = await reviewScroll.evaluate(element => element.scrollHeight > element.clientHeight + 1);
+      if (!canScroll) return;
+      const header = page.locator('.workbench-review-heading'), footer = page.locator('.workbench-review-footer');
+      const before = await Promise.all([header.boundingBox(), footer.boundingBox()]);
+      const initialScroll = await reviewScroll.evaluate(element => element.scrollTop);
+      await reviewScroll.hover();
+      await page.mouse.wheel(0, initialScroll > 0 ? -300 : 300);
+      await page.waitForFunction(initial => document.querySelector('.workbench-review-scroll').scrollTop !== initial, initialScroll);
+      const after = await Promise.all([header.boundingBox(), footer.boundingBox()]);
+      for (let index = 0; index < before.length; index++) {
+        assert.ok(Math.abs(before[index].y - after[index].y) < 1 && Math.abs(before[index].height - after[index].height) < 1, 'scrolling content keeps the header and footer stationary');
+      }
+      assert.equal(await page.evaluate(() => scrollY), 0, 'scrolling the review does not move the page');
+      await assertCopyFrame();
+    };
+    const selectCopyScore = async score => {
+      const input = page.locator(`.workbench-copy-original-rating input[type="radio"][value="${score}"]`);
+      await page.waitForFunction(value => {
+        const input = document.querySelector(`.workbench-copy-original-rating input[type="radio"][value="${value}"]`);
+        return input && !input.disabled;
+      }, score);
+      await page.locator(`.workbench-copy-original-rating .human-rating-options label[data-score="${score}"]`).click();
+      assert.equal(await input.isChecked(), true, 'the visible compact score card selects its radio');
+    };
+    await page.getByRole('button', { name: '收起待办侧栏', exact: true }).click();
+    for (const viewport of [{ width: 1651, height: 863 }, { width: 1366, height: 768 }, { width: 1280, height: 720 }, { width: 1000, height: 600 }]) {
+      await page.setViewportSize(viewport);
+      await assertCopyFrame();
+      await assertFixedCopyScroll();
+      if (viewport.width === 1651) {
+        console.log('Compact copy reference geometry: ' + JSON.stringify(await copyBody.evaluate(element => ({
+          characters: [...element.value].length, top: element.getBoundingClientRect().top,
+          height: element.getBoundingClientRect().height, bottom: element.getBoundingClientRect().bottom,
+          clientHeight: element.clientHeight, scrollHeight: element.scrollHeight,
+          documentHeight: document.documentElement.scrollHeight, viewportHeight: innerHeight,
+        }))));
+        await page.screenshot({ path: join(directory, 'copy-compact-reference-wide.png'), fullPage: true });
+      }
     }
     await page.setViewportSize({ width: 1366, height: 768 });
     await page.screenshot({ path: join(directory, 'copy-single-scroll-laptop.png'), fullPage: true });
     await page.setViewportSize({ width: 1360, height: 1040 });
-    const copyPane = page.locator('#review-copy-pane'), planPane = page.locator('#review-plan-pane');
     const assertCopyColumns = async () => {
       const [copy, plan] = await Promise.all([copyPane.boundingBox(), planPane.boundingBox()]);
       assert.ok(copy && plan && plan.x >= copy.x + copy.width && Math.abs(plan.y - copy.y) < 2, 'copy and image plan must be visible side by side');
-      assert.ok(Math.abs(copy.width - plan.width) < 3, 'copy columns should have equal width');
+      assert.ok(Math.abs(copy.width / (copy.width + plan.width) - .68) < .01, 'copy gets the wider 68 percent column');
+      await page.waitForFunction(() => {
+        const body = document.querySelector('.workbench-copy-body-field'), plan = document.querySelector('.workbench-image-plan-section');
+        const editor = document.querySelector('#review-copy-body');
+        if (!body || !plan || !editor || editor.scrollHeight > editor.clientHeight + 1) return false;
+        return Math.abs(body.getBoundingClientRect().top - plan.getBoundingClientRect().top) < 2;
+      });
+      await assertAutosizedEditor(planBullets);
       return copy.width;
     };
     const initialCopyWidth = await assertCopyColumns();
@@ -244,24 +340,66 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     }
     await page.screenshot({ path: join(directory, 'copy-columns-full-app-1152.png'), fullPage: true });
     await page.setViewportSize({ width: 1360, height: 1040 });
-    const footerY = (await page.locator('.workbench-review-footer').boundingBox()).y;
     await copyPane.evaluate(pane => { pane.scrollTop = 180; });
-    assert.ok(await copyPane.evaluate(pane => pane.scrollTop) > 0);
-    assert.equal(await planPane.evaluate(pane => pane.scrollTop), 0, 'copy scroll must not move the plan');
-    assert.equal((await page.locator('.workbench-review-footer').boundingBox()).y, footerY, 'actions stay fixed while reading');
-    await copyPane.evaluate(pane => { pane.scrollTop = 0; });
-    await page.getByRole('button', { name: '收起待办侧栏', exact: true }).click();
-    assert.ok(await assertCopyColumns() > initialCopyWidth, 'collapsing the queue expands both columns');
+    assert.equal(await copyPane.evaluate(pane => pane.scrollTop), 0, 'copy pane no longer has a separate scrollbar');
+    assert.equal(await planPane.evaluate(pane => pane.scrollTop), 0, 'plan pane no longer has a separate scrollbar');
     await page.getByRole('button', { name: '展开待办侧栏', exact: true }).click();
+    assert.ok(await assertCopyColumns() < initialCopyWidth, 'expanded queue leaves less room for the copy');
+    await page.getByRole('button', { name: '收起待办侧栏', exact: true }).click();
+    assert.ok(Math.abs(await assertCopyColumns() - initialCopyWidth) < 2, 'collapsing restores the wider copy area');
     await page.setViewportSize({ width: 1000, height: 1040 });
-    assert.equal(await planPane.isVisible(), false, 'narrow editor uses pane switching');
-    await page.getByRole('button', { name: '收起待办侧栏', exact: true }).click();
-    await assertCopyColumns();
+    await assertCopyFrame();
     await page.getByRole('button', { name: '展开待办侧栏', exact: true }).click();
-    await page.getByRole('button', { name: '图片文案规划', exact: true }).click();
     assert.equal(await planPane.isVisible(), true);
+    assert.equal(await copyPane.isVisible(), true, 'narrow copy pane retains the compact rating above the body');
+    assert.equal(await page.locator('.workbench-image-plan-section').isVisible(), false, 'narrow copy tab hides plan fields');
+    await assertCopyFrame();
+    await page.getByRole('button', { name: '图片文案规划', exact: true }).click();
     assert.equal(await copyPane.isVisible(), false);
+    assert.equal(await page.locator('.workbench-image-plan-section').isVisible(), true);
+    await assertCopyFrame();
+    await page.getByRole('button', { name: '文案', exact: true }).click();
     await page.setViewportSize({ width: 1360, height: 1040 });
+    await assertCopyColumns();
+    const originalBullets = await planBullets.inputValue();
+    assert.equal(originalBullets.split('\n').length, 4, 'the cover fixture exercises all four original bullet lines');
+    const fiveBullets = `${originalBullets}\n复核位置`;
+    await planBullets.fill(fiveBullets);
+    await assertAutosizedEditor(planBullets);
+    await planBullets.press('Control+End');
+    await planBullets.scrollIntoViewIfNeeded();
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const beforeTyping = await planBullets.evaluate(element => ({
+      top: element.getBoundingClientRect().top, height: element.getBoundingClientRect().height,
+      scroll: document.querySelector('.workbench-review-scroll').scrollTop,
+    }));
+    for (const text of ['合成', '要点', '检查']) {
+      await planBullets.pressSequentially(text);
+      const current = await planBullets.evaluate(element => ({
+        top: element.getBoundingClientRect().top, height: element.getBoundingClientRect().height,
+        scroll: document.querySelector('.workbench-review-scroll').scrollTop,
+        focused: document.activeElement === element, caret: element.selectionStart,
+        selectionEnd: element.selectionEnd, length: element.value.length,
+      }));
+      assert.ok(Math.abs(current.top - beforeTyping.top) < 1 && Math.abs(current.height - beforeTyping.height) < 1, 'typing within the fifth line does not shift or resize the editor');
+      assert.equal(current.scroll, beforeTyping.scroll, 'typing without another line does not move the central scroll');
+      assert.ok(current.focused && current.caret === current.length && current.selectionEnd === current.length, 'continuous typing keeps the focused caret at the end');
+      await assertAutosizedEditor(planBullets);
+    }
+    await planBullets.fill('短要点');
+    await assertAutosizedEditor(planBullets);
+    assert.ok((await planBullets.boundingBox()).height < beforeTyping.height, 'removing lines shrinks the editor');
+    await planBullets.fill(['合成内容检查换行和完整展示。'.repeat(5), '分类整理', '留出空间', '检查物品', '复核位置'].join('\n'));
+    await assertAutosizedEditor(planBullets);
+    assert.ok((await planBullets.boundingBox()).height > beforeTyping.height, 'pasting a long wrapping line expands the editor');
+    await planBullets.fill(originalBullets);
+    await assertAutosizedEditor(planBullets);
+    await page.getByRole('button', { name: '下一页', exact: true }).click();
+    assert.equal((await planBullets.inputValue()).split('\n').length, 5, 'the next page exercises five bullet lines');
+    await assertAutosizedEditor(planBullets);
+    await page.getByRole('button', { name: '上一页', exact: true }).click();
+    assert.equal(await planBullets.inputValue(), originalBullets, 'switching pages restores the complete cover bullet value');
+    await assertCopyFrame();
     await assertCopyColumns();
     await page.screenshot({ path: join(directory, 'copy-columns-desktop.png'), fullPage: true });
     const coverDelete = page.getByRole('button', { name: '删除第 1 页规划', exact: true });
@@ -285,13 +423,13 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     const savedPlanRequest = requests.findLast(request => request.path.endsWith('/approve-copy') && request.body.decision === 'SAVE_PLAN');
     assert.equal(savedPlanRequest.body.edits.imagePlan.length, 3);
     assert.equal(tasks[0].state, 'COPY_REVIEW_PENDING', 'saving the shorter plan keeps the task in copy review');
-    await page.locator('input[type="radio"][value="3"]').check();
+    await selectCopyScore('3');
     await page.getByRole('button', { name: '提交并下一条', exact: true }).click();
     await page.waitForFunction(() => document.querySelector('#review-copy-title')?.value === '桌面收纳文案 2');
     assert.equal(await page.getByRole('button', { name: /本次已提交 1/u }).count(), 1);
     assert.equal(tasks[0].state, 'COPY_QC_PENDING');
     assert.equal(await page.getByRole('button', { name: /#1.*Query 1/u }).count(), 0);
-    await page.locator('input[type="radio"][value="2.5"]').check();
+    await selectCopyScore('2.5');
     await page.locator('#review-copy-title').fill('保留的人工修改稿');
     await page.getByRole('button', { name: /#3.*Query 3/u }).click();
     await page.waitForFunction(() => document.querySelector('#review-copy-title')?.value === '桌面收纳文案 3');
@@ -313,7 +451,7 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     await page.getByRole('alert').filter({ hasText: '测试列表暂时不可用' }).waitFor();
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.getByRole('button', { name: /本次已提交 2/u }).click();
-    await assertViewportWorkspace();
+    await assertCopyFrame();
     await page.getByRole('button', { name: /本次已提交 2/u }).click();
     failList = false;
     tasks[0].state = 'COPY_REVIEW_PENDING'; tasks[0].mandatoryCopyQc = true; tasks[0].currentCopyRevisionId = 201;
@@ -332,11 +470,25 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
       await page.setViewportSize({ width, height: 960 });
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
       assert.equal(overflow, false, 'horizontal overflow at '+width);
-      if (width <= 760) await assertDocumentScroll(page.locator('.workbench-review-pane:visible').first());
+      if (width === 768) {
+        await page.getByRole('button', { name: /#1.*Query 1/u }).click();
+        await page.waitForFunction(() => document.querySelector('#review-copy-title')?.value === '桌面收纳文案 1');
+        await page.getByRole('button', { name: /#3.*Query 3/u }).click();
+        await page.waitForFunction(() => document.querySelector('#review-copy-title')?.value === '桌面收纳文案 3');
+        assert.equal(await planBullets.isVisible(), false, 'task navigation updates a hidden plan editor');
+      }
+      await assertCopyFrame();
+      await assertFixedCopyScroll();
+      await page.getByRole('button', { name: '图片文案规划', exact: true }).click();
+      await assertCopyFrame();
+      if (width === 768) assert.match(await planBullets.inputValue(), /隐藏期间内容变化/u);
+      await assertFixedCopyScroll();
+      await page.getByRole('button', { name: '文案', exact: true }).click();
     }
     await page.screenshot({ path: join(directory, 'mobile.png'), fullPage: true });
     await page.setViewportSize({ width: 1366, height: 540 });
-    await assertDocumentScroll(copyPane);
+    await assertCopyFrame();
+    await assertFixedCopyScroll();
     await page.setViewportSize({ width: 1360, height: 1040 });
     await page.getByRole('button', { name: '文案质检', exact: true }).click();
     await page.getByRole('heading', { name: '匿名待检文案 1' }).waitFor();
@@ -688,7 +840,7 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
         return window.__originalDraftTransaction.apply(this, args);
       };
     });
-    await page.locator('input[type="radio"][value="2.5"]').check();
+    await selectCopyScore('2.5');
     await page.locator('#review-copy-title').fill('通知切换前必须保留的草稿');
     await notificationButton.click();
     await page.getByRole('dialog').getByRole('article').filter({ hasText: '任务 #65' }).getByRole('button', { name: '查看任务' }).click();
@@ -798,7 +950,20 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     assert.ok(requests.filter(r => r.path.endsWith('approve-copy')).length >= 3);
     console.log('Work mode browser screenshots: '+directory);
   } catch (e) {
-    if (page) { await page.screenshot({ path: join(directory, 'failure.png'), fullPage: true }).catch(() => {}); await writeFile(join(directory, 'failure.html'), await page.content()); }
+    if (page) {
+      await page.screenshot({ path: join(directory, 'failure.png'), fullPage: true }).catch(() => {});
+      await writeFile(join(directory, 'failure.html'), await page.content());
+      await writeFile(join(directory, 'failure-geometry.json'), JSON.stringify(await page.evaluate(() => ({
+        viewport: { width: innerWidth, height: innerHeight },
+        document: { height: document.documentElement.scrollHeight, bodyHeight: document.body.scrollHeight },
+        frames: ['.app-shell', '.app-workspace', '.main-shell', '[data-work-kind]', '[aria-label="待处理作业"]', '.workbench-review-dialog', '.workbench-review-heading', '.workbench-review-form', '.workbench-review-scroll', '.workbench-review-footer'].map(selector => {
+          const element = document.querySelector(selector);
+          if (!element) return { selector, missing: true };
+          const rect = element.getBoundingClientRect(), style = getComputedStyle(element);
+          return { selector, top: rect.top, height: rect.height, bottom: rect.bottom, clientHeight: element.clientHeight, scrollHeight: element.scrollHeight, overflow: style.overflowY, display: style.display, gridRows: style.gridTemplateRows, flexShrink: style.flexShrink };
+        }),
+      })), null, 2));
+    }
     console.error('Work mode failure artifacts: '+directory); throw e;
   } finally { await browser?.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
 });

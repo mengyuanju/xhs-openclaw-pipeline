@@ -105,6 +105,51 @@ async function measureLayout(page) {
   });
 }
 
+async function assertCompactCopyLayout(page, label) {
+  const note = page.locator('#copy-original-41-note');
+  assert.equal(await note.isVisible(), true, `${label}: compact original score always includes its explanation field`);
+  const body = page.locator('#review-copy-body');
+  for (const editor of await page.locator('.workbench-autosize-textarea:visible').all()) {
+    await page.waitForFunction(id => {
+      const element = document.getElementById(id);
+      return element && element.scrollHeight <= element.clientHeight + 1;
+    }, await editor.getAttribute('id'));
+    assert.equal(await editor.evaluate(element => element.scrollHeight > element.clientHeight + 1), false,
+      `${label}: the complete body and every bullet line remain visible`);
+  }
+  if (!(await body.isVisible())) return;
+  await page.waitForFunction(() => {
+    const editor = document.querySelector('#review-copy-body');
+    const scroll = document.querySelector('.workbench-review-scroll');
+    const columns = getComputedStyle(scroll).gridTemplateColumns.trim().split(/\s+/u).length;
+    const plan = document.querySelector('.workbench-image-plan-section').getBoundingClientRect();
+    const bodyField = editor.closest('.field').getBoundingClientRect();
+    return editor.scrollHeight <= editor.clientHeight + 2
+      && (columns < 2 || Math.abs(plan.top - bodyField.top) <= 2);
+  });
+  const layout = await page.evaluate(() => {
+    const copyPane = document.querySelector('#review-copy-pane');
+    const planPane = document.querySelector('#review-plan-pane');
+    const body = document.querySelector('#review-copy-body');
+    const bodyField = body.closest('.field');
+    const plan = planPane.querySelector('.workbench-image-plan-section');
+    const score = planPane.querySelector('.workbench-copy-original-rating');
+    const bounds = element => {
+      const rect = element.getBoundingClientRect();
+      return { top: rect.top, bottom: rect.bottom, width: rect.width };
+    };
+    return { copy: bounds(copyPane), planPane: bounds(planPane), body: bounds(body),
+      bodyField: bounds(bodyField), plan: bounds(plan), score: bounds(score),
+      overflow: getComputedStyle(copyPane).overflowY,
+      columns: getComputedStyle(document.querySelector('.workbench-review-scroll')).gridTemplateColumns.trim().split(/\s+/u).length };
+  });
+  assert.equal(layout.overflow, 'visible', `${label}: copy pane has no independent scrollbar`);
+  if (layout.columns < 2) return;
+  assert.ok(layout.copy.width > layout.planPane.width * 1.5, `${label}: desktop copy column has the wider share`);
+  assert.ok(Math.abs(layout.plan.top - layout.bodyField.top) <= 2, `${label}: image planning starts beside the body label`);
+  assert.ok(layout.score.bottom <= layout.plan.top + 1, `${label}: score and explanation stay above planning`);
+}
+
 function assertHistoryFollowsPanes(layout, label) {
   for (const pane of layout.panes) {
     assert.ok(layout.history.top >= pane.contentBottom - 1,
@@ -141,10 +186,12 @@ test('task review history stays below copy and image-plan content when collapsed
       await page.goto(origin);
       await page.locator('#review-copy-title').waitFor();
       await page.waitForFunction(() => document.querySelectorAll('input[type="radio"]').length > 0);
+      await assertCompactCopyLayout(page, `${width}px initial`);
       const history = page.getByRole('button', { name: /历史版本与审核记录/ });
       const variants = width < 1024 ? ['copy', 'plan'] : ['both'];
       for (const pane of variants) {
         if (pane === 'plan') await page.getByRole('button', { name: '图片文案规划', exact: true }).click();
+        await assertCompactCopyLayout(page, `${width}px ${pane}`);
         for (const expanded of [false, true]) {
           if (expanded) {
             await history.click();
@@ -174,6 +221,54 @@ test('task review history stays below copy and image-plan content when collapsed
         }
       }
     }
+    await page.setViewportSize({ width: 1348, height: 883 });
+    await page.goto(origin);
+    await page.locator('#copy-original-41-note').waitFor();
+    await page.locator('.workbench-copy-original-rating label[data-score="3"]').click();
+    assert.equal(await page.locator('input[type="radio"][value="3"]').isChecked(), true);
+    await assertCompactCopyLayout(page, '3-point score');
+    await page.locator('.workbench-copy-original-rating label[data-score="2.5"]').click();
+    assert.equal(await page.locator('input[type="radio"][value="2.5"]').isChecked(), true);
+    await page.locator('#copy-original-41-note').fill('合成说明：核对正文与规划中的四项要求。');
+    const bullets = page.locator('#review-plan-bullets-0');
+    await bullets.fill('检查产品标识与适用范围，核对页面文字是否完整\n确认测试要求与相关材料，检查长句能否正常换行\n检查额定容量并对照产品标识，保证每行内容可见\n随身携带并遵守规定，核对最后一条没有被截断\n最终复核');
+    await assertCompactCopyLayout(page, 'five wrapped bullet lines');
+    await bullets.press('Control+End');
+    await bullets.evaluate(element => element.scrollIntoView({ block: 'center' }));
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await page.evaluate(() => {
+      const editor = document.querySelector('#review-plan-bullets-0');
+      const scroll = document.querySelector('.workbench-review-scroll');
+      window.__typingSamples = [];
+      window.__sampleTyping = true;
+      function sample() {
+        const rect = editor.getBoundingClientRect();
+        window.__typingSamples.push({ top: rect.top, left: rect.left, height: rect.height,
+          scrollTop: scroll.scrollTop, focused: document.activeElement === editor });
+        if (window.__sampleTyping) requestAnimationFrame(sample);
+      }
+      requestAnimationFrame(sample);
+    });
+    await bullets.pressSequentially('已确认', { delay: 40 });
+    await page.waitForFunction(() => window.__typingSamples.length >= 6);
+    const samples = await page.evaluate(() => { window.__sampleTyping = false; return window.__typingSamples; });
+    await writeFile(join(directory, 'continuous-input.json'), JSON.stringify(samples, null, 2));
+    for (const key of ['top', 'left', 'height', 'scrollTop']) {
+      const values = samples.map(sample => sample[key]);
+      assert.ok(Math.max(...values) - Math.min(...values) <= 1, `${key} stays stable during continuous typing`);
+    }
+    assert.ok(samples.every(sample => sample.focused), 'continuous typing keeps focus in the bullet editor');
+    assert.equal(await bullets.evaluate(element => element.selectionStart === element.value.length && element.selectionEnd === element.value.length), true,
+      'the caret remains at the end of the text');
+    await assertCompactCopyLayout(page, 'continuous bullet typing');
+    await page.locator('#copy-original-41-note').evaluate(element => { element.style.height = '150px'; });
+    await page.waitForFunction(() => {
+      const bodyField = document.querySelector('#review-copy-body').closest('.field').getBoundingClientRect();
+      const plan = document.querySelector('.workbench-image-plan-section').getBoundingClientRect();
+      return Math.abs(bodyField.top - plan.top) <= 2;
+    });
+    await assertCompactCopyLayout(page, 'expanded explanation');
+    await page.screenshot({ path: join(directory, 'compact-score-with-explanation.png') });
     assert.deepEqual(errors, []);
     assert.equal(requests.some(request => request.method !== 'GET'), false);
   } finally {

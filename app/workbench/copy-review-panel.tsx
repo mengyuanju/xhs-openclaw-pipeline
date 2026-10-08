@@ -5,18 +5,31 @@ import { Button } from "@/components/ui/button";
 import { History, LoaderCircle, RotateCcw, Save } from "lucide-react";
 import { Disclosure, DisclosureContent, DisclosureTrigger } from "@/components/ui/disclosure";
 import { SecondaryAssignmentFeedbackNotice } from "./secondary-assignment-feedback";
-import { COPY_MACHINE_DRAFT_SCORE_PRESENTATION, CopyMachineDraftScoreField, HumanAssessmentHistory, HumanRatingFeedback, HumanScoreBadge } from "./human-quality-rating";
+import { COPY_MACHINE_DRAFT_SCORE_PRESENTATION, HumanAssessmentHistory, HumanScoreBadge } from "./human-quality-rating";
 import styles from "./copy-review-drafts.module.css";
 import { copyReviewDraftFingerprint } from "./copy-review-draft-store";
-import { type TaskDetail, ReviewScrollTextarea, TaskFailureNotice, ReworkRequirementNotice } from './task-review-model';
+import { type TaskDetail, AutosizeTextarea, ReviewScrollTextarea, TaskFailureNotice, ReworkRequirementNotice } from './task-review-model';
+import { CopyOriginalRatingPanel } from './copy-original-rating-panel';
 import type { TaskReviewViewContext } from './task-review-dialog';
+import type { ReactNode } from 'react';
 
-export function CopyReviewPanel({ context, detail }: {
+export function CopyReviewPanel({ context, detail, compact = false, notices }: {
   context: Pick<TaskReviewViewContext, 'isImageReviewView' | 'editable' | 'isCopyRework' | 'role' | 'taskHasAssignee' | 'canReviewCopy' | 'isImageRetryRework' | 'activeReworkRequirement' | 'revision' | 'activeReworkReasonLabels' | 'activeReworkProblemImages' | 'draftSaveStatus' | 'hasUnpersistedDraftChanges' | 'lastDraftSavedAt' | 'regeneratingImagePlan' | 'copyReviewDraftContent' | 'currentDraftFingerprint' | 'persistCopyReviewDraft' | 'restoreCurrentCopyRevision' | 'draftSaveError' | 'draftHistory' | 'restoredDraftId' | 'restoreDraftVersion' | 'draft' | 'copyEditBlockMessage' | 'copyEditPointerAtRef' | 'revealCopyEditNotice' | 'copyFieldsReadOnly' | 'updateCopy' | 'mobilePane' | 'showCopyRating' | 'humanQualitySettingsLoading' | 'humanQualitySettingsError' | 'currentCopyRatingLabel' | 'copyOriginalScore' | 'showCopyScoreDescriptions' | 'loading' | 'submitting' | 'humanQualitySettingsUnavailable' | 'savedCopyRatings' | 'copyContentChanged' | 'updateCopyOriginalScore' | 'setError' | 'copyReasonOptions' | 'copyOriginalReasons' | 'copyOriginalNote' | 'humanRatingSettings' | 'showCopyDeductionReasons' | 'toggleReason' | 'setCopyOriginalReasons' | 'setCopyOriginalNote' | 'copyFeedbackRequirement' | 'originalCopyRatingComplete' | 'copyAssessments' | 'canApproveCopy' | 'copyReworkSatisfied' | 'scoreDefinitions'>;
   detail: TaskDetail;
+  compact?: boolean;
+  notices?: ReactNode;
 }) {
-  const { isImageReviewView, editable, isCopyRework, role, taskHasAssignee, canReviewCopy, isImageRetryRework, activeReworkRequirement, revision, activeReworkReasonLabels, activeReworkProblemImages, draftSaveStatus, hasUnpersistedDraftChanges, lastDraftSavedAt, regeneratingImagePlan, copyReviewDraftContent, currentDraftFingerprint, persistCopyReviewDraft, restoreCurrentCopyRevision, draftSaveError, draftHistory, restoredDraftId, restoreDraftVersion, draft, copyEditBlockMessage, copyEditPointerAtRef, revealCopyEditNotice, copyFieldsReadOnly, updateCopy, mobilePane, showCopyRating, humanQualitySettingsLoading, humanQualitySettingsError, currentCopyRatingLabel, copyOriginalScore, showCopyScoreDescriptions, loading, submitting, humanQualitySettingsUnavailable, savedCopyRatings, copyContentChanged, updateCopyOriginalScore, setError, copyReasonOptions, copyOriginalReasons, copyOriginalNote, humanRatingSettings, showCopyDeductionReasons, toggleReason, setCopyOriginalReasons, setCopyOriginalNote, copyFeedbackRequirement, originalCopyRatingComplete, copyAssessments, canApproveCopy, copyReworkSatisfied, scoreDefinitions } = context;
+  const { isImageReviewView, editable, isCopyRework, role, taskHasAssignee, canReviewCopy, isImageRetryRework, activeReworkRequirement, revision, activeReworkReasonLabels, activeReworkProblemImages, draftSaveStatus, hasUnpersistedDraftChanges, lastDraftSavedAt, regeneratingImagePlan, copyReviewDraftContent, currentDraftFingerprint, persistCopyReviewDraft, restoreCurrentCopyRevision, draftSaveError, draftHistory, restoredDraftId, restoreDraftVersion, draft, copyEditBlockMessage, copyEditPointerAtRef, revealCopyEditNotice, copyFieldsReadOnly, updateCopy, mobilePane, copyOriginalScore, showCopyScoreDescriptions, copyContentChanged, copyReasonOptions, showCopyDeductionReasons, copyAssessments, canApproveCopy, copyReworkSatisfied, scoreDefinitions } = context;
+  const BodyTextarea = compact ? AutosizeTextarea : ReviewScrollTextarea;
+  const copyEditReminderProps = {
+    'data-edit-blocked': Boolean(copyEditBlockMessage),
+    onPointerDownCapture: () => { copyEditPointerAtRef.current = Date.now(); },
+    onClickCapture: () => revealCopyEditNotice('copy'),
+    onFocusCapture: () => { if (Date.now() - copyEditPointerAtRef.current > 500) revealCopyEditNotice('copy'); },
+  };
   return <section className="workbench-review-section workbench-copy-review-section">
+                <div className="workbench-copy-review-prefix">
+                {notices}
                 <div className="workbench-review-section-title"><span>{isImageReviewView ? '02' : '01'}</span><div><h3>{isImageReviewView ? '已审文案对照' : '标题、正文与标签'}</h3><p>{editable
                   ? isCopyRework
                     ? '按返工原因修改标题、正文或标签；无需重新评分。提交后按该账号的质检设置进入强制复检或直接生图。'
@@ -26,11 +39,19 @@ export function CopyReviewPanel({ context, detail }: {
                   : detail.currentStage === 'QC_MANDATORY_RECHECK'
                     ? '返工稿已提交强制复检；复检通过后才会进入待生图队列。'
                     : '当前状态只读，展示任务采用的文案版本。'}</p></div></div>
-                <div className="workbench-review-query" aria-label="原始需求">
+                {compact ? <Disclosure className="workbench-review-query-disclosure">
+                  <DisclosureTrigger className="workbench-review-query-summary" aria-label="原始需求详情">
+                    <strong>原始需求</strong><span>{detail.query}</span><small>详情</small>
+                  </DisclosureTrigger>
+                  <DisclosureContent className="workbench-review-query-details">
+                    <p>{detail.query}</p>
+                    {role !== 'USER' && <small>词包：{detail.sourceQueryPackageName || '未归属词包'}</small>}
+                  </DisclosureContent>
+                </Disclosure> : <div className="workbench-review-query" aria-label="原始需求">
                   <strong>原始需求</strong>
                   <div className="workbench-review-query-text">{detail.query}</div>
                   {role !== 'USER' && <span>词包：{detail.sourceQueryPackageName || '未归属词包'}</span>}
-                </div>
+                </div>}
                 {detail.state === 'COPY_REVIEW_PENDING' && !taskHasAssignee
                   && <div className="notice warning" role="status">文案已生成，但任务尚未分配负责人。请先关闭窗口并完成分配，再进行评分或修改。</div>}
                 {detail.state === 'COPY_REVIEW_PENDING' && taskHasAssignee && !canReviewCopy
@@ -51,7 +72,7 @@ export function CopyReviewPanel({ context, detail }: {
                 <TaskFailureNotice detail={detail} />
                 <SecondaryAssignmentFeedbackNotice key={`${detail.id}:${detail.secondaryAssignmentFeedback?.assignedAt ?? ''}`}
                   feedback={detail.secondaryAssignmentFeedback} />
-                {editable && <Disclosure className={styles.panel}>
+                {editable && <Disclosure className={`${styles.panel} workbench-review-draft-history`}>
                   <DisclosureTrigger className={styles.trigger}>
                     <span><History size={16} /><strong>审核草稿</strong></span>
                     <small>{draftSaveStatus === 'saving'
@@ -102,60 +123,34 @@ export function CopyReviewPanel({ context, detail }: {
                       : <div className={styles.empty}>还没有历史草稿。开始修改后会自动生成第一个版本。</div>}
                   </DisclosureContent>
                 </Disclosure>}
-                {draft ?
-                <div className="workbench-copy-fields" data-edit-blocked={Boolean(copyEditBlockMessage)}
-                  onPointerDownCapture={() => { copyEditPointerAtRef.current = Date.now(); }}
-                  onClickCapture={() => revealCopyEditNotice('copy')}
-                  onFocusCapture={() => { if (Date.now() - copyEditPointerAtRef.current > 500) revealCopyEditNotice('copy'); }}>
-                  <div className="field full">
+                {compact && draft && <div className="workbench-copy-fields workbench-copy-prefix-fields" {...copyEditReminderProps}>
+                  <div className="field full workbench-copy-title-field">
                     <label htmlFor="review-copy-title">标题 <small>{draft.copy.title.length}/25</small></label>
                     <Input id="review-copy-title" className="input" value={draft.copy.title} maxLength={25} required readOnly={copyFieldsReadOnly}
                       onChange={(event) => updateCopy('title', event.target.value)} />
                   </div>
-                  <div className="field full">
+                </div>}
+                </div>
+                <div className="workbench-copy-review-content">
+                {draft ?
+                <div className="workbench-copy-fields" {...copyEditReminderProps}>
+                  {!compact && <div className="field full workbench-copy-title-field">
+                    <label htmlFor="review-copy-title">标题 <small>{draft.copy.title.length}/25</small></label>
+                    <Input id="review-copy-title" className="input" value={draft.copy.title} maxLength={25} required readOnly={copyFieldsReadOnly}
+                      onChange={(event) => updateCopy('title', event.target.value)} />
+                  </div>}
+                  <div className="field full workbench-copy-body-field">
                     <label htmlFor="review-copy-body">正文 <small>{[...draft.copy.body].length}/400–600</small></label>
-                    <ReviewScrollTextarea id="review-copy-body" className="textarea workbench-copy-body-editor" value={draft.copy.body} minLength={400} maxLength={600} required readOnly={copyFieldsReadOnly}
+                    <BodyTextarea id="review-copy-body" className="textarea workbench-copy-body-editor" value={draft.copy.body} minLength={400} maxLength={600} required readOnly={copyFieldsReadOnly}
                       resizeToken={mobilePane === 'copy'} onChange={(event) => updateCopy('body', event.target.value)} />
                   </div>
-                  <div className="field full">
+                  <div className="field full workbench-copy-tags-field">
                     <label htmlFor="review-copy-tags">标签 <small>3–8 个，用空格分隔</small></label>
                     <Input id="review-copy-tags" className="input" value={draft.copy.tags.join(' ')} required readOnly={copyFieldsReadOnly}
                       onChange={(event) => updateCopy('tags', event.target.value)} />
                   </div>
                 </div> : <div className="workbench-review-empty">当前任务还没有可审核的文案版本。</div>}
-                {showCopyRating && <div className="human-rating-panel" aria-label="文案人工评分">
-                  {!editable && <p className="human-rating-config-status" role="status">评分模块当前为只读。请确认任务已分配给当前账号，并刷新任务详情后再评分。</p>}
-                  {humanQualitySettingsLoading && <p className="human-rating-config-status" role="status">正在读取评分选项…</p>}
-                  {humanQualitySettingsError && <p className="human-rating-config-status" role="alert">评分选项读取失败，请刷新后重试。</p>}
-                  <CopyMachineDraftScoreField
-                    id={`copy-original-score-${detail.id}`}
-                    legend={currentCopyRatingLabel}
-                    value={copyOriginalScore}
-                    showDescriptions={showCopyScoreDescriptions}
-                    disabled={!editable || loading || submitting || humanQualitySettingsUnavailable || Boolean(savedCopyRatings.current) || copyContentChanged}
-                    onChange={(score) => { updateCopyOriginalScore(score); setError(''); }}
-                  />
-                  {copyOriginalScore !== null && copyOriginalScore < 3 && <HumanRatingFeedback
-                    id={`copy-original-${detail.id}`}
-                    reasonOptions={copyReasonOptions}
-                    reasons={copyOriginalReasons}
-                    note={copyOriginalNote}
-                    notePlaceholder={humanRatingSettings.noteGuidance.copyPlaceholder}
-                    showReasonOptions={showCopyDeductionReasons}
-                    disabled={!editable || loading || submitting || humanQualitySettingsUnavailable || Boolean(savedCopyRatings.current)}
-                    onToggleReason={(code) => { toggleReason(code, setCopyOriginalReasons); setError(''); }}
-                    onNoteChange={(note) => { setCopyOriginalNote(note); setError(''); }}
-                  />}
-                  {copyOriginalScore !== null && <p className="human-rating-guidance" role="status">
-                    {copyOriginalScore === 1
-                      ? `填写${copyFeedbackRequirement}后，只能评分并废弃任务。`
-                      : copyOriginalScore === 2
-                        ? `已解锁标题、正文与标签编辑；${originalCopyRatingComplete ? '修改完成后可提交审核结果' : `提交前请填写${copyFeedbackRequirement}`}。人工确认达标后，系统将最终修改稿记录为 3 分，原评分保持不变。`
-                      : copyOriginalScore === 2.5
-                        ? `请完成必要的小修；${originalCopyRatingComplete ? '修改完成后可提交审核结果' : `提交前请填写${copyFeedbackRequirement}`}。人工确认达标后，系统将最终修改稿记录为 3 分，原评分保持不变。`
-                        : '原稿已达标，可直接提交审核结果；后续将按任务策略进入文案抽检或待生图队列。'}
-                  </p>}
-                </div>}
+                {!compact && <CopyOriginalRatingPanel context={context} detail={detail} />}
                 {!editable && copyAssessments.length > 0 && <div className="human-rating-readonly">
                   <span>当前文案人工评分</span>
                   <HumanScoreBadge score={copyAssessments.at(-1)!.score}
@@ -174,5 +169,6 @@ export function CopyReviewPanel({ context, detail }: {
                 <HumanAssessmentHistory assessments={copyAssessments} scoreDefinitions={scoreDefinitions} reasonOptions={copyReasonOptions}
                   originalScorePresentation={COPY_MACHINE_DRAFT_SCORE_PRESENTATION}
                   showScoreDescriptions={showCopyScoreDescriptions} showReasonOptions={showCopyDeductionReasons} />
+                </div>
               </section>;
 }

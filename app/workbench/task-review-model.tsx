@@ -1,7 +1,7 @@
 'use client';
 
 import { Textarea } from "@/components/ui/input";
-import { useCallback, useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Disclosure, DisclosureContent, DisclosureTrigger } from "@/components/ui/disclosure";
 import { createRequestId } from "../components/request-id";
@@ -46,8 +46,36 @@ export const IMAGE_KIND_LABELS: Record<ImagePlanItem['kind'], string> = {
 
 export function resizeTextarea(element: HTMLTextAreaElement | null) {
   if (!element) return;
-  element.style.height = '0px';
-  element.style.height = `${element.scrollHeight + 2}px`;
+  const width = element.getBoundingClientRect().width;
+  if (width <= 0) return;
+  const document = element.ownerDocument;
+  const style = document.defaultView!.getComputedStyle(element);
+  const mirror = document.createElement('textarea');
+  // Measure outside the layout so the focused editor never collapses or moves its caret.
+  for (const property of [
+    'font-family', 'font-size', 'font-weight', 'font-style', 'font-stretch', 'font-variant',
+    'line-height', 'letter-spacing', 'word-spacing', 'text-indent', 'text-transform',
+    'white-space', 'word-break', 'overflow-wrap', 'tab-size', 'direction',
+    'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+    'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width',
+    'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style',
+  ]) mirror.style.setProperty(property, style.getPropertyValue(property));
+  Object.assign(mirror.style, {
+    position: 'fixed', left: '-10000px', top: '0', visibility: 'hidden', pointerEvents: 'none',
+    boxSizing: 'border-box', width: `${width}px`, height: '0px', minHeight: '0px',
+    maxHeight: 'none', overflow: 'hidden', resize: 'none',
+  });
+  mirror.tabIndex = -1;
+  mirror.setAttribute('aria-hidden', 'true');
+  mirror.wrap = element.wrap;
+  mirror.value = element.value;
+  document.body.append(mirror);
+  const borderHeight = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+  const paddingHeight = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+  const height = Math.ceil(mirror.scrollHeight + (style.boxSizing === 'border-box' ? borderHeight : -paddingHeight));
+  mirror.remove();
+  const nextHeight = `${height}px`;
+  if (element.style.height !== nextHeight) element.style.height = nextHeight;
 }
 
 export function AutosizeTextarea({
@@ -59,17 +87,33 @@ export function AutosizeTextarea({
 }: ComponentProps<'textarea'> & { resizeToken?: unknown }) {
   const ref = useRef<HTMLTextAreaElement | null>(null);
 
-  useEffect(() => resizeTextarea(ref.current), [resizeToken, value]);
+  useLayoutEffect(() => resizeTextarea(ref.current), [className, resizeToken, value]);
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    let previousWidth = element.getBoundingClientRect().width;
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      const width = element.getBoundingClientRect().width;
+      if (Math.abs(width - previousWidth) > .5) {
+        previousWidth = width;
+        cancelAnimationFrame(frame);
+        if (width > 0) frame = requestAnimationFrame(() => resizeTextarea(element));
+      }
+    });
+    observer.observe(element);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, []);
 
   return <Textarea
     {...props}
     ref={ref}
     className={`workbench-autosize-textarea ${className ?? ''}`}
     value={value}
-    onChange={(event) => {
-      resizeTextarea(event.currentTarget);
-      onChange?.(event);
-    }}
+    onChange={onChange}
   />;
 }
 

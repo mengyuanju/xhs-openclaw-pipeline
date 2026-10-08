@@ -146,9 +146,11 @@ test('browser: image plan comparison allows equivalent formatting and identifies
         element.value.slice(element.selectionStart, element.selectionEnd)), '复查结果');
       await page.setViewportSize({ width: 390, height: 780 });
       await page.locator('.workbench-review-pane-switch').getByRole('button', { name: '文案', exact: true }).click();
-      assert.equal(await page.locator('#review-plan-pane').isVisible(), false);
+      assert.equal(await page.locator('#review-plan-pane .workbench-image-plan-section').isVisible(), false);
+      assert.equal(await page.locator('#review-plan-pane .workbench-copy-original-rating textarea').isVisible(), true,
+        'the copy tab keeps the compact score explanation available');
       await difference.click();
-      await page.locator('#review-plan-pane').waitFor({ state: 'visible' });
+      await page.locator('#review-plan-pane .workbench-image-plan-section').waitFor({ state: 'visible' });
       await page.waitForFunction(() => document.activeElement?.id === 'review-plan-bullets-1');
       assert.equal(await page.locator('#review-plan-bullets-1').evaluate(element =>
         element.value.slice(element.selectionStart, element.selectionEnd)), '复查结果');

@@ -24,6 +24,7 @@ import { useTaskReviewController } from './use-task-review-controller';
 import { CopyReviewPanel } from './copy-review-panel';
 import { ImageReviewPanel } from './image-review-panel';
 import { ImagePlanReviewPanel } from './image-plan-review-panel';
+import { CopyOriginalRatingPanel } from './copy-original-rating-panel';
 
 export type TaskReviewViewContext = ReturnType<typeof useTaskReviewController> & {
   imageActions: ReactNode; imagePosition: ReactNode; imageSettingsPanel: ReactNode; imageHistory: ReactNode;
@@ -49,7 +50,24 @@ export function TaskReviewDialog(props: Parameters<typeof useTaskReviewControlle
     copyActionBusyReason, saveImagePlan, canDiscardReturnedCopy, discardReturnedCopy, copyRatingBlockReason, copyRatingComplete,
     submitCopyDecision, saveCopyBlockReason, draftChanged, pendingEditsOpen, setPendingImageEdits,
   } = context;
-const imageActions = selectedAsset && detail && <div className="workbench-image-review-title-actions">
+  const compactCopyReview = Boolean(draft && !isImageReviewView && !imageWorkMode);
+  const copyNotices = detail && <>
+    {!!detail.copyDiscardEvents?.length && <div className="notice warning" role="status">
+      <strong>文案废弃记录</strong>{detail.copyDiscardEvents.map((event, index) => <p key={index}>
+        {event.source === 'COPY_QA' ? '质检直接废弃' : '质检打回后废弃'} · {copyQaDiscardReasonLabel(event.reasonCode)} · {event.note} · {event.actorUsername} · {new Date(event.createdAt).toLocaleString('zh-CN')}</p>)}
+    </div>}
+    {!!detail.imageDiscardEvents?.length && <div className="notice warning" role="status">
+      <strong>图片环节废弃记录</strong>{detail.imageDiscardEvents.map((event, index) => <p key={index}>
+        {event.note} · {event.actorUsername} · {new Date(event.createdAt).toLocaleString('zh-CN')}</p>)}
+    </div>}
+    {!editable && !isImageReviewView && currentImageRun && <TaskQualitySummary result={currentImageRun.result}
+      onShowImages={assets.length ? () => { imageSectionRef.current?.scrollIntoView({ block: 'start' }); imageSectionRef.current?.focus({ preventScroll: true }); } : undefined} />}
+    {detail.copyQaPassMode && <div className="notice" role="status">文案质检通过 · {{
+      ACCOUNT_DEFAULT: '系统默认通过', HUMAN_REVIEW: '人工质检',
+      BATCH_RELEASE: '批次放行', ADMIN_DIRECT: '管理员单独通过',
+    }[detail.copyQaPassMode]}，已进入生图阶段。</div>}
+  </>;
+  const imageActions = selectedAsset && detail && <div className="workbench-image-review-title-actions">
     <ImagePreviewBackgroundControl value={previewBackdrop} onChange={setPreviewBackdrop} />
     {canModifyImages && ['MANUAL_ARCHIVE','IMAGE_REWORK_PENDING','REVIEWED'].includes(detail.state) && detail.currentImageRunId && detail.currentCopyRevisionId && <CurrentImageEditor
       key={`${detail.currentImageRunId}-${selectedAsset.id}`} taskId={detail.id} runId={detail.currentImageRunId}
@@ -91,7 +109,7 @@ const imageActions = selectedAsset && detail && <div className="workbench-image-
             ? role === 'USER' ? '已完成任务详情' : '交付池任务详情'
             : detail?.state === 'MANUAL_ARCHIVE' ? '图片初审详情'
             : detail?.state === 'IMAGE_REWORK_PENDING' ? '图片返修详情' : embedded ? '文案作业' : '任务详情与审核'}</ReviewTitle>
-          <ReviewDescription>{detail?.state === 'COPY_REVIEW_PENDING' && !taskHasAssignee
+          <ReviewDescription className={compactCopyReview && editable && !isCopyRework ? 'workbench-review-compact-description' : undefined}>{detail?.state === 'COPY_REVIEW_PENDING' && !taskHasAssignee
             ? '机器文案已生成；请先在任务列表分配负责人，再开始人工评分与审核。'
             : detail?.state === 'COPY_REVIEW_PENDING' && !canReviewCopy
             ? '任务已分配给其他负责人；你可以查看生成结果，但不能评分、编辑或提交审核结果。'
@@ -153,38 +171,29 @@ const imageActions = selectedAsset && detail && <div className="workbench-image-
 
       {loading && !detail
         ? <div className="workbench-review-loading"><LoaderCircle className="animate-spin" size={22} />正在读取任务详情…</div>
-        : detail && <form className="workbench-review-form" data-comparing={editable} data-image-review={isImageReviewView} data-work-layout={imageWorkMode ? 'image' : undefined} noValidate onSubmit={submitCopyReview}>
+        : detail && <form className="workbench-review-form" data-comparing={editable} data-image-review={isImageReviewView} data-copy-layout={compactCopyReview ? 'compact' : undefined} data-work-layout={imageWorkMode ? 'image' : undefined} noValidate onSubmit={submitCopyReview}>
           {editable && <div className="workbench-review-pane-switch" aria-label="切换审核内容">
             <Button unstyled type="button" aria-pressed={mobilePane === 'copy'} aria-controls="review-copy-pane" onClick={() => setMobilePane('copy')}>文案</Button>
             <Button unstyled type="button" aria-pressed={mobilePane === 'plan'} aria-controls="review-plan-pane" onClick={() => setMobilePane('plan')}>图片文案规划</Button>
           </div>}
           <div className="workbench-review-scroll" data-mobile-pane={mobilePane}>
             <div id="review-copy-pane" className="workbench-review-pane" data-review-pane="copy">
-              {!!detail.copyDiscardEvents?.length && <div className="notice warning" role="status">
-                <strong>文案废弃记录</strong>{detail.copyDiscardEvents.map((event, index) => <p key={index}>
-                  {event.source === 'COPY_QA' ? '质检直接废弃' : '质检打回后废弃'} · {copyQaDiscardReasonLabel(event.reasonCode)} · {event.note} · {event.actorUsername} · {new Date(event.createdAt).toLocaleString('zh-CN')}</p>)}
-              </div>}
-              {!!detail.imageDiscardEvents?.length && <div className="notice warning" role="status">
-                <strong>图片环节废弃记录</strong>{detail.imageDiscardEvents.map((event, index) => <p key={index}>
-                  {event.note} · {event.actorUsername} · {new Date(event.createdAt).toLocaleString('zh-CN')}</p>)}
-              </div>}
-              {!editable && !isImageReviewView && currentImageRun && <TaskQualitySummary result={currentImageRun.result}
-                onShowImages={assets.length ? () => { imageSectionRef.current?.scrollIntoView({ block: 'start' }); imageSectionRef.current?.focus({ preventScroll: true }); } : undefined} />}
-              {detail.copyQaPassMode && <div className="notice" role="status">文案质检通过 · {{
-                ACCOUNT_DEFAULT: '系统默认通过', HUMAN_REVIEW: '人工质检',
-                BATCH_RELEASE: '批次放行', ADMIN_DIRECT: '管理员单独通过',
-              }[detail.copyQaPassMode]}，已进入生图阶段。</div>}
-              {!imageWorkMode && <CopyReviewPanel context={viewContext} detail={detail} />}
+              {!compactCopyReview && copyNotices}
+              {!imageWorkMode && <CopyReviewPanel context={viewContext} detail={detail} compact={compactCopyReview}
+                notices={compactCopyReview ? copyNotices : undefined} />}
+              <div className="workbench-review-copy-additional">
               {!imageWorkMode && !editable && <ReviewReferences detail={detail} research={research} xiaohongshuLinks={xiaohongshuLinks} isAdmin={isAdmin} />}
             {!imageWorkMode && <VisualPlanSummary value={currentImageRun?.result?.visualPlan?.value} />}
             {!imageWorkMode && currentImageRun?.result?.visualPlan?.warning?.message && !currentImageRun?.result?.simulation?.enabled
               && <p className="notice warning">{currentImageRun.result.visualPlan.warning.message}</p>}
             {(isImageReviewView || assets.length > 0 || canReviewImages) && <ImageReviewPanel context={viewContext} detail={detail} />}
 
-            {!imageWorkMode && imageHistory}
+            {!imageWorkMode && (!compactCopyReview || detail.imageRuns.length > 0 || detail.assets.length > 0) && imageHistory}
+              </div>
             </div>
 
-            {draft && !imageWorkMode && <ImagePlanReviewPanel context={viewContext} detail={detail} draft={draft} />}
+            {draft && !imageWorkMode && <ImagePlanReviewPanel context={viewContext} detail={detail} draft={draft}
+              ratingPanel={compactCopyReview ? <CopyOriginalRatingPanel context={viewContext} detail={detail} compact /> : undefined} />}
             {!draft && role === 'ADMIN' && <TaskReviewModelHistory detail={detail} research={research} revision={revision} />}
             <TaskReviewHistory detail={detail} admin={role === 'ADMIN'} />
           </div>

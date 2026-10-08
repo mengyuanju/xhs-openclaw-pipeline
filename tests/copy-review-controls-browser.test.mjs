@@ -45,7 +45,20 @@ test('copy review browser: body and tag controls, original/final ratings, rework
     const open = async scenario => { reset(scenario); await page.goto(origin + '/?scenario=' + scenario + (scenario === 'qc' || scenario === 'delivery' ? '&admin=1' : '')); await page.locator('#review-copy-title').waitFor(); };
     const postCount = () => requests.filter(row => row.method === 'POST').length;
     const submit = page.getByRole('button', { name: '提交并下一条', exact: true });
-    await open('normal'); await page.locator('input[type="radio"][value="2.5"]').check(); await page.locator('textarea[id*="note"]').first().fill('合成原稿需要补充细节');
+    await open('normal');
+    const bullets = page.locator('#review-plan-bullets-0');
+    const initialBullets = await bullets.inputValue();
+    for (const count of [4, 5]) {
+      await bullets.fill(Array.from({ length: count }, (_, index) => `第${index + 1}条合成要点：核对信息和适用范围，确保换行后的文字也完整显示`).join('\n'));
+      await page.waitForFunction(() => {
+        const element = document.querySelector('#review-plan-bullets-0');
+        return element.scrollHeight <= element.clientHeight + 1;
+      });
+      assert.equal(await bullets.evaluate(element => element.scrollHeight > element.clientHeight + 1), false,
+        `${count} long bullet lines stay complete even when the body is short`);
+    }
+    await bullets.fill(initialBullets);
+    await page.locator('.workbench-copy-original-rating label[data-score="2.5"]').click(); assert.equal(await page.locator('input[type="radio"][value="2.5"]').isChecked(), true); await page.locator('textarea[id*="note"]').first().fill('合成原稿需要补充细节');
     const body = page.locator('#review-copy-body'), tags = page.locator('#review-copy-tags');
     await body.fill('文'.repeat(399)); assert.match(await page.locator('label[for="review-copy-body"]').innerText(), /399\/400–600/); const before = postCount(); await submit.click(); assert.equal(postCount(), before); assert.equal(await body.evaluate(element => element.validity.tooShort), true);
     await body.fill('文'.repeat(600)); await body.press('End'); await body.pressSequentially('文'); assert.equal((await body.inputValue()).length, 600); assert.equal(await body.getAttribute('maxlength'), '600');
@@ -55,7 +68,7 @@ test('copy review browser: body and tag controls, original/final ratings, rework
     fails = true; await submit.click(); await page.getByRole('alert').filter({ hasText: 'temporary copy failure' }).waitFor(); assert.equal(await tags.inputValue(), '#一 #二 #三 #四 #五 #六 #七 #八'); const failed = requests.findLast(row => row.path.endsWith('/approve-copy')).body;
     fails = false; await submit.click(); await page.waitForFunction(() => window.__updated?.includes('最终修改稿')); const approved = requests.findLast(row => row.path.endsWith('/approve-copy')).body;
     assert.equal(approved.score, 3); assert.equal(approved.originalScore, 2.5); assert.equal(approved.originalNote, '合成原稿需要补充细节'); assert.equal(approved.edits.copy.body.length, 400); assert.equal(approved.edits.copy.tags.length, 8); assert.equal(approved.aiDisclosureEnabled, true); assert.equal(approved.reviewSessionId, failed.reviewSessionId);
-    await open('discard'); await page.locator('input[type="radio"][value="1"]').check(); const discard = page.getByRole('button', { name: '评分并废弃', exact: true }); assert.equal(await discard.isDisabled(), true); await page.locator('textarea[id*="note"]').first().fill('合成原稿无法使用'); await discard.click(); const count = postCount(); await page.getByRole('alertdialog').getByRole('button', { name: '取消', exact: true }).click(); assert.equal(postCount(), count); await discard.click(); await page.getByRole('alertdialog').getByRole('button', { name: '评分并废弃', exact: true }).click(); await page.waitForFunction(() => window.__updated?.includes('已废弃')); const discarded = requests.findLast(row => row.path.endsWith('/approve-copy')).body; assert.equal(discarded.decision, 'DISCARD'); assert.equal(discarded.score, 1); assert.equal(discarded.edits, undefined);
+    await open('discard'); await page.locator('.workbench-copy-original-rating label[data-score="1"]').click(); assert.equal(await page.locator('input[type="radio"][value="1"]').isChecked(), true); const discard = page.getByRole('button', { name: '评分并废弃', exact: true }); assert.equal(await discard.isDisabled(), true); await page.locator('textarea[id*="note"]').first().fill('合成原稿无法使用'); await discard.click(); const count = postCount(); await page.getByRole('alertdialog').getByRole('button', { name: '取消', exact: true }).click(); assert.equal(postCount(), count); await discard.click(); await page.getByRole('alertdialog').getByRole('button', { name: '评分并废弃', exact: true }).click(); await page.waitForFunction(() => window.__updated?.includes('已废弃')); const discarded = requests.findLast(row => row.path.endsWith('/approve-copy')).body; assert.equal(discarded.decision, 'DISCARD'); assert.equal(discarded.score, 1); assert.equal(discarded.edits, undefined);
     await open('rework'); assert.equal(await page.locator('input[type="radio"]').count(), 0); await page.locator('#review-copy-title').fill('已经实际修改的返工稿'); await page.getByRole('button', { name: '保存返工稿，暂不提交复检', exact: true }).click(); await page.waitForFunction(() => window.__updated?.includes('当前修改已保存')); const saved = requests.findLast(row => row.path.endsWith('/approve-copy')).body; assert.equal(saved.decision, 'SAVE'); assert.equal(saved.score, undefined); assert.equal(task.state, 'COPY_REVIEW_PENDING'); assert.equal(saved.edits.copy.title, '已经实际修改的返工稿');
     for (const scenario of ['unassigned', 'other', 'qc']) { await open(scenario); assert.equal(await page.locator('#review-copy-title').getAttribute('readonly'), ''); assert.equal(await page.getByRole('checkbox', { name: /AI生成水印/ }).isDisabled(), true); assert.equal(await submit.count(), 0); }
     await page.getByRole('link', { name: '进入质检批次', exact: true }).click(); await page.getByRole('heading', { name: 'Fixture QA destination', exact: true }).waitFor();

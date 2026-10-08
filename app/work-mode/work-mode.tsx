@@ -40,7 +40,7 @@ export function WorkMode({ kinds: initialKinds, role, nodeId, username, accountI
   const [notice, setNotice] = useState('');
   const [query, setQuery] = useState('');
   const [copyQaKind, setCopyQaKind] = useState<CopyQaKindFilter>('ALL');
-  const [queueCollapsed, setQueueCollapsed] = useState(false);
+  const [queueCollapsed, setQueueCollapsed] = useState(true);
   const queueContentsId = useId();
   const [history, setHistory] = useState<Array<{ key: string; label: string; kind: WorkKind; message: string }>>([]);
   const [showHistory, setShowHistory] = useState(false);
@@ -62,8 +62,8 @@ export function WorkMode({ kinds: initialKinds, role, nodeId, username, accountI
   const queuePreferenceKey = `xhs.work-mode.queue-collapsed.${accountId}`;
 
   useEffect(() => {
-    try { setQueueCollapsed(localStorage.getItem(queuePreferenceKey) === 'true'); }
-    catch { setQueueCollapsed(false); }
+    try { setQueueCollapsed(localStorage.getItem(queuePreferenceKey) !== 'false'); }
+    catch { setQueueCollapsed(true); }
   }, [queuePreferenceKey]);
 
   function toggleQueue() {
@@ -271,12 +271,14 @@ export function WorkMode({ kinds: initialKinds, role, nodeId, username, accountI
   const queueItems = selected && !items.some(item => workItemKey(item) === workItemKey(selected)) ? [selected, ...items] : items;
   const visible = queueItems.filter(item => !query.trim() || `${item.label} ${item.id}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
 
-  return <div className={styles.page}>
-    <header className={styles.heading}><div><h1>作业模式</h1><p>专注当前内容，处理完就进入下一条。</p></div>
-      <Button unstyled className={styles.historyButton} onClick={() => setShowHistory(!showHistory)} aria-expanded={showHistory}><History size={16} />本次已提交 <strong>{history.length}</strong></Button>
-    </header>
-    <div className={styles.types} role="group" aria-label="作业类型">{kinds.map(value => <Button unstyled key={value} aria-pressed={kind === value} disabled={navigating}
-      onClick={() => switchKind(value)}>{WORK_LABELS[value]}{counts[value] !== undefined && <span>{value === 'COPY_QA' && copyQaKind !== 'ALL' ? `${COPY_QA_KIND_LABELS[copyQaKind]} ${counts[value]}` : counts[value]}</span>}</Button>)}</div>
+  return <div className={styles.page} data-work-kind={kind}>
+    <div className={styles.appbar}>
+      <header className={styles.heading}><div><h1>作业模式</h1><p>专注当前内容，处理完就进入下一条。</p></div>
+        <Button unstyled className={styles.historyButton} onClick={() => setShowHistory(!showHistory)} aria-expanded={showHistory}><History size={16} />本次已提交 <strong>{history.length}</strong></Button>
+      </header>
+      <div className={styles.types} role="group" aria-label="作业类型">{kinds.map(value => <Button unstyled key={value} aria-pressed={kind === value} disabled={navigating}
+        onClick={() => switchKind(value)}>{WORK_LABELS[value]}{counts[value] !== undefined && <span>{value === 'COPY_QA' && copyQaKind !== 'ALL' ? `${COPY_QA_KIND_LABELS[copyQaKind]} ${counts[value]}` : counts[value]}</span>}</Button>)}</div>
+    </div>
     {kind === 'COPY_QA' && <div className={styles.copyQaKinds} role="group" aria-label="文案质检分类"><span>分类</span>{COPY_QA_KIND_OPTIONS.map(value =>
       <Button unstyled key={value} type="button" aria-pressed={copyQaKind === value} disabled={navigating} onClick={() => switchCopyQaKind(value)}>{COPY_QA_KIND_LABELS[value]}</Button>)}</div>}
     {notice && <div className={styles.notice} role="status">{notice}</div>}
@@ -294,7 +296,9 @@ export function WorkMode({ kinds: initialKinds, role, nodeId, username, accountI
             </Button>
           </div>
         </div>
-        {queueCollapsed && <span className={styles.queueCount} title={`待处理 ${counts[kind] ?? '—'}`} aria-label={`待处理 ${counts[kind] ?? '—'}`}>{counts[kind] ?? '—'}</span>}
+        {queueCollapsed && <div className={styles.queueMini}><span>待办</span><span className={styles.queueCount} title={`待处理 ${counts[kind] ?? '—'}`} aria-label={`待处理 ${counts[kind] ?? '—'}`}>{counts[kind] ?? '—'}</span>
+          {selected && <span className={styles.queueCurrent} title={selected.label} aria-label={`当前作业 ${selected.taskId ?? selected.qa?.anonymousCode ?? selected.id}`}>{selected.taskId ?? selected.qa?.anonymousCode ?? selected.id}</span>}
+        </div>}
         <div id={queueContentsId} className={styles.queueContents} hidden={queueCollapsed}>
           <label className={styles.search}><Search size={15} /><Input aria-label="筛选已加载待办" placeholder="筛选已加载待办" value={query} onChange={e => setQuery(e.target.value)} /></label>
           <div className={styles.list}>{visible.map(item => <Button unstyled className={styles.item} key={workItemKey(item)} disabled={navigating}

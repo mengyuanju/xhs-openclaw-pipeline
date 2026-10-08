@@ -71,7 +71,8 @@ test('locked copy fields explain score gates while plan fields use their own per
   assert.match(source, /function getPlanEditBlockMessage/u);
   assert.match(source, /const message = area === 'plan' \? planEditBlockMessage : copyEditBlockMessage/u);
   assert.match(source, /data-edit-blocked=\{Boolean\(planEditBlockMessage\)\}/u);
-  assert.match(source, /onClickCapture=\{\(\) => revealCopyEditNotice\('copy'\)\}/u);
+  assert.match(source, /onClickCapture: \(\) => revealCopyEditNotice\('copy'\)/u);
+  assert.match(source, /workbench-copy-fields[^>]*\{\.\.\.copyEditReminderProps\}/u);
   assert.match(source, /Date\.now\(\) - copyEditPointerAtRef\.current > 500/u);
   assert.match(source, /data-edit-reminder-exempt/u);
   assert.match(source, /<ToastFeedback id="task-review-copy-edit"/u);
@@ -106,7 +107,7 @@ test('copy review scores the machine draft once and auto-scores an edited approv
   assert.match(source, /\['QA_RETURN', 'FINAL_REWORK'\]\.includes\(revision\?\.reworkOrigin \?\? ''\)/u);
   assert.match(source, /<CopyMachineDraftScoreField[\s\S]*legend=\{currentCopyRatingLabel\}/u);
   assert.match(source, /const showCopyRating = detail\?\.state === 'COPY_REVIEW_PENDING' && !isCopyRework/u);
-  assert.match(source, /\{showCopyRating && <div className="human-rating-panel"/u);
+  assert.match(source, /if \(!showCopyRating\) return null;[\s\S]*className=\{`human-rating-panel workbench-copy-original-rating/u);
   assert.match(source, /disabled=\{!editable \|\| loading \|\| submitting \|\| humanQualitySettingsUnavailable/u);
   assert.match(source, /评分模块当前为只读/u);
   assert.match(source, /const currentCopyRatingLabel = '机器原稿初评（保留）'/u);
