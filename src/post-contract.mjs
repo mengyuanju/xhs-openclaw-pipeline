@@ -1,5 +1,5 @@
 import { internalPrompt } from './prompt-runtime.mjs';
-import { businessPrompt, promptRuntimeSnapshot, hasPublishedPrompt } from './prompt-runtime.mjs';
+import { businessPrompt, promptRuntimeSnapshot, hasPublishedPrompt, promptPolicy } from './prompt-runtime.mjs';
 import { normalizePageLayout } from '../server/src/image-options.mjs';
 import { IMAGE_PLAN_BULLET_HARD_MAX } from './image-plan-editing.mjs';
 import { imagePlanBulletCount } from './visible-text.mjs';
@@ -490,8 +490,12 @@ export function buildPostPrompt({ query, input = {} }, { systemPrompt, imageCoun
   const countRule = automatic
     ? internalPrompt('INTERNAL_AUTO_PAGE_COUNT')
     : internalPrompt('INTERNAL_FIXED_PAGE_COUNT', { slot1: (imageCount), slot2: (imageCount) });
+  const { copyRepairTargetMin: targetMin, copyRepairTargetMax: targetMax } = promptPolicy();
+  const bodyLengthBudget = JSON.stringify({ minLength: 400, maxLength: 600, targetMin, targetMax,
+    targetLength: Math.round((targetMin + targetMax) / 2), upperSafetyMargin: 600 - targetMax });
   const taskJson = JSON.stringify({ query, input, deliveryImageCount }, null, 2);
-  const renderedBasePrompt = internalPrompt('INTERNAL_POST_OUTPUT', { TASK_JSON: taskJson, DELIVERY_IMAGE_COUNT_RULE: countRule });
+  const renderedBasePrompt = internalPrompt('INTERNAL_POST_OUTPUT', { TASK_JSON: taskJson,
+    DELIVERY_IMAGE_COUNT_RULE: countRule, BODY_LENGTH_BUDGET: bodyLengthBudget });
   const knowledgePrompt = buildCopyKnowledgeReferencePrompt(knowledgeReference);
   if (promptRuntimeSnapshot() || hasPublishedPrompt('TEXT_SYSTEM')) {
     return `${businessPrompt('TEXT_SYSTEM', {
@@ -499,7 +503,8 @@ export function buildPostPrompt({ query, input = {} }, { systemPrompt, imageCoun
       variables: { query, category: input.category ?? '',
         targetAudience: input.targetAudience ?? '', imageCount: automatic ? '3–5' : imageCount },
       contract: internalPrompt('INTERNAL_POST_OUTPUT', { TASK_JSON: '任务数据见下方 data 区',
-        DELIVERY_IMAGE_COUNT_RULE: automatic ? 'imagePlan 必须为3～5项。' : countRule }),
+        DELIVERY_IMAGE_COUNT_RULE: automatic ? 'imagePlan 必须为3～5项。' : countRule,
+        BODY_LENGTH_BUDGET: bodyLengthBudget }),
       data: { query, input, deliveryImageCount },
     })}\n\n${knowledgePrompt}`;
   }

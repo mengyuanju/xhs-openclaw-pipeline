@@ -42,7 +42,7 @@
 | 生成与规划 | 图片编辑（IMAGE_EDIT_SYSTEM） | 人工生成标识、产品融合或局部修改时调用；与本次操作对应的图片编辑补充模板组合。 | 可编辑 |
 | 审核与修复 | Query 筛选（选题审核）（QUERY_REVIEW_SYSTEM） | 启用 Query 筛选后，在生成正文前判断准入；默认关闭。 | 可编辑 |
 | 审核与修复 | 文案审核（TEXT_REVIEW_SYSTEM） | 自动文案审核启用时检查正文和证据；当前分布式文案流程跳过自动文案审核。 | 可编辑 |
-| 审核与修复 | 正文定向修复（COPY_LENGTH_REPAIR_SYSTEM） | 正文长度或句子完整性校验失败时调用，只修改正文。 | 可编辑 |
+| 审核与修复 | 正文定向修复（COPY_LENGTH_REPAIR_SYSTEM） | 正文长度或句子完整性校验失败时调用，只修改正文；常规修复后仍超长时，复用此规则自动继续压缩最多两次。 | 可编辑 |
 | 审核与修复 | 格式修复（COPY_REPAIR_SYSTEM） | 文案 JSON 字段、格式或其他结构校验失败时调用。 | 可编辑 |
 | 审核与修复 | 质检修订（COPY_REVISION_SYSTEM） | 需要依据质检问题生成修订稿时调用，保留已合格内容。 | 可编辑 |
 | 审核与修复 | 图片验收（IMAGE_ALIGNMENT_SYSTEM） | 生图或编辑图片后，核对可见文字、场景、语义和布局；图片编辑也用于原图文字预检。 | 可编辑 |
@@ -67,7 +67,7 @@
 | 输出与校验协议 | 选题与文案审核协议（INTERNAL_STAGE_REVIEW_OUTPUT） | 选题审核和文案审核共用的通过、拒绝和问题结构。 | 只读程序协议 |
 | 输出与校验协议 | 文案审核计数协议（INTERNAL_TEXT_REVIEW_METRICS） | 传递实际字数、合法范围和本次冻结的编辑要求。 | 只读程序协议 |
 | 失败重试 | 审核格式重试（INTERNAL_STAGE_REVIEW_RETRY） | 选题或文案审核返回无效 JSON 时，要求完整重答。 | 可编辑 |
-| 输出与校验协议 | 正文修复输出协议（INTERNAL_BODY_REPAIR_OUTPUT） | 正文长度或完整性校验失败时，只允许返回完整 body。 | 只读程序协议 |
+| 输出与校验协议 | 正文修复输出协议（INTERNAL_BODY_REPAIR_OUTPUT） | 正文长度或完整性校验失败时，只允许返回完整 body；传递程序实测字数、压缩预算和自动继续压缩轮次。 | 只读程序协议 |
 | 输出与校验协议 | 质检修订输出协议（INTERNAL_QUALITY_REVISION_OUTPUT） | 质检修订必须保留原结构及无关的合格字段。 | 只读程序协议 |
 | 输出与校验协议 | 质量评分输出协议（INTERNAL_QUALITY_SCORE_OUTPUT） | 限定评分对象、十个维度和证据结构。 | 只读程序协议 |
 | 失败重试 | 质量评分格式重试（INTERNAL_QUALITY_SCORE_RETRY） | 图片终审评分结构不合格时，重查全部图片并补齐字段。 | 可编辑 |
@@ -141,7 +141,7 @@
 | 失败重试 | 优秀文案分析格式重试（INTERNAL_COPY_ANALYSIS_RETRY） | 知识分析无法解析时，要求重新返回完整 JSON。 | 可编辑 |
 | 输出与校验协议 | 案例事实隔离协议（INTERNAL_KNOWLEDGE_FACT_BOUNDARY） | 借鉴案例时限制案例仅提供表达方法，不能成为选题事实来源。 | 只读程序协议 |
 | 生成与规划 | 人工文案更新后的视觉重规划（INTERNAL_MANUAL_COPY_REPLAN） | 人工修改正文后，旧画面方向只保留页类型，具体内容跟随新规划。 | 可编辑 |
-| 输出与校验协议 | 文案完整结构协议（INTERNAL_POST_OUTPUT） | 每次生成完整文案时，与管理员文案规则及配图规则共同组成请求。 | 只读程序协议 |
+| 输出与校验协议 | 文案完整结构协议（INTERNAL_POST_OUTPUT） | 每次生成完整文案时，与管理员文案规则及配图规则共同组成请求；BODY_LENGTH_BUDGET 注入400～600硬性范围、冻结配置中的首稿目标和上限余量。 | 只读程序协议 |
 | 联调辅助 | 套图风格离线检查协议（INTERNAL_STYLE_AUDIT_TOOL） | 只在 scripts/audit-image-set-style.mjs 独立检验工具运行时调用；输出字段和判定尺度与脚本机械检查对应。 | 只读程序协议 |
 | 输出与校验协议 | 本地图片编辑输出协议（INTERNAL_LOCAL_IMAGE_EDIT_OUTPUT） | 本地管理界面的图片修改任务调用；不改变已有交付页的文字验收。 | 只读程序协议 |
 | 失败重试 | 最终正文分页格式重试（INTERNAL_DYNAMIC_IMAGE_PLAN_RETRY） | 本地完整管线依据最终正文重新分页，首次规划输出不合格时调用。 | 可编辑 |
