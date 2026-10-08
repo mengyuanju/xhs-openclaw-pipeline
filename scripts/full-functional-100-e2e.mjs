@@ -404,12 +404,20 @@ try {
     assert.ok((await dialog.locator('#review-copy-title').inputValue()).includes('合成测试作业'));
     await page.screenshot({ path: join(reportRoot, 'task-review-dialog.png'), fullPage: true }); return { taskId: id };
   });
-  await check('浏览器异步生成与下载任务明细 CSV', async () => {
-    await page.goto(origin + '/reports/task-data', { waitUntil: 'domcontentloaded' }); await page.getByRole('button', { name: '生成任务明细 CSV', exact: true }).click();
-    const link = page.getByRole('link', { name: '下载 CSV', exact: true }).first(); await link.waitFor({ timeout: 60000 });
-    const [download] = await Promise.all([page.waitForEvent('download', { timeout: 60000 }), link.click()]);
-    await download.saveAs(join(reportRoot, 'task-data-100.csv')); const csv = await readFile(join(reportRoot, 'task-data-100.csv'), 'utf8');
-    assert.ok(csv.includes('完整功能合成测试')); return { byteSize: Buffer.byteLength(csv) };
+  await check('浏览器下载作业详情 Excel，已移除任务明细 CSV 区域', async () => {
+    await page.goto(origin + '/reports/task-data', { waitUntil: 'domcontentloaded' });
+    const button = page.getByRole('button', { name: '导出 Excel', exact: true }); await button.waitFor({ timeout: 60000 });
+    await page.waitForFunction(() => [...document.querySelectorAll('button')].some(button => button.textContent.trim() === '导出 Excel' && !button.disabled));
+    assert.equal(await page.getByRole('region', { name: '任务明细导出', exact: true }).count(), 0);
+    assert.equal(await page.getByRole('button', { name: '生成任务明细 CSV', exact: true }).count(), 0);
+    const [download] = await Promise.all([page.waitForEvent('download', { timeout: 60000 }), button.click()]);
+    assert.match(download.suggestedFilename(), /\.xlsx$/u);
+    const filePath = join(reportRoot, 'task-data-100.xlsx'); await download.saveAs(filePath);
+    const bytes = await readFile(filePath), workbook = new ExcelJS.Workbook(); await workbook.xlsx.load(bytes);
+    const sheet = workbook.getWorksheet('作业详情'); assert.ok(sheet, 'Excel includes the activity detail worksheet');
+    assert.deepEqual(sheet.getRow(1).values.slice(1), ['标注人', '文案作业次数', '文案首次审核', '文案返修', '图片作业次数', '图片首次审核', '图片返修', '图片通过数量', '新增交付数']);
+    assert.ok(sheet.rowCount > 1, 'Excel includes activity records for the synthetic tasks');
+    return { fileName: download.suggestedFilename(), rowCount: sheet.rowCount - 1, byteSize: bytes.length };
   });
   await check('浏览器用户管理创建用户、修改显示名和禁用状态', async () => {
     await page.goto(origin + '/users', { waitUntil: 'domcontentloaded' }); await page.getByRole('button', { name: '新增用户', exact: true }).click();
