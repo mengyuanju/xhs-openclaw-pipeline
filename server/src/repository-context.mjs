@@ -235,7 +235,8 @@ const TASK_LIST_COLUMNS_SQL = [
   'mandatory_image_qc', 'mandatory_image_qc_origin', 'state', 'cancelled_from_state',
   'image_reviewed_at', 'image_reviewed_by_user_id', 'created_by_node_id', 'created_by_user_id',
   'assigned_to_user_id', 'assigned_at', 'assignment_source', 'copy_executor_node_id',
-  'current_copy_revision_id', 'copy_qa_auto_passed_revision_id', 'current_image_run_id', 'image_production_chain_id',
+  'current_copy_revision_id', 'copy_qc_released_revision_id',
+  'current_image_run_id', 'image_production_chain_id',
   'image_production_started_at', 'image_production_duration_ms', 'current_execution_id',
   'current_stage', 'progress_percent', 'progress_message', 'execution_started_at',
   'last_activity_at', 'finished_at', 'error', 'created_at', 'updated_at',
@@ -300,8 +301,10 @@ function taskFrom(row) {
       ? null : Number(row.production_batch_id),
     deliveryStatus: row.delivery_ready === true ? 'READY' : null,
     mandatoryCopyQc: row.mandatory_copy_qc === true,
-    copyQaAutoPassed: row.copy_qa_auto_passed_revision_id != null
-      && Number(row.copy_qa_auto_passed_revision_id) === Number(row.current_copy_revision_id),
+    copyQaAutoPassed: row.copy_qa_record_method === 'SYSTEM'
+      && row.copy_qa_record_passed === true
+      && row.copy_qc_released_revision_id != null
+      && Number(row.copy_qc_released_revision_id) === Number(row.current_copy_revision_id),
     copyQaReworkPending: row.copy_qa_rework_pending === true,
     mandatoryCopyQcOrigin: row.mandatory_copy_qc_origin ?? null,
     mandatoryImageQc: row.mandatory_image_qc === true,

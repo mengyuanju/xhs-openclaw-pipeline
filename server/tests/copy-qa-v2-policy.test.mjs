@@ -34,8 +34,9 @@ test('account default QA pass bypasses sampling and mandatory recheck without a 
       if(source.startsWith("UPDATE tasks SET state='IMAGE_QUEUED'")){
         return {rows:[{id:101,state:'IMAGE_QUEUED',
           current_copy_revision_id:204,copy_qc_released_revision_id:204,
-          copy_qa_auto_passed_revision_id:204,mandatory_copy_qc:false}]};
+          mandatory_copy_qc:false}]};
       }
+      if(source.startsWith('INSERT INTO copy_qa_inspection_records')) return {rows:[]};
       throw new Error('unexpected SQL: '+source);
     }};
     const result=await routeCopyApprovalV2(client,{
@@ -44,11 +45,14 @@ test('account default QA pass bypasses sampling and mandatory recheck without a 
       actor:{userId:41},aiDisclosureEnabled:true,
     });
     assert.equal(result.task.state,'IMAGE_QUEUED');
-    assert.equal(result.task.copy_qa_auto_passed_revision_id,204);
+    assert.equal(result.task.copy_qa_record_method,'SYSTEM');
+    assert.equal(result.task.copy_qa_record_passed,true);
     assert.equal(result.task.mandatory_copy_qc,false);
     const update=queries.find(({sql})=>sql.startsWith("UPDATE tasks SET state='IMAGE_QUEUED'"));
-    assert.match(update.sql,/copy_qa_auto_passed_revision_id=\$2/u);
     assert.deepEqual(update.values,[101,204,true]);
+    const inspection=queries.find(({sql})=>sql.startsWith('INSERT INTO copy_qa_inspection_records'));
+    assert.match(inspection.sql,/'SYSTEM',true,'PASS'/u);
+    assert.deepEqual(inspection.values,['account-default:101:204',101,204,704]);
     assert.equal(queries.some(({sql})=>sql.includes('INSERT INTO copy_qa_batch')),false);
   }
 });

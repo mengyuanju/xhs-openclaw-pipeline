@@ -53,6 +53,12 @@ test('manual and automatic batches select mandatory legacy candidates and refuse
     assert.equal(manualMember.selected,true);
     assert.equal(manualMember.status,'PENDING');
     assert.equal(manualMember.sample_count,1);
+    await decideCopyQaItemV2(db,manualMember.public_id,{
+      requestId:randomUUID(),revisionToken:manualMember.content_sha256,decision:'PASS',
+    },reviewer);
+    const humanPass=(await db.query(`SELECT qa_method,passed,verdict FROM copy_qa_inspection_records
+      WHERE source_key=$1`,[`v2:${manualMember.id}`])).rows[0];
+    assert.deepEqual(humanPass,{qa_method:'HUMAN',passed:true,verdict:'PASS'});
 
     await db.query('UPDATE workflow_quality_settings SET copy_sampling_enabled=true,copy_sampling_rate_bps=0');
     await db.query('UPDATE app_users SET auto_copy_batch_enabled=true,auto_copy_batch_size=1 WHERE id=$1',[worker.userId]);
@@ -80,6 +86,9 @@ test('manual and automatic batches select mandatory legacy candidates and refuse
       requestId:randomUUID(),revisionToken:returnedMember.content_sha256,
       decision:'RETURN',reasonCodes:['TITLE_AI_TONE'],note:'普通成员质检打回',
     },reviewer);
+    const humanReturn=(await db.query(`SELECT qa_method,passed,verdict FROM copy_qa_inspection_records
+      WHERE source_key=$1`,[`v2:${returnedMember.id}`])).rows[0];
+    assert.deepEqual(humanReturn,{qa_method:'HUMAN',passed:false,verdict:'RETURN'});
     assert.equal((await member(protectedTask)).status,'PENDING');
     assert.equal((await member(protectedTask)).batch_status,'INSPECTING',
       'the return threshold cannot auto-return an unreviewed mandatory member');

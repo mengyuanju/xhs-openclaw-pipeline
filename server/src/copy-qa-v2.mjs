@@ -246,12 +246,21 @@ export async function routeCopyApprovalV2(client,{task,revision,approval,actor,a
   if (approver?.default_copy_qa_pass === true) {
     const result = await client.query(`UPDATE tasks SET state='IMAGE_QUEUED',current_stage='IMAGE_QUEUED',
       current_copy_revision_id=$2,copy_qc_released_revision_id=$2,
-      copy_qa_auto_passed_revision_id=$2,copy_qa_rework_pending=false,mandatory_copy_qc=false,
+      copy_qa_rework_pending=false,mandatory_copy_qc=false,
       mandatory_copy_qc_origin=NULL,ai_disclosure_enabled=$3,progress_percent=0,
       current_execution_id=NULL,current_image_run_id=NULL,pending_snapshot=NULL,
       execution_started_at=NULL,finished_at=NULL,error=NULL,last_activity_at=now(),
       progress_message='文案质检系统通过，等待生图',updated_at=now()
       WHERE id=$1 RETURNING *`,[task.id,revision.id,aiDisclosureEnabled]);
+    if (!result.rows[0]) conflict('TASK_NOT_FOUND','文案质检系统通过时任务不存在');
+    await client.query(`INSERT INTO copy_qa_inspection_records(
+      source_key,task_id,copy_revision_id,approval_event_id,
+      qa_method,passed,verdict,reviewer_username)
+      VALUES ($1,$2,$3,$4,'SYSTEM',true,'PASS','system')
+      ON CONFLICT (source_key) DO NOTHING`,
+    [`account-default:${task.id}:${revision.id}`,task.id,revision.id,approval.id]);
+    result.rows[0].copy_qa_record_method = 'SYSTEM';
+    result.rows[0].copy_qa_record_passed = true;
     return {task:result.rows[0],approval};
   }
   if(!settings.copySampling.enabled&&!mandatoryReview){
