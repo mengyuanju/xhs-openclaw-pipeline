@@ -46,12 +46,13 @@ test('account default QA pass bypasses sampling and mandatory recheck without a 
     });
     assert.equal(result.task.state,'IMAGE_QUEUED');
     assert.equal(result.task.copy_qa_record_method,'SYSTEM');
+    assert.equal(result.task.copy_qa_record_mode,'ACCOUNT_DEFAULT');
     assert.equal(result.task.copy_qa_record_passed,true);
     assert.equal(result.task.mandatory_copy_qc,false);
     const update=queries.find(({sql})=>sql.startsWith("UPDATE tasks SET state='IMAGE_QUEUED'"));
     assert.deepEqual(update.values,[101,204,true]);
     const inspection=queries.find(({sql})=>sql.startsWith('INSERT INTO copy_qa_inspection_records'));
-    assert.match(inspection.sql,/'SYSTEM',true,'PASS'/u);
+    assert.match(inspection.sql,/'SYSTEM','ACCOUNT_DEFAULT',true,'PASS'/u);
     assert.deepEqual(inspection.values,['account-default:101:204',101,204,704]);
     assert.equal(queries.some(({sql})=>sql.includes('INSERT INTO copy_qa_batch')),false);
   }

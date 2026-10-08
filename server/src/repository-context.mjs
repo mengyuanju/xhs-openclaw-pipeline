@@ -301,7 +301,12 @@ function taskFrom(row) {
       ? null : Number(row.production_batch_id),
     deliveryStatus: row.delivery_ready === true ? 'READY' : null,
     mandatoryCopyQc: row.mandatory_copy_qc === true,
+    copyQaPassMode: row.copy_qa_record_passed === true
+      && row.copy_qc_released_revision_id != null
+      && Number(row.copy_qc_released_revision_id) === Number(row.current_copy_revision_id)
+      ? row.copy_qa_record_mode ?? null : null,
     copyQaAutoPassed: row.copy_qa_record_method === 'SYSTEM'
+      && row.copy_qa_record_mode === 'ACCOUNT_DEFAULT'
       && row.copy_qa_record_passed === true
       && row.copy_qc_released_revision_id != null
       && Number(row.copy_qc_released_revision_id) === Number(row.current_copy_revision_id),
