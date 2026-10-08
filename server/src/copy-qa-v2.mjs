@@ -209,7 +209,7 @@ export async function createCopyQaBatchV2(pool, input, actor) {
 export async function autoCreateCopyQaBatchesV2(client, accountId) {
   const id=normalizeTaskId(accountId);
   const account=(await client.query(`SELECT * FROM app_users WHERE id=$1 FOR SHARE`,[id])).rows[0];
-  if(!account?.auto_copy_batch_enabled || account.status!=='ACTIVE')return [];
+  if(!account?.auto_copy_batch_enabled || account.default_copy_qa_pass || account.status!=='ACTIVE')return [];
   const settings=await readWorkflowQualitySettings(client);
   if(!settings.copySampling.enabled)return [];
   const size=Number(account.auto_copy_batch_size);
@@ -231,12 +231,26 @@ export async function autoCreateCopyQaBatchesV2(client, accountId) {
 export async function routeCopyApprovalV2(client,{task,revision,approval,actor,aiDisclosureEnabled}) {
   const settings=await readWorkflowQualitySettings(client);
   // A V2 return records the rework obligation separately from the legacy
-  // mandatory flag. Once that rework is approved, it must still be inspected.
+  // mandatory flag; account auto-pass is an explicit exception.
   const mandatoryReview=task.mandatory_copy_qc===true||task.copy_qa_rework_pending===true;
   const mandatoryOrigin=task.copy_qa_rework_pending===true?'QA_RETURN':task.mandatory_copy_qc_origin;
   const approverAccountId=mandatoryReview?integer(approval.approved_by_account_id):null;
   if(mandatoryReview&&(!approverAccountId||approverAccountId<1)){
     conflict('APPROVER_IDENTITY_MISSING','强制复检缺少最终审核账号');
+  }
+  const approver = approval.approved_by_account_id == null ? null
+    : (await client.query('SELECT default_copy_qa_pass FROM app_users WHERE id=$1 FOR SHARE',
+      [approval.approved_by_account_id])).rows[0];
+  if (approver?.default_copy_qa_pass === true) {
+    const result = await client.query(`UPDATE tasks SET state='IMAGE_QUEUED',current_stage='IMAGE_QUEUED',
+      current_copy_revision_id=$2,copy_qc_released_revision_id=$2,
+      copy_qa_auto_passed_revision_id=$2,copy_qa_rework_pending=false,mandatory_copy_qc=false,
+      mandatory_copy_qc_origin=NULL,ai_disclosure_enabled=$3,progress_percent=0,
+      current_execution_id=NULL,current_image_run_id=NULL,pending_snapshot=NULL,
+      execution_started_at=NULL,finished_at=NULL,error=NULL,last_activity_at=now(),
+      progress_message='文案质检系统通过，等待生图',updated_at=now()
+      WHERE id=$1 RETURNING *`,[task.id,revision.id,aiDisclosureEnabled]);
+    return {task:result.rows[0],approval};
   }
   if(!settings.copySampling.enabled&&!mandatoryReview){
     const result=await client.query(`UPDATE tasks SET state='IMAGE_QUEUED',current_stage='IMAGE_QUEUED',

@@ -219,6 +219,7 @@ type TaskDetail = PriorityTask & {
   assignedToAccountId?: number | null;
   aiDisclosureEnabled: boolean;
   mandatoryCopyQc?: boolean;
+  copyQaAutoPassed?: boolean;
   copyQaReworkPending?: boolean;
   mandatoryCopyQcOrigin?: 'QA_RETURN' | 'FINAL_REWORK' | 'IMAGE_RETRY_REVIEW' | 'DISCARD_RESTORE' | 'SECOND_ASSIGNMENT' | null;
   mandatoryImageQc?: boolean;
@@ -1675,8 +1676,8 @@ export function TaskReviewDialog({
       description: decision === 'APPROVE'
         ? isCopyRework
           ? detail.copyQaReworkPending
-            ? '抽检返工稿已实际修改，人工确认达标后会按普通规则重新进入待成批任务池；是否成为质检项由新批次决定。'
-            : `${isImageRetryRework ? '生图失败修订' : revision.reworkOrigin === 'QA_RETURN' || detail.mandatoryCopyQcOrigin === 'QA_RETURN' ? '抽检返工' : '终审返工'}稿已实际修改文案或图片规划。本次将一起保存修改；人工确认达标后，系统将最终稿记录为 3 分并提交强制复检；复检通过后才会进入待生图队列。原稿评分和返工原因继续保留。`
+            ? '抽检返工稿已实际修改。人工确认达标后，按该账号的质检设置进入待成批任务池或直接生图。'
+            : `${isImageRetryRework ? '生图失败修订' : revision.reworkOrigin === 'QA_RETURN' || detail.mandatoryCopyQcOrigin === 'QA_RETURN' ? '抽检返工' : '终审返工'}稿已实际修改文案或图片规划。本次将一起保存修改；人工确认达标后，系统将最终稿记录为 3 分，并按该账号的质检设置进入强制复检或直接生图。原稿评分和返工原因继续保留。`
           : hasEditedCopyVersion
           ? `机器原稿评分 ${copyOriginalScore} 分及其原因会原样保留；人工确认达标后，系统将当前最终修改稿记录为 3 分，并按任务策略进入文案抽检或待生图队列。`
           : `机器原稿评分为 ${submittedScore} 分。系统会保存审核结果，并按任务策略进入文案抽检或待生图队列。`
@@ -1725,7 +1726,7 @@ export function TaskReviewDialog({
       });
       await onUpdated(decision === 'APPROVE'
         ? isCopyRework
-          ? `${isImageRetryRework ? '生图失败修订稿' : '返工稿'}已记录为最终 3 分并提交强制复检；复检通过后才会进入待生图队列。`
+          ? `${isImageRetryRework ? '生图失败修订稿' : '返工稿'}已记录为最终 3 分；任务将按该账号的质检设置进入强制复检或直接生图。`
           : hasEditedCopyVersion
           ? '机器原稿评分已保留，最终修改稿已按 3 分提交；任务将按策略进入文案抽检或待生图队列。'
           : '文案审核结果已提交；任务将按策略进入文案抽检或待生图队列。'
@@ -2307,10 +2308,11 @@ export function TaskReviewDialog({
               </div>}
               {!editable && !isImageReviewView && currentImageRun && <TaskQualitySummary result={currentImageRun.result}
                 onShowImages={assets.length ? () => { imageSectionRef.current?.scrollIntoView({ block: 'start' }); imageSectionRef.current?.focus({ preventScroll: true }); } : undefined} />}
+              {detail.copyQaAutoPassed && <div className="notice" role="status">文案质检通过 · 系统默认通过，已直接进入生图阶段。</div>}
               {!imageWorkMode && <section className="workbench-review-section workbench-copy-review-section">
                 <div className="workbench-review-section-title"><span>{isImageReviewView ? '02' : '01'}</span><div><h3>{isImageReviewView ? '已审文案对照' : '标题、正文与标签'}</h3><p>{editable
                   ? isCopyRework
-                    ? '按返工原因修改标题、正文或标签；无需重新评分。实际修改后提交强制复检，复检通过后才会进入待生图队列。'
+                    ? '按返工原因修改标题、正文或标签；无需重新评分。提交后将按该账号的质检设置进入强制复检或直接生图。'
                     : '先评价机器原稿，再决定提交达标审核结果或修改。'
                   : isImageReviewView
                     ? '文案已完成前序审核，保留标题、正文与标签用于核对图片表达。'
@@ -2458,7 +2460,7 @@ export function TaskReviewDialog({
                     : '提交达标后系统自动把最终修改稿记录为 3 分，并保留机器原稿评分与原因。'}</p>
                 </div>}
                 {editable && (isCopyRework ? copyReworkSatisfied : copyContentChanged) && <div className="notice success" role="status">{isCopyRework
-                  ? '返工稿无需再次评分；提交强制复检时，系统会将最终稿记录为 3 分。复检通过后才会进入待生图队列。'
+                  ? '返工稿无需再次评分；提交后系统会将最终稿记录为 3 分，并按该账号的质检设置流转。'
                   : '最终修改稿无需再次评分；提交达标审核结果时，系统会将其记录为 3 分，机器原稿评分和原因继续保留。'}</div>}
                 <HumanAssessmentHistory assessments={copyAssessments} scoreDefinitions={scoreDefinitions} reasonOptions={copyReasonOptions}
                   originalScorePresentation={COPY_MACHINE_DRAFT_SCORE_PRESENTATION}

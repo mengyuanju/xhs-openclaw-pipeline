@@ -40,7 +40,8 @@ test('central user management exposes the three fixed roles and default-password
   assert.doesNotMatch(loginForm, /defaultValue=["']admin["']/u);
   assert.match(styles, /\.profile-password-grid \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);[^}]*align-items: start;[^}]*max-width: 560px;/u);
   assert.match(styles, /\.forced-password-dialog \{[^}]*width: min\(calc\(100vw - 32px\), 560px\);[^}]*max-height: min\(92dvh, 720px\);/u);
-  assert.match(manager, /className="user-editor-permission-options"[\s\S]*文案审核[\s\S]*文案质检/u);
+  assert.match(manager, /className="user-editor-toggle-grid"[\s\S]*文案审核[\s\S]*文案质检/u);
+  assert.match(manager, /默认通过质检[\s\S]*个人抽检比例、自动成批和全量质检不生效/u);
   assert.match(manager, /name="imageQcEnabled"[\s\S]{0,180}disabled=\{editorRole !== 'REVIEWER'\}/u);
   assert.match(styles, /\.user-editor-permission-options \{[^}]*display: flex;[^}]*flex-wrap: wrap;[^}]*align-items: center;/u);
   assert.match(migration, /CREATE TABLE IF NOT EXISTS app_users/u);

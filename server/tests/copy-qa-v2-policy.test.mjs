@@ -18,6 +18,41 @@ test('rejection threshold is based on original sampled count',()=>{
   assert.equal(rejectionTriggerCount(4,10000),4);
 });
 
+test('account default QA pass bypasses sampling and mandatory recheck without a human verdict',async()=>{
+  for(const mandatory of [false,true]){
+    const queries=[];
+    const client={async query(sql,values=[]){
+      const source=String(sql).replace(/\s+/gu,' ').trim();
+      queries.push({sql:source,values});
+      if(source==='SELECT * FROM workflow_quality_settings WHERE singleton = 1'){
+        return {rows:[{version:1,copy_sampling_enabled:true,copy_sampling_rate_bps:10000}]};
+      }
+      if(source.startsWith('SELECT default_copy_qa_pass FROM app_users')){
+        assert.deepEqual(values,[41]);
+        return {rows:[{default_copy_qa_pass:true}]};
+      }
+      if(source.startsWith("UPDATE tasks SET state='IMAGE_QUEUED'")){
+        return {rows:[{id:101,state:'IMAGE_QUEUED',
+          current_copy_revision_id:204,copy_qc_released_revision_id:204,
+          copy_qa_auto_passed_revision_id:204,mandatory_copy_qc:false}]};
+      }
+      throw new Error('unexpected SQL: '+source);
+    }};
+    const result=await routeCopyApprovalV2(client,{
+      task:{id:101,mandatory_copy_qc:mandatory,mandatory_copy_qc_origin:'QA_RETURN'},
+      revision:{id:204},approval:{id:704,approved_by_account_id:41},
+      actor:{userId:41},aiDisclosureEnabled:true,
+    });
+    assert.equal(result.task.state,'IMAGE_QUEUED');
+    assert.equal(result.task.copy_qa_auto_passed_revision_id,204);
+    assert.equal(result.task.mandatory_copy_qc,false);
+    const update=queries.find(({sql})=>sql.startsWith("UPDATE tasks SET state='IMAGE_QUEUED'"));
+    assert.match(update.sql,/copy_qa_auto_passed_revision_id=\$2/u);
+    assert.deepEqual(update.values,[101,204,true]);
+    assert.equal(queries.some(({sql})=>sql.includes('INSERT INTO copy_qa_batch')),false);
+  }
+});
+
 for(const origin of ['SECOND_ASSIGNMENT','FINAL_REWORK']){
 for(const enabled of [false,true]){
   test(`${origin} creates a full-inspection batch when ordinary sampling is ${enabled?'on':'off'}`,async()=>{
@@ -25,6 +60,7 @@ for(const enabled of [false,true]){
     const client={async query(sql,values=[]){
       const source=String(sql).replace(/\s+/gu,' ').trim();
       queries.push({sql:source,values});
+      if(source.startsWith('SELECT default_copy_qa_pass FROM app_users')) return {rows:[{default_copy_qa_pass:false}]};
       if(source==='SELECT * FROM workflow_quality_settings WHERE singleton = 1'){
         return {rows:[{version:1,copy_sampling_enabled:enabled,copy_sampling_rate_bps:0,
           copy_batch_return_threshold_bps:5000,blind_review_enabled:enabled}]};
@@ -74,7 +110,8 @@ test('V2 quality return remains a mandatory single-item recheck after copy rewor
   const client={async query(sql,values=[]){
     const source=String(sql).replace(/\s+/gu,' ').trim();
     queries.push({sql:source,values});
-    if(source==='SELECT * FROM workflow_quality_settings WHERE singleton = 1'){
+    if(source.startsWith('SELECT default_copy_qa_pass FROM app_users')) return {rows:[{default_copy_qa_pass:false}]};
+      if(source==='SELECT * FROM workflow_quality_settings WHERE singleton = 1'){
       return {rows:[{version:1,copy_sampling_enabled:false,copy_sampling_rate_bps:0,
         copy_batch_return_threshold_bps:5000,blind_review_enabled:true}]};
     }

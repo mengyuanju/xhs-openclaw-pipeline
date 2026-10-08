@@ -45,6 +45,7 @@ type ManagedUser = {
   autoCopyBatchEnabled?: boolean;
   autoCopyBatchSize?: number;
   copyFullInspection?: boolean;
+  defaultCopyQaPass?: boolean;
   mustChangePassword: boolean;
   version: number;
 };
@@ -81,6 +82,7 @@ export function UserManager({
   const [autoBatchEnabled,setAutoBatchEnabled]=useState(true);
   const [autoBatchSize,setAutoBatchSize]=useState(10);
   const [fullInspection,setFullInspection]=useState(false);
+  const [defaultCopyQaPass,setDefaultCopyQaPass]=useState(false);
   const samplingEditable = samplingSettings?.supported === true
     && (editor?.mode === 'create' || editor?.user.copySamplingRateBpsOverride !== undefined);
 
@@ -92,6 +94,7 @@ export function UserManager({
     setAutoBatchEnabled(user?.autoCopyBatchEnabled ?? true);
     setAutoBatchSize(user?.autoCopyBatchSize ?? 10);
     setFullInspection(user?.copyFullInspection ?? false);
+    setDefaultCopyQaPass(user?.defaultCopyQaPass ?? false);
     setSamplingMode(user?.copySamplingRateBpsOverride != null ? 'OVERRIDE' : 'INHERIT');
     setSamplingInput(String((user?.copySamplingRateBpsOverride ?? samplingSettings?.rateBps ?? 0) / 100));
     setEditor(next);
@@ -150,6 +153,7 @@ export function UserManager({
           username: form.get('username'),
           ...samplingUpdate,
           autoCopyBatchEnabled:autoBatchEnabled,autoCopyBatchSize:autoBatchSize,copyFullInspection:fullInspection,
+          defaultCopyQaPass,
           displayName: form.get('displayName'),
           role: editorRole,
           copyReviewEnabled: form.get('copyReviewEnabled') === 'on',
@@ -168,6 +172,7 @@ export function UserManager({
       body: JSON.stringify({
         ...samplingUpdate,
         autoCopyBatchEnabled:autoBatchEnabled,autoCopyBatchSize:autoBatchSize,copyFullInspection:fullInspection,
+        defaultCopyQaPass,
         displayName: form.get('displayName'),
         role: editorRole,
           copyReviewEnabled: form.get('copyReviewEnabled') === 'on',
@@ -265,7 +270,7 @@ export function UserManager({
         : filteredUsers.length === 0
           ? <div className="empty-state user-filter-empty">没有符合当前条件的用户。请调整搜索或筛选条件。</div>
         : <div className="table-wrap mobile-cards user-table-wrap" role="region" aria-label="用户列表，可横向滚动" tabIndex={0}><table className="user-table">
-          <thead><tr><th>用户</th><th>角色</th><th>状态</th><th>文案抽检</th><th>自动成批</th><th>全量质检</th><th>密码</th><th className="user-actions-heading">操作</th></tr></thead>
+          <thead><tr><th>用户</th><th>角色</th><th>状态</th><th>文案抽检</th><th>自动成批</th><th>全量质检</th><th>默认通过质检</th><th>密码</th><th className="user-actions-heading">操作</th></tr></thead>
           <tbody>{visibleUsers.map((user) => {
             const isCurrentUser = user.username === currentUsername;
             return <tr key={user.id}>
@@ -275,6 +280,7 @@ export function UserManager({
               <td data-label="文案抽检">{accountSamplingLabel(samplingSettings, user.copySamplingRateBpsOverride)}</td>
               <td data-label="自动成批">{user.autoCopyBatchEnabled ? `${user.autoCopyBatchSize ?? 10} 条` : "关闭"}</td>
               <td data-label="全量质检">{user.copyFullInspection ? "开启" : "关闭"}</td>
+              <td data-label="默认通过质检">{user.defaultCopyQaPass ? '开启' : '关闭'}</td>
               <td data-label="密码"><span className={user.mustChangePassword ? 'user-password-pending' : 'user-password-ready'}>{user.mustChangePassword ? '待修改初始密码' : '已设置'}</span></td>
               <td className="row-action" data-label="操作"><div className="user-row-actions">
                 <Button unstyled className="button small" type="button" disabled={Boolean(busy)} onClick={() => openEditor({ mode: 'edit', user })}><Pencil size={14} />编辑</Button>
@@ -332,24 +338,28 @@ export function UserManager({
             </div>
           </section>
           <section className="user-editor-section">
-            <div className="user-editor-section-heading"><h3>文案质检配置</h3><p>设置该账号的抽检比例与自动成批方式。</p></div>
+            <div className="user-editor-section-heading"><h3>文案质检配置</h3><p>设置该账号的质检流转与抽检方式。</p></div>
+            <div className="user-editor-toggle-grid user-editor-quality-options">
+              <label><input type="checkbox" checked={defaultCopyQaPass} onChange={event=>setDefaultCopyQaPass(event.target.checked)} disabled={editorBusy} /><span><strong>默认通过质检</strong><small>默认关闭；开启后该用户审核通过的文案由系统标记质检通过，直接进入生图。</small></span></label>
+            </div>
+            {defaultCopyQaPass && <p className="subtle">开启期间，个人抽检比例、自动成批和全量质检不生效；关闭后恢复原有配置。</p>}
             <div className="user-editor-grid">
               <div className="field"><label htmlFor="user-copy-sampling-mode">文案抽检比例</label>
                 {samplingEditable && samplingSettings ? <>
-                  <Select value={samplingMode} disabled={editorBusy} onValueChange={setSamplingMode}>
+                  <Select value={samplingMode} disabled={editorBusy || defaultCopyQaPass} onValueChange={setSamplingMode}>
                     <SelectTrigger id="user-copy-sampling-mode"><SelectValue /></SelectTrigger>
                     <SelectContent><SelectItem value="INHERIT">继承默认比例（{samplingSettings.rateBps / 100}%）</SelectItem><SelectItem value="OVERRIDE">单独配置</SelectItem></SelectContent>
                   </Select>
-                  {samplingMode === 'OVERRIDE' && <div className="field"><label htmlFor="user-copy-sampling-rate">单独配置比例（%）</label><Input id="user-copy-sampling-rate" type="number" min={0} max={100} step={0.01} required value={samplingInput} disabled={editorBusy} onChange={(event) => setSamplingInput(event.target.value)} /></div>}
+                  {samplingMode === 'OVERRIDE' && <div className="field"><label htmlFor="user-copy-sampling-rate">单独配置比例（%）</label><Input id="user-copy-sampling-rate" type="number" min={0} max={100} step={0.01} required value={samplingInput} disabled={editorBusy || defaultCopyQaPass} onChange={(event) => setSamplingInput(event.target.value)} /></div>}
                   <small>个人自动批次按此比例随机选择质检项，只影响新批次。</small>
                   {!samplingSettings.enabled && <small>全局文案抽检已关闭，此设置会在重新开启后生效。</small>}
                 </> : <small>{samplingSettings?.supported ? '账号比例未读取，请刷新后配置。' : samplingSettings ? '中心服务尚未支持账号级比例。' : '无法确认中心版本或读取生产配置。'}</small>}
               </div>
-              <div className="field"><label htmlFor="auto-copy-batch-size">自动成批任务数</label><Input id="auto-copy-batch-size" type="number" min={1} max={5000} required value={autoBatchSize} onChange={event=>setAutoBatchSize(Number(event.target.value))} disabled={editorBusy||!autoBatchEnabled} /><small>待入批任务达到该数量时自动创建个人批次。</small></div>
+              <div className="field"><label htmlFor="auto-copy-batch-size">自动成批任务数</label><Input id="auto-copy-batch-size" type="number" min={1} max={5000} required value={autoBatchSize} onChange={event=>setAutoBatchSize(Number(event.target.value))} disabled={editorBusy||!autoBatchEnabled||defaultCopyQaPass} /><small>待入批任务达到该数量时自动创建个人批次。</small></div>
             </div>
             <div className="user-editor-toggle-grid user-editor-quality-options">
-              <label><input type="checkbox" checked={autoBatchEnabled} onChange={event=>setAutoBatchEnabled(event.target.checked)} disabled={editorBusy} /><span><strong>自动文案成批</strong><small>默认开启</small></span></label>
-              <label><input type="checkbox" checked={fullInspection} onChange={event=>setFullInspection(event.target.checked)} disabled={editorBusy} /><span><strong>文案全量质检</strong><small>个人批次不按驳回率提前结束</small></span></label>
+              <label><input type="checkbox" checked={autoBatchEnabled} onChange={event=>setAutoBatchEnabled(event.target.checked)} disabled={editorBusy||defaultCopyQaPass} /><span><strong>自动文案成批</strong><small>默认开启</small></span></label>
+              <label><input type="checkbox" checked={fullInspection} onChange={event=>setFullInspection(event.target.checked)} disabled={editorBusy||defaultCopyQaPass} /><span><strong>文案全量质检</strong><small>个人批次不按驳回率提前结束</small></span></label>
             </div>
           </section>
           {error && <div className="notice error" role="alert">{error}</div>}

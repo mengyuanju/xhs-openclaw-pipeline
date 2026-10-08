@@ -283,6 +283,8 @@ function taskFrom(row) {
     currentCopyRevisionId: row.current_copy_revision_id === null
       ? null
       : Number(row.current_copy_revision_id),
+    copyQaAutoPassed: row.copy_qa_auto_passed_revision_id != null
+      && Number(row.copy_qa_auto_passed_revision_id) === Number(row.current_copy_revision_id),
     currentImageRunId: row.current_image_run_id,
     imageProductionChainId: row.image_production_chain_id ?? null,
     imageProductionStartedAt: row.image_production_started_at ?? null,
@@ -412,6 +414,7 @@ function publicUserFrom(row) {
     autoCopyBatchEnabled: row.auto_copy_batch_enabled === true,
     autoCopyBatchSize: Number(row.auto_copy_batch_size ?? 10),
     copyFullInspection: row.copy_full_inspection === true,
+    defaultCopyQaPass: row.default_copy_qa_pass === true,
     credentialVersion: Number(row.credential_version),
     version: Number(row.version),
     createdAt: row.created_at,
@@ -2356,13 +2359,14 @@ export class PostgresControlPlaneRepository {
     });
   }
 
-  async createUser({ username: rawUsername, displayName: rawDisplayName, role: rawRole, copyReviewEnabled = true, copyQcEnabled = false, imageQcEnabled = false, copySamplingRateBpsOverride = null, autoCopyBatchEnabled = true, autoCopyBatchSize = 10, copyFullInspection = false }, { actor = null } = {}) {
+  async createUser({ username: rawUsername, displayName: rawDisplayName, role: rawRole, copyReviewEnabled = true, copyQcEnabled = false, imageQcEnabled = false, copySamplingRateBpsOverride = null, autoCopyBatchEnabled = true, autoCopyBatchSize = 10, copyFullInspection = false, defaultCopyQaPass = false }, { actor = null } = {}) {
     const username = normalizedUsername(rawUsername);
     const displayName = normalizedDisplayName(rawDisplayName);
     const role = normalizedUserRole(rawRole);
     const samplingRate = normalizeCopySamplingRateOverride(copySamplingRateBpsOverride);
     if (typeof autoCopyBatchEnabled !== 'boolean' || typeof copyFullInspection !== 'boolean'
       || !Number.isInteger(autoCopyBatchSize) || autoCopyBatchSize < 1 || autoCopyBatchSize > 5000) throw new TypeError('文案自动成批配置无效');
+    if (typeof defaultCopyQaPass !== 'boolean') throw new TypeError('默认通过文案质检开关无效');
     if (typeof copyReviewEnabled !== 'boolean' || typeof copyQcEnabled !== 'boolean'
         || typeof imageQcEnabled !== 'boolean') throw new TypeError('permissions must be boolean');
     if (imageQcEnabled && role !== 'REVIEWER') {
@@ -2378,10 +2382,10 @@ export class PostgresControlPlaneRepository {
         const result = await client.query(`
         INSERT INTO app_users(username, display_name, role, password_hash, must_change_password,
           copy_review_enabled, copy_qc_enabled, image_qc_enabled, copy_sampling_rate_bps_override,
-          auto_copy_batch_enabled,auto_copy_batch_size,copy_full_inspection)
-        VALUES ($1, $2, $3, $4, true, $5, $6, $7, $8, $9, $10, $11)
+          auto_copy_batch_enabled,auto_copy_batch_size,copy_full_inspection,default_copy_qa_pass)
+        VALUES ($1, $2, $3, $4, true, $5, $6, $7, $8, $9, $10, $11, $12)
         RETURNING *
-        `, [username, displayName, role, passwordHash, copyReviewEnabled, copyQcEnabled, imageQcEnabled, samplingRate, autoCopyBatchEnabled, autoCopyBatchSize, copyFullInspection]);
+        `, [username, displayName, role, passwordHash, copyReviewEnabled, copyQcEnabled, imageQcEnabled, samplingRate, autoCopyBatchEnabled, autoCopyBatchSize, copyFullInspection, defaultCopyQaPass]);
         await recordAccountSamplingPolicy(client, result.rows[0].id, null, samplingRate, actor);
         return managedUserFrom(result.rows[0]);
       });
@@ -2391,7 +2395,7 @@ export class PostgresControlPlaneRepository {
     }
   }
 
-  async updateUser(rawUserId, { displayName: rawDisplayName, role: rawRole, status, expectedVersion, copyReviewEnabled, copyQcEnabled, imageQcEnabled, copySamplingRateBpsOverride, autoCopyBatchEnabled, autoCopyBatchSize, copyFullInspection, actorUsername = null }, { actor = null } = {}) {
+  async updateUser(rawUserId, { displayName: rawDisplayName, role: rawRole, status, expectedVersion, copyReviewEnabled, copyQcEnabled, imageQcEnabled, copySamplingRateBpsOverride, autoCopyBatchEnabled, autoCopyBatchSize, copyFullInspection, defaultCopyQaPass, actorUsername = null }, { actor = null } = {}) {
     const userId = normalizeTaskId(rawUserId);
     const displayName = normalizedDisplayName(rawDisplayName);
     const role = normalizedUserRole(rawRole);
@@ -2400,6 +2404,7 @@ export class PostgresControlPlaneRepository {
     if (copySamplingRateBpsOverride !== undefined) normalizeCopySamplingRateOverride(copySamplingRateBpsOverride);
     if (autoCopyBatchEnabled !== undefined && typeof autoCopyBatchEnabled !== 'boolean') throw new TypeError('自动成批开关无效');
     if (copyFullInspection !== undefined && typeof copyFullInspection !== 'boolean') throw new TypeError('全量质检设置无效');
+    if (defaultCopyQaPass !== undefined && typeof defaultCopyQaPass !== 'boolean') throw new TypeError('默认通过文案质检开关无效');
     if (autoCopyBatchSize !== undefined && (!Number.isInteger(autoCopyBatchSize) || autoCopyBatchSize < 1 || autoCopyBatchSize > 5000)) throw new TypeError('自动成批数量须为 1–5000');
     return transaction(this.pool, async (client) => {
       await lockAdministratorRoster(client);
@@ -2462,6 +2467,7 @@ export class PostgresControlPlaneRepository {
             copy_review_enabled = $7, copy_qc_enabled = $8, image_qc_enabled = $9,
             copy_sampling_rate_bps_override = $10,
             auto_copy_batch_enabled=$11,auto_copy_batch_size=$12,copy_full_inspection=$13,
+            default_copy_qa_pass=$14,
             credential_version = credential_version + $4, version = version + 1, updated_at = now()
         WHERE id = $5 AND version = $6
         RETURNING *
@@ -2469,10 +2475,11 @@ export class PostgresControlPlaneRepository {
         reviewEnabled, qcEnabled, imageQualityEnabled, samplingRate,
         autoCopyBatchEnabled ?? current.auto_copy_batch_enabled,
         autoCopyBatchSize ?? current.auto_copy_batch_size,
-        copyFullInspection ?? current.copy_full_inspection]);
+        copyFullInspection ?? current.copy_full_inspection,
+        defaultCopyQaPass ?? current.default_copy_qa_pass ?? false]);
       if (!result.rows[0]) throw new ControlPlaneConflictError('VERSION_CONFLICT', 'user was updated by another request');
       await recordAccountSamplingPolicy(client, userId, previousSamplingRate, samplingRate, actor ?? { username: actorUsername ?? 'system' });
-      if (result.rows[0].auto_copy_batch_enabled) await autoCreateCopyQaBatchesV2(client,userId);
+      if (result.rows[0].auto_copy_batch_enabled && !result.rows[0].default_copy_qa_pass) await autoCreateCopyQaBatchesV2(client,userId);
       await client.query(`UPDATE tasks SET review_assigned_to_account_id = NULL,
           review_assigned_at = NULL, updated_at = now()
         WHERE state = 'MANUAL_ARCHIVE' AND review_assigned_to_account_id = $1
