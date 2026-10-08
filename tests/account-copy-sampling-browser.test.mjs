@@ -68,13 +68,13 @@ test('account sampling browser: inherit, zero, restore, old-center gating and re
     await dialog.getByLabel('文案抽检比例', { exact: true }).click();
     await page.getByRole('option', { name: '单独配置', exact: true }).click();
     await dialog.getByLabel('单独配置比例（%）').fill('0');
-    await dialog.getByText('0% 仍会在结批或等待超时后对非空尾批保底抽 1 条。').waitFor();
+    await dialog.getByText('个人自动批次按此比例随机选择质检项，只影响新批次。').waitFor();
     await dialog.getByRole('button', { name: '保存修改' }).click();
     await page.getByText('单独 · 0%（尾批保底）', { exact: true }).waitFor();
     assert.equal(writes.at(-1).copySamplingRateBpsOverride, 0);
     await page.getByRole('button', { name: '编辑', exact: true }).click();
     await dialog.getByLabel('文案抽检比例', { exact: true }).click();
-    await page.getByRole('option', { name: /继承生产配置/u }).click();
+    await page.getByRole('option', { name: /继承默认比例/u }).click();
     await dialog.getByRole('button', { name: '保存修改' }).click();
     await page.getByText('继承 · 20%', { exact: true }).waitFor();
     assert.equal(writes.at(-1).copySamplingRateBpsOverride, null);
@@ -82,7 +82,7 @@ test('account sampling browser: inherit, zero, restore, old-center gating and re
     await page.goto(`${origin}/?off=1`);
     await page.getByText('继承 · 20% · 暂不生效', { exact: true }).waitFor();
     await page.getByRole('button', { name: '编辑', exact: true }).click();
-    await dialog.getByText('普通文案抽检当前全局关闭，账号配置会保留并在重新开启后生效。').waitFor();
+    await dialog.getByText('全局文案抽检已关闭，此设置会在重新开启后生效。').waitFor();
     await page.setViewportSize({ width: 390, height: 844 });
     const bounds = await dialog.boundingBox();
     assert.ok(bounds.x >= -1 && bounds.x + bounds.width <= 391, JSON.stringify(bounds));
@@ -93,8 +93,9 @@ test('account sampling browser: inherit, zero, restore, old-center gating and re
     if (process.env.ACCOUNT_SAMPLING_SCREENSHOT) await page.screenshot({ path: process.env.ACCOUNT_SAMPLING_SCREENSHOT, fullPage: true });
     await page.goto(`${origin}/?old=1`);
     await page.getByRole('button', { name: '编辑', exact: true }).click();
-    await dialog.getByText('中心服务尚未支持账号级比例，请先升级中心服务。').waitFor();
-    assert.equal(await dialog.getByRole('spinbutton').count(), 0);
+    await dialog.getByText('中心服务尚未支持账号级比例。').waitFor();
+    assert.equal(await dialog.getByLabel('单独配置比例（%）').count(), 0,
+      'unsupported centers cannot submit account sampling overrides; independent auto-batch size remains editable');
     await dialog.getByRole('button', { name: '保存修改' }).click();
     await dialog.waitFor({ state: 'hidden' });
     assert.equal(Object.hasOwn(writes.at(-1), 'copySamplingRateBpsOverride'), false);

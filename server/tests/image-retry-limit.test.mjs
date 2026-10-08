@@ -190,11 +190,10 @@ test('edited copy after image retry exhaustion creates a new isolated mandatory 
         version: 8, copy_sampling_enabled: true, copy_sampling_rate_bps: 1000,
         blind_review_enabled: true, reviewer_batch_return_enabled: false,
       }] };
-      if (source.includes('INSERT INTO production_batches')) return { rows: [{ id: 90 }] };
-      if (source.includes('INSERT INTO copy_sampling_freezes')) return { rows: [{ id: 91 }] };
-      if (source.includes('INSERT INTO copy_sampling_items')) return { rows: [{ id: 92, status: 'PENDING' }] };
+      if (source.includes('INSERT INTO copy_qa_batches_v2')) return { rows: [{ id: 90 }] };
+      if (source.includes('INSERT INTO copy_qa_batch_members_v2')) return { rows: [] };
       if (source.includes('UPDATE tasks SET')) return { rows: [{
-        id: 41, state: 'COPY_QC_PENDING', current_stage: 'QC_MANDATORY_RECHECK',
+        id: 41, state: 'COPY_QC_PENDING', current_stage: 'COPY_QC_PENDING',
         current_copy_revision_id: 13, mandatory_copy_qc: true,
         mandatory_copy_qc_origin: 'IMAGE_RETRY_REVIEW',
       }] };
@@ -204,22 +203,20 @@ test('edited copy after image retry exhaustion creates a new isolated mandatory 
   const routed = await routeManualCopyApproval(client, {
     task: {
       id: 41, current_stage: 'IMAGE_RETRY_EXHAUSTED', production_batch_id: 4,
-      mandatory_copy_qc: false, mandatory_copy_qc_origin: null,
+      mandatory_copy_qc: true, mandatory_copy_qc_origin: 'IMAGE_RETRY_REVIEW', copy_qa_cycle: 0,
     },
     revision: { id: 13, content: { copy: { title: '已修改标题' } } },
     assessment: null,
     actor: { userId: 3, username: 'alice', role: 'USER' },
     reviewSessionId: '77777777-7777-4777-8777-777777777777',
     aiDisclosureEnabled: true,
-    retryExhaustedCopyChanged: true,
   });
   assert.equal(routed.task.state, 'COPY_QC_PENDING');
-  assert.equal(routed.samplingItem.status, 'PENDING');
-  const freeze = calls.find(({ sql }) => sql.includes('INSERT INTO copy_sampling_freezes'));
-  assert.equal(freeze.values[1], 90);
-  assert.equal(freeze.values[2], 8);
-  assert.equal(freeze.values[4], true);
+  const batch = calls.find(({ sql }) => sql.includes('INSERT INTO copy_qa_batches_v2'));
+  assert.deepEqual(batch.values.slice(0, 9), ['PERSONAL_AUTO', 3, true, true, 10000, 5000, 1, 1, 1]);
+  const member = calls.find(({ sql }) => sql.includes('INSERT INTO copy_qa_batch_members_v2'));
+  assert.deepEqual(member.values, [90, 41, 13, 70, 3, 0, routed.approval.content_sha256, true, 'PENDING']);
   const update = calls.find(({ sql }) => sql.includes('UPDATE tasks SET'));
   assert.equal(update.values[4], 'IMAGE_RETRY_REVIEW');
-  assert.match(update.sql, /current_stage = 'QC_MANDATORY_RECHECK'/u);
+  assert.match(update.sql, /current_stage='COPY_QC_PENDING'/u);
 });

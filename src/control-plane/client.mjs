@@ -60,7 +60,8 @@ export function createControlPlaneClient({
   const root = normalizedBaseUrl(baseUrl);
   if (typeof fetchImpl !== 'function') throw new TypeError('fetchImpl must be a function');
 
-  async function request(path, { method = 'GET', body, headers = {}, timeoutMs = requestTimeoutMs } = {}) {
+  async function request(path, { method = 'GET', body, headers = {}, timeoutMs = requestTimeoutMs, signal } = {}) {
+    const timeout = AbortSignal.timeout(timeoutMs);
     const response = await fetchImpl(`${root}${path}`, {
       method,
       headers: {
@@ -73,9 +74,29 @@ export function createControlPlaneClient({
         : Buffer.isBuffer(body)
           ? body
           : JSON.stringify(body),
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     });
     return responseData(response);
+  }
+
+  async function waitForWorkNotifications({ nodeId, epoch = null, revision = null, timeoutMs = 20_000 }, { signal } = {}) {
+    if (typeof nodeId !== 'string' || !/^[a-zA-Z0-9._:-]{1,100}$/u.test(nodeId)) throw new TypeError('work notification node identity is invalid');
+    if (epoch !== null && (typeof epoch !== 'string' || !/^[a-zA-Z0-9._:-]{1,128}$/u.test(epoch))) throw new TypeError('work notification epoch is invalid');
+    if (revision !== null && (!Number.isSafeInteger(revision) || revision < 0)) throw new TypeError('work notification revision is invalid');
+    if ((epoch === null) !== (revision === null)) throw new TypeError('work notification cursor is incomplete');
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 20_000) throw new RangeError('work notification wait must be from 1 to 20000 milliseconds');
+    const result = await request('/v1/executions/work-notifications/wait', {
+      method: 'POST', body: { nodeId, epoch, revision, timeoutMs }, timeoutMs: timeoutMs + 5_000, signal,
+    });
+    if (typeof result?.epoch !== 'string' || !/^[a-zA-Z0-9._:-]{1,128}$/u.test(result.epoch)
+        || !Number.isSafeInteger(result.revision) || result.revision < 0
+        || !Number.isSafeInteger(result.settingsRevision) || result.settingsRevision < 0
+        || typeof result.changed !== 'boolean' || typeof result.timedOut !== 'boolean'
+        || (result.changed && result.timedOut)
+        || (epoch !== null && (result.epoch !== epoch || result.revision !== revision) && !result.changed)) {
+      throw new ControlPlaneApiError(502, 'INVALID_CONTROL_PLANE_RESPONSE', '中心工作通知响应不完整，请保持普通轮询');
+    }
+    return result;
   }
 
   function imageEditHeaders(executionId,edit) {
@@ -223,6 +244,7 @@ export function createControlPlaneClient({
   }
 
   return {
+    waitForWorkNotifications,
     health: () => request('/health'),
     registerNode: (input) => request('/v1/nodes', { method: 'POST', body: input }),
     listNodes: () => request('/v1/nodes'),
@@ -427,8 +449,8 @@ export function createControlPlaneClient({
       return Buffer.concat(chunks);
     },
     listSettings: () => request('/v1/settings'),
-    updateSetting: (key, value) => request(`/v1/settings/${encodeURIComponent(key)}`, {
-      method: 'PUT', body: { value },
+    updateSetting: (key, value, { expectedVersion } = {}) => request(`/v1/settings/${encodeURIComponent(key)}`, {
+      method: 'PUT', body: { value, ...(expectedVersion === undefined ? {} : { expectedVersion }) },
     }),
     getHumanQualitySettings: () => request('/v1/human-quality-settings'),
     updateHumanQualitySettings: (input) => request('/v1/human-quality-settings', {
@@ -444,6 +466,9 @@ export function createControlPlaneClient({
       method: 'POST', body: {},
     }),
     listKnowledge: () => request('/v1/knowledge'),
+    listCopyKnowledgeOverview: (options = {}) => request(`/v1/copy-knowledge?${new URLSearchParams(
+      Object.entries(options).filter(([, value]) => value != null).map(([key, value]) => [key, String(value)]),
+    )}`),
     knowledgeCapabilities: () => request('/v1/knowledge/capabilities'),
     listCopyAnalysisPrompts: () => request('/v1/copy-analysis-prompts'),
     createCopyAnalysisPrompt: (input) => request('/v1/copy-analysis-prompts', { method: 'POST', body: input }),

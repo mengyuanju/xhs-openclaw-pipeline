@@ -64,6 +64,53 @@ npm run dev
 
 默认打开 `http://127.0.0.1:3001`。登录由中心账户服务验证，初始管理员需按界面提示修改密码。
 
+### 一条命令启动开发数据库环境
+
+在项目根目录运行：
+
+```powershell
+npm run start:development
+```
+
+这条命令同时启动开发中心和开发页面：
+
+| 项目 | 开发配置 |
+| --- | --- |
+| 数据库 | `server/.env` 中的开发 `DATABASE_URL` |
+| 文件目录 | `server/.env` 中的开发 `CONTROL_PLANE_STORAGE_ROOT` |
+| 中心地址 | 本机 `http://127.0.0.1:4311`；开发执行机使用 `http://<中心机局域网 IP>:4311` |
+| 中心监听 | `0.0.0.0`，允许可信局域网执行机连接 |
+| 页面地址 | `http://127.0.0.1:3002` |
+| 前端构建目录 | `.next-dev-4311` |
+
+用浏览器无痕窗口打开开发页面，避免与同一主机的生产登录 Cookie 冲突。按 `Ctrl+C` 同时关闭两个开发服务。启动前会检查数据库、文件目录与生产配置的隔离以及端口占用；端口已占用时会报错。
+
+开发中心使用 `4311`，生产中心保留 `4310`，两个中心可同时运行。开发启动连接开发数据库和文件目录；开发执行机的 `CONTROL_PLANE_URL` 应指向 `4311`，领取和回传的是开发库任务。前端构建目录为 `.next-dev-4311`，与生产构建隔离。
+
+已启动开发服务时无需重复运行此命令，直接打开开发页面即可。端口被占用时，启动入口会显示页面与中心地址，并退出；已有服务继续运行。如需重启，先在原启动窗口按 `Ctrl+C` 关闭旧实例，或停止已确认属于本项目的后台开发进程，再执行启动命令。
+
+仅检查配置可运行：
+
+```powershell
+npm run start:development -- --check-only
+```
+
+开发中心启动时会运行恢复和质检协调等逻辑并更新开发库。此入口用于页面和数据库优化测试，不启动执行机、搜索进程或程序改图进程，并关闭开发实例的预览发布接口及已配置的 DeepSeek、Dots、搜索机器令牌。手动触发其他模型功能仍可能调用外部服务。数据库版本需事先升级或同步；此命令不会自动同步生产数据。
+
+### 生产数据库每日备份
+
+Windows 计划任务 `XhsOpenClawDailyDatabaseBackup` 每天北京时间 **02:15** 执行，明确使用 `--environment=production`，读取 `XHS_PRODUCTION_DATABASE_URL`，不随当前开发服务的启动环境切换。
+
+生产备份保存在 `D:\auto-claw\backups\production-database\YYYY\MM\`，文件名为 `xhs-production-database-backup-<UTC时间>.zip`，默认保留 30 天。压缩包包含 PostgreSQL 的恢复文件、SQL、各表数据、迁移脚本及清单；本地 `data/queue.db` 存在时另附 SQLite 副本。写入完成并通过校验后才成为正式 ZIP 并清理过期备份。
+
+手动备份：
+
+```powershell
+npm run db:backup:production
+```
+
+可以使用 `--out=PATH` 指定目录。备份清单会记录实际数据库名。数据库备份不包含图片、缩略图和交付 ZIP；生产文件目录 `D:\auto-claw\images_storage_prod` 需要另行备份。
+
 ```powershell
 npm run build
 npm start
@@ -98,7 +145,7 @@ npm run executor -- --enable-image-worker
 
 启用图片通道后，同一个图片容量池会按中心统一优先级领取普通生图和模型改图；中心机不执行改图模型。涉及执行协议的升级需先升级并迁移中心，再更新图片执行机；新版图片执行机发现中心缺少 `imageEditExecutorVersion=12` 会拒绝启动。版本 12 执行机支持单目标产品以大致定位框直接编辑完整画面，不再因框未完整覆盖或包含持握手部而在付费模型前失败；产品替换结果仍会校验参考身份、替换数量、文字和无关内容。自动验收未通过的生成结果会隔离保存并显示，作业员可人工采用、从原图重试或按支持的失败类型定向补救。版本 3 执行机仅兼容确定性合成与历史恢复。
 
-程序生成 AI 标识使用中心独立队列，默认由中心自动拉起的 Node.js 子进程以 **2 并发**执行，每张图使用 `sharp.concurrency(1)`；提交、批量提交、草稿提交和人工重试在事务提交后立即唤醒，不占用模型图片名额。旧 `QUEUED` 程序请求由新通道接管，已远端 `RUNNING` 的请求继续原执行。描边徽章为默认，实心徽章为可选；主题色优先取页面保存色、视觉方案标识色、调色板末色，最后回退 `#68744A`，实心文字按对比度选择黑色或白色。程序租约过期进入 `FAILED` 后人工重试，不提示模型费用。
+程序生成 AI 标识使用中心独立队列，默认由中心自动拉起的 Node.js 子进程以 **2 并发**执行，每张图使用 `sharp.concurrency(1)`；提交、批量提交、草稿提交和人工重试在事务提交后立即唤醒，不占用模型图片名额。旧 `QUEUED` 程序请求由新通道接管，已远端 `RUNNING` 的请求继续原执行。两个编辑器新建程序标识默认实心徽章、`#111827` 深色与白字；描边、自动配色仍可选，也可用色板、HEX 或支持浏览器中的屏幕取色设置主题色。显式主题色优先；自动配色依次取页面保存色、视觉方案标识色、调色板末色，最后回退 `#68744A`，实心文字按对比度选择黑色或白色。历史请求和自动生产图片保持原有样式。程序租约过期进入 `FAILED` 后人工重试，不提示模型费用。
 
 此次程序队列与徽章更新只需更新并重启中心服务和 Web，无需执行机更新、重启或新增数据库迁移。需要单独程序容器时，可配置 `PROGRAMMATIC_IMAGE_WORKER_MODE=external`，使用同一生产数据库和共享图片目录运行 `npm --prefix server run programmatic-worker:production`；`PROGRAMMATIC_IMAGE_CONCURRENCY=2` 保持两并发。完整配置和存储路径要求见 [程序生成 AI 标识](docs/programmatic-image-disclosure.md)。
 
@@ -110,9 +157,11 @@ npm run executor -- --enable-image-worker
 
 需要并行比较国内搜索服务的实际摘要和来源，可运行独立的[联网搜索 API 对比测试站](search-lab/README.md)：`npm run search:lab`，默认访问 `http://127.0.0.1:3077`。测试站在页面临时接收各产品的 Key，不修改生产搜索配置。
 
-生成引擎固定 `CODEX`。`XHS_COPY_GENERATION_PROVIDER` 支持 `CODEX`、`DOTS`；`XHS_WEB_SEARCH_PROVIDER` 支持 `CODEX`、`DEEPSEEK`，默认 DeepSeek Flash。文案和搜索的切换相互独立。
+生成引擎固定 `CODEX`。`XHS_COPY_GENERATION_PROVIDER` 支持 `CODEX`、`DOTS`；`XHS_WEB_SEARCH_PROVIDER` 支持 `CODEX`、`DEEPSEEK`、`DOUBAO`，默认使用 DeepSeek `deepseek-v4-pro`。文案和搜索的切换相互独立。
 
 生产配置中保存的非空值优先于执行机环境变量，`null` 表示继承环境或默认值。中心配置进入后续执行快照，已领取任务使用原快照。页面搜索面板只修改搜索字段，保留其他生产参数。Key 由实际调用服务的主机提供，不保存到配置 JSON。
+
+“生成与模型 → 联网搜索服务”可设置豆包、DeepSeek、Codex 的启用顺序。显式设置顺序后，请求失败或证据不足会依次尝试备用服务；未设置顺序的旧配置继续只用原有单服务。搜索记录保存每次尝试和最终使用的服务。豆包默认只搜索有 ICP 备案的站点，可在面板中调整。来源数范围 1–10，默认 5；过滤无效、重复来源后，实际条数可能更少。最终文案的来源引用仍按独立的输出规则校验。
 
 ```dotenv
 XHS_AGENT_PROVIDER=CODEX
@@ -121,7 +170,12 @@ XHS_WEB_SEARCH_PROVIDER=DEEPSEEK
 XHS_DEEPSEEK_SEARCH_MODEL=deepseek-v4-pro
 XHS_DEEPSEEK_SEARCH_TIMEOUT_MS=120000
 DEEPSEEK_API_KEY=
+DOUBAO_SEARCH_API_KEY=
 ```
+
+把 Key 配置到**实际执行文案任务的执行机**环境；中心生产配置和任务快照只保存服务顺序及非敏感参数，不保存 Key。豆包使用火山引擎 Global Search 的按量 Key。启用多服务前，每台可能领取文案任务的执行机都需配置**所有已启用 API 服务**的 Key；缺 Key 时执行机会在搜索前拒绝这份任务配置。服务自身报错、超时或证据不足时才会按顺序切换。
+
+**部署顺序：先升级并重启全部执行机，再在管理员页面启用豆包或多服务顺序。** 旧版执行机不认识新配置字段；混用新旧执行机时，不要提前保存新搜索配置。
 
 Dots 使用 `XHS_DOTS_API_KEY`、`XHS_DOTS_BASE_URL`、`XHS_DOTS_MODEL`。Codex 模型和代理变量见 `.env.example`。模型调用使用参数数组、`shell:false`，模型输出和外部 Query 始终作为不可信输入验证。
 
@@ -143,4 +197,37 @@ npm run build
 npm run smoke
 ```
 
-自动化测试使用 Fake，不消耗真实模型额度。清理范围、保留原因和验证结果见 [代码清理审计](docs/code-cleanup-audit-2026-09-06.md)。
+模型测试使用 Fake，不消耗真实模型额度；新增数据库集成测试使用独立临时 PostgreSQL，浏览器测试访问真实接口。清理范围、保留原因和验证结果见 [代码清理审计](docs/code-cleanup-audit-2026-09-06.md)。
+
+### 大数据查询与交付记录清理
+
+本轮开发库迁移为 `0100`–`0108`。任务与词包列表先分页再读取关联摘要；个人工作台按 SQL 完整筛选和计数，人员与标注作业报表使用完整事实聚合。任务弹窗先读取当前处理版本，历史文案、图片、评分和执行记录展开后按游标分批读取；历史图片对照和恢复参数仍可使用。计数与统计缓存有容量、有效期和访问范围限制，报表快照绑定提交账号。同一筛选条件的管理员报表请求共享一次查询，等待者不占交互连接；不同账号各自获得绑定权限的快照。后台进度、心跳、模型记录和未改变数据的清扫不会刷新统计版本；业务事实变化后，明细在同一个读取时点更新并提示，原报表导出仍保持原时点。
+
+进入交付池时，在同一事务中冻结该次交付之前的执行记录范围，后台分批删除对应的模型提示词、请求与返回正文。仍运行的执行暂缓清理；交付后新建的返修执行不在旧清理范围内。作业、文案、图片、审核与绩效事实保留，页面显示清理状态。历史交付记录按分页游标补入清理队列；失败和锁竞争会延期重试。
+
+任务明细 CSV 可在页面创建持久后台导出，使用独立单连接分批读取完整结果，显示进度并提供下载，文件保留 24 小时；支持进程中断恢复与过期文件清理。旧同步导出入口仍有 10,000 条保护上限。旧无 `section` 的个人接口及旧 QA 接口保留原有 50,000 条限制，当前工作台使用新的完整 SQL 分页入口。
+
+中心交互连接池默认 10 个连接。人员与标注重统计共享最多 2 个独立计算名额，同筛选请求合并；名额用满时返回明确的繁忙提示，让普通查询继续使用连接。可通过 `PG_POOL_MAX`、`PG_CONNECTION_TIMEOUT_MS`、`PG_IDLE_TIMEOUT_MS`、`PG_STATEMENT_TIMEOUT_MS`、`PG_IDLE_TRANSACTION_TIMEOUT_MS` 调整；开发库和生产库共用 PostgreSQL 实例时，不应直接修改全局数据库参数。百万条基准使用独立临时 PostgreSQL 集群，合成模型结果和图片，不代表真实模型吞吐量或实际存储容量。
+
+百万任务在 Ryzen 7 5700G、15.3 GiB 内存、PostgreSQL 18.6 上，以默认 10 个交互连接和 30 秒语句超时测量：30 个不同账号、600 次常用交互请求全部成功。应用缓存冷启动阶段整体 P95 为 909 ms，重复访问为 205 ms；个人工作台分别为 1,113 ms 和 206 ms。每阶段包含 30 个账号各 10 次请求，覆盖任务列表、当前详情、历史分页、词包与个人工作台；数据库缓存已由数据准备与验证预热。这是本机实测结果，远程网络和真实图片传输需要另行考虑。
+
+同一百万任务库的完整人员报表首次约 7.0 秒，标注作业报表完整入口约 4.8 秒；缓存重复读取分别为 4 ms、2 ms。30 个真实管理员同筛选共享一次计算，同时普通列表 P95 为 154 ms。30 种独立筛选同时提交时，2 个重统计完成，28 个请求收到预期的繁忙提示，同时普通列表 P95 为 56 ms；此项使用服务端报表 API 和真实数据库角色验证。
+
+开发库安全迁移工具固定核对 `xhs_control`、本机连接与开发/生产库分离；先做开发库完整备份和生产库只读指纹，再应用限定迁移并核对生产数据：
+
+```powershell
+node scripts/apply-development-scaling.mjs --backup-only
+node scripts/apply-development-scaling.mjs --apply
+node scripts/verify-development-scaling.mjs
+node scripts/apply-development-scaling.mjs --verify-production
+$env:RUN_SCALING_POSTGRES='1'
+node --test server/tests/model-call-cleanup-postgres.test.mjs server/tests/task-report-exports-postgres.test.mjs server/tests/personal-workspace-query-postgres.test.mjs server/tests/personal-statistics-query-postgres.test.mjs
+$env:RUN_SCALABLE_POSTGRES='1'
+node --test server/tests/task-current-lineage-postgres.test.mjs
+$env:XHS_NEXT_DIST_DIR='.next-scaling-e2e'
+npm run build
+node scripts/scaling-browser-e2e.mjs
+node server/integration/scalability-benchmark.mjs
+```
+
+测试和迁移报告位于本机忽略目录 `reports/`，开发库备份位于 `server/backups/`。真实浏览器测试覆盖登录、文案与图片处理、交付清理、按需历史和持久 CSV 下载；不会调用模型。不要把开发库迁移脚本改为生产库部署工具。

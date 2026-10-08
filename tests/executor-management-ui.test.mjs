@@ -1,3 +1,5 @@
+import { readRepositorySource } from '../server/tests/helpers/repository-source.mjs';
+import { readControlPlaneHttpSource } from './control-plane-http-source.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
@@ -12,8 +14,8 @@ test('administrator-only executor management shows status and safely removes ret
     source('app/components/side-nav.tsx'),
     source('app/components/app-topbar.tsx'),
     source('app/api/control-plane/[...path]/route.ts'),
-    source('server/src/http-server.mjs'),
-    source('server/src/postgres-repository.mjs'),
+    readControlPlaneHttpSource(),
+    readRepositorySource(),
     source('src/control-plane/mutation-capability.mjs'),
     source('server/migrations/0023_executor_node_retirement.sql'),
     source('app/globals.css'),
@@ -53,7 +55,7 @@ test('administrator-only executor management shows status and safely removes ret
   assert.match(manager, /node\.online \|\| hasRunningTasks/u);
   assert.match(manager, /manualRefreshRunning\.current/u);
   assert.match(manager, /<ToastFeedback id="executor-manager-error" message=\{actionError\} tone="error"/u);
-  assert.match(manager, /refreshError && <div className="notice error" role="alert"/u);
+  assert.match(manager, /\(refreshError \|\| xhsReadError\) && <div className="notice error" role="alert">\{refreshError \|\| xhsReadError\?\.message\}/u);
   assert.match(manager, /aria-label=\{`删除执行机 \$\{node\.name\}`\}/u);
   assert.match(manager, /className="row-action" data-label="操作"/u);
   assert.match(capability, /executorManagementVersion[\s\S]*method === 'DELETE'/u);

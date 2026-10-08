@@ -1,5 +1,6 @@
 import sharp from 'sharp';
 import { createHash } from 'node:crypto';
+import { REFERENCE_UPLOAD_MAX_BYTES, detectReferenceImageMediaType, referenceUploadSizeMessage, referenceImageTypeMismatchMessage } from './image-upload-validation.mjs';
 
 export const EDIT_WIDTH = 1086;
 export const EDIT_HEIGHT = 1448;
@@ -55,6 +56,12 @@ export function manualOverlaySvg(input) {
   return overlaySvg(o);
 }
 const DEFAULT_NORMALIZED_PNG_MAX_BYTES = 10 * 1024 * 1024;
+async function decodeStaticReferencePng(bytes, expectedFormat) {
+  const decoder = sharp(bytes, { failOn: 'warning', limitInputPixels: 16_000_000, animated: true });
+  const metadata = await decoder.metadata();
+  if (metadata.format !== expectedFormat || (metadata.pages ?? 1) !== 1 || !metadata.width || !metadata.height) throw new TypeError('图片类型不符或为动画');
+  return decoder.rotate().png().toBuffer();
+}
 async function fitReferencePng(source, maxPngBytes) {
   let { width, height } = await sharp(source).metadata();
   let clean = source;
@@ -72,17 +79,20 @@ export async function decodeReference(bytes, mediaType, {
   resizeOversized = false, maxPngBytes = DEFAULT_NORMALIZED_PNG_MAX_BYTES,
 } = {}) {
   boundedNumber(maxPngBytes, 1, REFERENCE_PNG_MAX_BYTES);
-  if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > 5 * 1024 * 1024) throw new TypeError('参考图片上限为 5 MB');
+  if (!Buffer.isBuffer(bytes) || bytes.length === 0) throw new TypeError('图片内容为空或无效，请重新导出后上传');
+  if (bytes.length > REFERENCE_UPLOAD_MAX_BYTES) throw new TypeError(referenceUploadSizeMessage(bytes.length));
   const formats = { 'image/png': 'png', 'image/jpeg': 'jpeg', 'image/webp': 'webp' };
-  if (!formats[mediaType]) throw new TypeError('仅支持 PNG/JPEG/WebP');
-  const signature = mediaType === 'image/png' ? bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))
-    : mediaType === 'image/jpeg' ? bytes.subarray(0,3).equals(Buffer.from([255,216,255]))
-      : bytes.toString('ascii',0,4)==='RIFF' && bytes.toString('ascii',8,12)==='WEBP';
-  if(!signature)throw new TypeError('文件签名与声明类型不符');
-  const decoder = sharp(bytes, { failOn: 'warning', limitInputPixels: 16_000_000, animated: true });
-  const metadata = await decoder.metadata();
-  if (metadata.format !== formats[mediaType] || (metadata.pages ?? 1) !== 1 || !metadata.width || !metadata.height) throw new TypeError('图片类型不符或为动画');
-  let clean = await decoder.rotate().png().toBuffer();
+  if (!Object.hasOwn(formats, mediaType)) throw new TypeError('仅支持 PNG/JPEG/WebP');
+  const actualMediaType = detectReferenceImageMediaType(bytes);
+  if (actualMediaType !== mediaType) {
+    let contentValidated = false;
+    if (actualMediaType) {
+      try { await decodeStaticReferencePng(bytes, formats[actualMediaType]); contentValidated = true; }
+      catch { /* A recognizable header alone does not establish a usable image. */ }
+    }
+    throw new TypeError(referenceImageTypeMismatchMessage(bytes, mediaType, { contentValidated }));
+  }
+  let clean = await decodeStaticReferencePng(bytes, formats[mediaType]);
   if (clean.length > maxPngBytes) {
     if (!resizeOversized) throw new TypeError('解码后图片过大');
     clean = await fitReferencePng(clean, maxPngBytes);

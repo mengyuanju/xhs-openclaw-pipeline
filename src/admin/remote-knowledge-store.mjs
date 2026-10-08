@@ -12,7 +12,8 @@ function copyItem(item) {
   return { ...version.content, id: item.id, title: version.content?.title ?? item.name,
     sourceCopy: version.content?.sourceCopy ?? '', analysisPrompt: version.content?.analysisPrompt ?? '',
     summary: version.content?.summary ?? '', analysis: version.content?.analysis ?? version.content?.text ?? '',
-    labels: version.content?.labels ?? [], createdAt: version.content?.createdAt ?? version.createdAt };
+    labels: Array.isArray(version.content?.labels) ? version.content.labels.filter(label => typeof label === 'string') : [],
+    createdAt: version.content?.createdAt ?? version.createdAt };
 }
 
 function visualItem(item) {
@@ -32,9 +33,31 @@ function pageOf(items, { page = 1, pageSize = 100 } = {}) {
 }
 
 export function createRemoteKnowledgeStore(client) {
+  let knowledgeRead;
+  const readKnowledge = () => knowledgeRead ??= Promise.resolve().then(() => client.listKnowledge()).catch(error => {
+    knowledgeRead = undefined;
+    throw error;
+  });
+  const invalidateKnowledge = () => { knowledgeRead = undefined; };
   async function copies() {
-    return (await client.listKnowledge()).filter((i) => i.kind === 'COPY' && i.status !== 'ARCHIVED')
+    return (await readKnowledge()).filter((i) => i.kind === 'COPY' && i.status !== 'ARCHIVED')
       .map(copyItem).filter(Boolean).sort((a, b) => b.id - a.id);
+  }
+  async function copyOverview(options = {}) {
+    if (client.listCopyKnowledgeOverview) {
+      try { return await client.listCopyKnowledgeOverview(options); }
+      catch (error) { if (error.status !== 404 && error.status !== 501) throw error; }
+    }
+    const all = await copies();
+    const counts = new Map();
+    for (const item of all) for (const name of item.labels) counts.set(name, (counts.get(name) ?? 0) + 1);
+    const label = options.label?.normalize('NFKC').trim().toLocaleLowerCase('zh-CN');
+    const query = options.query?.normalize('NFKC').trim().toLocaleLowerCase('zh-CN');
+    const items = all.filter(item => (!label || item.labels.some(name => name.toLocaleLowerCase('zh-CN') === label))
+      && (!query || item.title.normalize('NFKC').toLocaleLowerCase('zh-CN').includes(query)));
+    const totalPages = Math.max(1, Math.ceil(items.length / Math.min(100, Math.max(1, Number(options.pageSize) || 100))));
+    return { ...pageOf(items, { ...options, page: Math.min(Number(options.page) || 1, totalPages) }), labels: [...counts].map(([name, itemCount]) => ({ name, itemCount }))
+      .sort((a, b) => b.itemCount - a.itemCount || a.name.localeCompare(b.name)) };
   }
   async function saveCopy(input, existing = null, expectedVersionId = null) {
     if (client.knowledgeCapabilities) await client.knowledgeCapabilities();
@@ -45,34 +68,31 @@ export function createRemoteKnowledgeStore(client) {
     delete content.id;
     const created = await client.createKnowledgeVersion({ itemId: existing?.id ?? null, kind: 'COPY',
       name: content.title, content, publish: true, expectedVersionId });
+    invalidateKnowledge();
     if (created.status !== 'PUBLISHED' && !created.skipped) throw new ApiError(503, 'KNOWLEDGE_UPGRADE_REQUIRED', '中心服务需要更新后才能保存文案知识；请先更新 server');
     return { ...content, id: created.itemId, ...(created.skipped ? { importSkipped: true } : {}) };
   }
   return {
     remote: true,
     client,
+    listCopyKnowledgeOverview: copyOverview,
     async listCopyKnowledge(options = {}) {
-      let items = await copies();
-      const label = options.label?.normalize('NFKC').trim().toLocaleLowerCase('zh-CN');
-      const query = options.query?.normalize('NFKC').trim().toLocaleLowerCase('zh-CN');
-      if (label) items = items.filter((i) => i.labels.some((l) => l.toLocaleLowerCase('zh-CN') === label));
-      if (query) items = items.filter((i) => i.title.normalize('NFKC').toLocaleLowerCase('zh-CN').includes(query));
-      return pageOf(items, options);
+      const { data, pagination } = await copyOverview(options);
+      return { data, pagination };
     },
     async listCopyKnowledgeLabels() {
-      const counts = new Map();
-      for (const item of await copies()) for (const name of item.labels) counts.set(name, (counts.get(name) ?? 0) + 1);
-      return [...counts].map(([name, itemCount]) => ({ name, itemCount })).sort((a, b) => b.itemCount - a.itemCount || a.name.localeCompare(b.name));
+      return (await copyOverview()).labels;
     },
     createCopyKnowledge: (input) => saveCopy(input),
     async updateCopyKnowledge(id, input) {
-      const item = (await client.listKnowledge()).find((i) => i.id === id && i.kind === 'COPY');
+      const item = (await readKnowledge()).find((i) => i.id === id && i.kind === 'COPY');
       return item ? saveCopy(input, copyItem(item), latest(item)?.id) : null;
     },
     async deleteCopyKnowledge(id) {
-      const item = (await client.listKnowledge()).find((i) => i.id === id && i.kind === 'COPY' && i.status !== 'ARCHIVED');
+      const item = (await readKnowledge()).find((i) => i.id === id && i.kind === 'COPY' && i.status !== 'ARCHIVED');
       if (!item) return false;
       await client.retireKnowledge(id);
+      invalidateKnowledge();
       return true;
     },
     listCopyAnalysisPrompts: () => client.listCopyAnalysisPrompts(),
@@ -93,22 +113,23 @@ export function createRemoteKnowledgeStore(client) {
     },
     importCopyAnalysisPrompt: (input, legacySource) => client.createCopyAnalysisPrompt({ ...input, legacySource }),
     async listVisualKnowledge(options = {}) {
-      let items = (await client.listKnowledge()).filter((i) => i.kind === 'VISUAL').map(visualItem).filter(Boolean).sort((a, b) => b.id - a.id);
+      let items = (await readKnowledge()).filter((i) => i.kind === 'VISUAL').map(visualItem).filter(Boolean).sort((a, b) => b.id - a.id);
       if (options.status) items = items.filter((i) => i.latestVersion.status === options.status);
       if (options.type) items = items.filter((i) => i.type === options.type);
       if (options.query) items = items.filter((i) => i.name.includes(options.query));
       return pageOf(items, options);
     },
     async getVisualKnowledge(id) {
-      const item = (await client.listKnowledge()).find((i) => i.id === id && i.kind === 'VISUAL');
+      const item = (await readKnowledge()).find((i) => i.id === id && i.kind === 'VISUAL');
       return item ? visualItem(item) : null;
     },
     async createVisualKnowledge(input) {
       const result = await client.createKnowledgeVersion({ kind: 'VISUAL', name: input.name, content: input });
+      invalidateKnowledge();
       return { ...input, id: result.itemId, latestVersion: { ...input, id: result.versionId, status: 'DRAFT' } };
     },
-    publishVisualKnowledgeVersion: (id) => client.publishKnowledgeVersion(id),
-    retireVisualKnowledge: (id) => client.retireKnowledge(id),
+    async publishVisualKnowledgeVersion(id) { const result = await client.publishKnowledgeVersion(id); invalidateKnowledge(); return result; },
+    async retireVisualKnowledge(id) { const result = await client.retireKnowledge(id); invalidateKnowledge(); return result; },
     async getProductionSettings() {
       const settings = (await client.listSettings()).find((s) => s.key === 'production')?.value;
       if (!settings) throw new ApiError(503, 'PRODUCTION_SETTINGS_MISSING', '请先在中心服务配置生产设置');

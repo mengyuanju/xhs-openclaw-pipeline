@@ -20,5 +20,6 @@ export function assetResponseHeaders(path, upstream) {
 }
 
 export function thumbnailUrl(src) {
-  return /^\/api\/control-plane\/v1\/assets\/[1-9]\d*$/u.test(src) ? `${src}?variant=thumbnail` : src;
+  return /^\/api\/control-plane\/v1\/(?:assets\/[1-9]\d*|image-qa\/items\/[^/?]+\/assets\/[1-9]\d*)$/u.test(src)
+    ? `${src}?variant=thumbnail` : src;
 }

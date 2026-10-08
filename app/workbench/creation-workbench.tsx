@@ -26,7 +26,7 @@ import {
   UserRound,
 } from 'lucide-react';
 import { usePathname, useRouter } from 'next/navigation';
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 
 import {
   Dialog,
@@ -44,7 +44,8 @@ import { apiRequest } from '../components/api-client';
 import { createRequestId } from '../components/request-id';
 import { resumeImageTask } from '../components/resume-image-task';
 import { canResumeImageTask } from '../../src/control-plane/image-resume.mjs';
-import { IMAGE_RETRY_EXHAUSTED_LABEL, isImageRetryExhausted } from '../../src/control-plane/image-retry-status.mjs';
+import { canAdminDiscardTask } from '../../src/control-plane/task-discard.mjs';
+import { canRequeueImages, IMAGE_RETRY_EXHAUSTED_LABEL, isImageRetryExhausted } from '../../src/control-plane/image-retry-status.mjs';
 import { parseQueryBatch } from '../../src/control-plane/query-batch.mjs';
 import { imageExecutorLabel } from '../../src/control-plane/image-executor-label.mjs';
 import {
@@ -52,7 +53,7 @@ import {
   canManageTaskAssignment,
   createAssignmentFields,
 } from '../../src/control-plane/task-assignment.mjs';
-import { TaskReviewDialog } from './task-review-dialog';
+import { TaskReviewDialog } from './lazy-task-review-dialog';
 import { TaskPriorityControl, PrioritySummary, type PriorityTask } from './task-priority-control';
 import { TaskRowActions } from './task-row-actions';
 import { AdminJobFilters, CREATOR_ROLE_LABELS } from './admin-job-filters';
@@ -64,16 +65,19 @@ import { createActionLock } from '../../src/control-plane/action-lock.mjs';
 import { WorkbenchPagination } from './workbench-pagination';
 import { PersonalTaskControls, PersonalWorkDetails } from './personal-controls';
 import { appendPersonalOptions, DEFAULT_PERSONAL_OPTIONS, parsePersonalOptions, type PersonalOptions, type PersonalWork, type PersonalEvent } from './personal-filters';
-import { subscribeWorkspaceUpdates } from '../components/workspace-updates';
+import { subscribeWorkspaceUpdates, workspaceUpdateRevision } from '../components/workspace-updates';
+import { createListRefreshCoordinator } from './list-refresh-coordinator';
 import { normalizePersonalFilters } from '../../src/personal-workspace.mjs';
 import personalStyles from './personal-workspace.module.css';
 import { normalizePreparedDeliveryExport } from '../delivery-pool/types';
-import { OperatorDeliveryHistory } from './operator-delivery-history';
+import { LazyOperatorDeliveryHistory } from './lazy-operator-delivery-history';
+import { useStableEventHandlers } from './stable-event-handlers';
 import { personalStateFilterStates } from './personal-state-filters';
 import { isLegacyTaskStateFilterError } from './task-list-compatibility';
 import { shanghaiCalendarDate } from '../../src/control-plane/task-date-filter.mjs';
 import {
   DEFAULT_WORKBENCH_LIST_STATE,
+  parseWorkbenchListState,
   workbenchListSearch,
   type TaskAttention,
   type PersonalTaskScope,
@@ -107,8 +111,8 @@ type DistributedTask = PriorityTask & {
   imageExecutorNodeName?: string | null;
   activeImageEditExecutions?: { executionId: string; nodeId: string; nodeName: string | null }[];
   currentCopyRevisionId: number | null;
-  mandatoryCopyQc?: boolean;
   copyQaAutoPassed?: boolean;
+  mandatoryCopyQc?: boolean;
   copyQaReworkPending?: boolean;
   mandatoryCopyQcOrigin?: 'QA_RETURN' | 'FINAL_REWORK' | 'IMAGE_RETRY_REVIEW' | 'DISCARD_RESTORE' | 'SECOND_ASSIGNMENT' | null;
   currentExecutionId?: string | null;
@@ -166,7 +170,7 @@ type SavedTaskView = {
 };
 
 type BatchActionResult = {
-  action: 'RETRY' | 'CANCEL_QUEUE';
+  action: 'RETRY' | 'DISCARD';
   succeeded: number[];
   failed: Array<{ id: number; code: string; message: string }>;
 };
@@ -365,11 +369,6 @@ function copyExecutorLabel(task: DistributedTask, nodes: ExecutorNode[]) {
   return nodes.find((node) => node.id === task.copyExecutorNodeId)?.name ?? task.copyExecutorNodeId;
 }
 
-function canRequeueImages(task: DistributedTask) {
-  return task.currentCopyRevisionId !== null
-    && ['IMAGE_QUEUED', 'IMAGE_RUNNING', 'IMAGE_FAILED', 'MANUAL_ARCHIVE'].includes(task.state);
-}
-
 const STALE_AFTER_MS = 30 * 60_000;
 function apiPath(path: string) {
   return `/api/control-plane${path}`;
@@ -512,8 +511,12 @@ function cumulativeImageElapsed(task: DistributedTask) {
   return durationLabel(completedDuration + runningDuration);
 }
 
+const taskDateFormatter = new Intl.DateTimeFormat('zh-CN', {
+  year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric', hour12: false,
+});
+
 function timeLabel(value: string | null, state?: TaskState) {
-  if (value) return new Date(value).toLocaleString('zh-CN', { hour12: false });
+  if (value) { const date = new Date(value); return Number.isNaN(date.getTime()) ? 'Invalid Date' : taskDateFormatter.format(date); }
   return state && !state.endsWith('_QUEUED') ? '开始时间未记录' : '尚未开始';
 }
 
@@ -775,6 +778,182 @@ function DuplicateQueryDiscardDialog({
   </Dialog>;
 }
 
+type TaskRowContext = {
+  role: string; activeView: ViewKey; creatorUserId: string; creatorAccountId: number;
+  isAllJobs: boolean; showTaskSelection: boolean; executorColumnLabel: string; nodes: ExecutorNode[];
+  personalMode: PersonalOptions['mode']; batchAction: boolean; batchPermanentDeleteTasks: DistributedTask[];
+  duplicateQueryCleanupBusy: boolean; canOperatorDeliverTask: (task: DistributedTask) => boolean | undefined;
+};
+type TaskRowHandlers = {
+  toggleTaskSelection: (taskId: number, checked: boolean) => void;
+  setSelectedTaskId: (taskId: number) => void; setAssignmentTasks: (tasks: DistributedTask[]) => void;
+  showPermanentDelete: (task: DistributedTask) => void; refresh: () => void | Promise<void>;
+  restoreCancelledTask: (task: DistributedTask) => unknown; retryImages: (task: DistributedTask) => unknown;
+  retryCopy: (task: DistributedTask) => unknown; discardTask: (task: DistributedTask) => unknown;
+  resumeImages: (task: DistributedTask) => unknown; runBatchAction: (action: 'DISCARD', tasks: DistributedTask[]) => unknown;
+};
+
+function taskActions(task: DistributedTask, context: TaskRowContext, handlers: TaskRowHandlers, busy: boolean) {
+    const { role, creatorUserId, creatorAccountId, activeView, isAllJobs, batchAction, batchPermanentDeleteTasks, duplicateQueryCleanupBusy } = context;
+    const { setAssignmentTasks, setSelectedTaskId, showPermanentDelete, restoreCancelledTask, runBatchAction, retryImages, retryCopy, discardTask, resumeImages } = handlers;
+    if (task.canOpen === false) return <span className="muted">历史记录 · 无当前详情权限</span>;
+    const currentUserIsAssignee = isTaskAssignee(task, creatorUserId, creatorAccountId);
+    const canHandleAssignedImages = ['ADMIN', 'USER'].includes(role) && currentUserIsAssignee;
+    const canPermanentlyDelete = role === 'ADMIN' && isPermanentlyDeletableTask(task);
+    const visibleActionCount = role === 'ADMIN' && activeView !== 'UNASSIGNED' ? 2 : 1;
+    const assignmentButton = role === 'ADMIN' && canManageTaskAssignment(task) && <Button unstyled className="button small" type="button"
+      disabled={busy} onClick={() => setAssignmentTasks([task])}><UserRound size={14} />{task.assignedToUserId === null ? '分配' : '改派'}</Button>;
+    const permanentDeleteButton = canPermanentlyDelete && <Button unstyled className="button small danger" type="button" disabled={busy || Boolean(batchAction) || batchPermanentDeleteTasks.length > 0} onClick={() => showPermanentDelete(task)}><Trash2 size={14} />永久删除</Button>;
+    const restoreButton = role === 'ADMIN' && task.state === 'CANCELLED'
+      && <Button unstyled className="button small primary" type="button" disabled={busy || Boolean(batchAction)}
+        onClick={() => { void restoreCancelledTask(task); }}><RotateCcw size={14} />恢复任务</Button>;
+    const directCopyQaButton = role === 'ADMIN' && task.state === 'COPY_QC_PENDING'
+      && <a className="button small" href="/copy-qa">进入质检批次</a>;
+    const allJobsDetailButton = canHandleAssignedImages && task.state === 'MANUAL_ARCHIVE'
+      ? <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><FileCheck2 size={14} />图片初审</Button>
+      : canHandleAssignedImages && task.state === 'IMAGE_REWORK_PENDING'
+        ? <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><RotateCcw size={14} />返修图片</Button>
+        : <Button unstyled className="button small" type="button" onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>;
+    const hasOwnerControl = role === 'ADMIN' || isTaskAssignee(task, creatorUserId, creatorAccountId);
+    const creatorCanControlMachineCopy = taskOwnerId(task) === null
+      && isTaskCreator(task, creatorUserId, creatorAccountId)
+      && ['COPY_QUEUED', 'COPY_RUNNING', 'COPY_FAILED'].includes(task.state);
+    const canDiscard = (hasOwnerControl || creatorCanControlMachineCopy) && task.state !== 'CANCELLED';
+    const canAdminDiscard = role === 'ADMIN' && canAdminDiscardTask(task);
+    const adminDiscardButton = canAdminDiscard && <Button unstyled className="button small danger" type="button"
+      disabled={busy || Boolean(batchAction) || duplicateQueryCleanupBusy}
+      onClick={() => { void runBatchAction('DISCARD', [task]); }}><Trash2 size={14} />废弃</Button>;
+    const canRetryCopy = (hasOwnerControl || creatorCanControlMachineCopy)
+      && ['COPY_RUNNING', 'COPY_FAILED'].includes(task.state);
+    const canRetryImages = hasOwnerControl && task.state !== 'MANUAL_ARCHIVE' && canRequeueImages(task);
+    const retryImageButton = <Button unstyled
+      className="button small"
+      type="button"
+      disabled={busy || !canRetryImages}
+      title={canRetryImages ? isImageRetryExhausted(task) ? '沿用已审核文案并重置本轮自动重试计数' : '重新进入待生图队列'
+        : task.state === 'MANUAL_ARCHIVE' ? '请进入审核，完成图片评分后选择重试生图'
+          : '文案尚未审核通过，暂不能重试生图'}
+      onClick={() => { void retryImages(task); }}
+    ><RotateCcw size={14} />重试生图</Button>;
+    if (isAllJobs) return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
+      {assignmentButton}
+      {directCopyQaButton}
+      {allJobsDetailButton}
+      {restoreButton}
+      {['COPY_RUNNING', 'COPY_FAILED'].includes(task.state) && <Button unstyled className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</Button>}
+      {isImageRetryExhausted(task) && canRetryImages && retryImageButton}
+      {adminDiscardButton}
+      {permanentDeleteButton}
+    </TaskRowActions>;
+    if (activeView === 'ALL_COPY') return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
+      {assignmentButton}
+      {directCopyQaButton}
+      <Button unstyled className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
+      {canRetryCopy && <Button unstyled className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</Button>}
+      {adminDiscardButton}
+      {canDiscard && !canAdminDiscard && !['COPY_REVIEW_PENDING', 'MANUAL_ARCHIVE'].includes(task.state) && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</Button>}
+      {permanentDeleteButton}
+    </TaskRowActions>;
+    if (activeView === 'COPY_REVIEW') return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
+      {assignmentButton}
+      {taskOwnerId(task) === null
+        ? <Button unstyled className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
+        : <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><FileCheck2 size={14} />审核</Button>}
+      {isImageRetryExhausted(task) && canRetryImages && retryImageButton}
+      {adminDiscardButton}
+      {permanentDeleteButton}
+    </TaskRowActions>;
+    if (activeView === 'IMAGE_WORK') return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
+      {assignmentButton}
+      <Button unstyled className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
+      {adminDiscardButton}
+      {retryImageButton}
+      {permanentDeleteButton}
+    </TaskRowActions>;
+    if (task.state === 'REVIEWED') return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>{assignmentButton}<Button unstyled className="button small" type="button" onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>{permanentDeleteButton}</TaskRowActions>;
+    if (task.state === 'MANUAL_ARCHIVE') return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
+      {assignmentButton}
+      <Button unstyled className={`button small ${canHandleAssignedImages ? 'primary' : ''}`} type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><FileCheck2 size={14} />{canHandleAssignedImages ? '图片初审' : '查看'}</Button>
+    </TaskRowActions>;
+    if (task.state === 'IMAGE_REWORK_PENDING') return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
+      {assignmentButton}
+      <Button unstyled className={`button small ${canHandleAssignedImages ? 'primary' : ''}`} type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><RotateCcw size={14} />{canHandleAssignedImages ? '返修图片' : '查看返修'}</Button>
+    </TaskRowActions>;
+    return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
+      {assignmentButton}
+      {directCopyQaButton}
+      <Button unstyled className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
+      {adminDiscardButton}
+      {restoreButton}
+      {permanentDeleteButton}
+      {canDiscard && canResumeImageTask(task) && <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => { void resumeImages(task); }}><RotateCcw size={14} />从失败步骤继续</Button>}
+      {activeView === 'PERSONAL' && canRetryCopy && <Button unstyled className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</Button>}
+      {activeView === 'PERSONAL' && retryImageButton}
+      {canDiscard && !canAdminDiscard && !['COPY_REVIEW_PENDING', 'MANUAL_ARCHIVE'].includes(task.state) && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</Button>}
+    </TaskRowActions>;
+  }
+
+const WorkbenchTaskRow = memo(function WorkbenchTaskRow({ task, selected, busy, context, handlers }: {
+  task: DistributedTask; selected: boolean; busy: boolean; context: TaskRowContext; handlers: TaskRowHandlers;
+}) {
+  const { showTaskSelection, role, canOperatorDeliverTask, activeView, creatorUserId, creatorAccountId,
+    isAllJobs, personalMode, executorColumnLabel, nodes } = context;
+  const { toggleTaskSelection, setSelectedTaskId, refresh } = handlers;
+  return <tr>
+                {showTaskSelection && <td className="workbench-col-select" data-label="选择"><Checkbox aria-label={`选择任务 #${task.id}`} checked={selected} disabled={role === 'USER' && !canOperatorDeliverTask(task)} title={role === 'USER' && !canOperatorDeliverTask(task) ? '仅可交付本人负责且已完成的作业' : undefined} onChange={(event) => toggleTaskSelection(task.id, event.target.checked)} /></td>}
+                <td className="query-cell workbench-col-query" data-label="作业 / Query">
+                  <div className="workbench-cell-stack">
+                    <span className="mono workbench-task-id">#{task.id}</span>
+                    <Button unstyled className="workbench-query-preview workbench-text-preview" type="button" disabled={task.canOpen === false} title={task.query} aria-label={`查看作业 #${task.id}：${task.query}`} onClick={() => setSelectedTaskId(task.id)}>{task.query}</Button>
+                    {role !== 'USER' && <small className="workbench-text-preview" title={task.sourceQueryPackageName || '未归属词包'}>词包：{task.sourceQueryPackageName || '未归属词包'}</small>}
+                  </div>
+                </td>
+                <td className="workbench-col-creator" data-label="负责人 / 创建人"><div className="workbench-cell-stack">
+                  <span className={`workbench-text-preview${!task.assignedToUserId && task.state === 'COPY_REVIEW_PENDING' ? ' pill pill-rejected' : ''}`}
+                    title={assignmentLabel(task)}>
+                    负责人：{assignmentLabel(task)}
+                  </span>
+                  {task.assignedToUserId && <small className="mono workbench-text-preview" title={task.assignedToUserId}>{task.assignedToUserId}</small>}
+                  <small className="workbench-text-preview" title={task.createdByDisplayName || task.createdByUserId || '历史任务'}>
+                    创建人：{task.createdByDisplayName || task.createdByUserId || '历史任务'}
+                  </small>
+                  {activeView === 'PERSONAL' && <small className="pill">
+                    {task.canOpen === false ? '本人完成历史' : personalOwnershipLabel(task, creatorUserId, creatorAccountId)}
+                  </small>}
+                  {isAllJobs && <small>{CREATOR_ROLE_LABELS[task.createdByRole || 'UNKNOWN'] || '未知创建者角色'}</small>}
+                </div></td>
+                <td className="workbench-col-progress" data-label="状态 / 进度">
+                  <div className="distributed-progress">
+                    {activeView === 'PERSONAL' && <PersonalWorkDetails work={task.personalWork} events={personalMode !== 'CURRENT' ? task.personalHistory : undefined} />}
+                    {task.canOpen === false ? <small>仅展示历史记录</small> : <>
+                    <small><PrioritySummary task={task} /></small>
+                    {role === 'ADMIN' && <TaskPriorityControl tasks={[task]} onChanged={() => refresh()} />}
+                    <span className={`pill ${isImageRetryExhausted(task) ? 'pill-rejected' : `workbench-state-${task.state.toLowerCase()}`}${isStale(task) ? ' pill-rejected' : ''}`}>{isImageRetryExhausted(task) ? IMAGE_RETRY_EXHAUSTED_LABEL : taskStateLabel(task, role)}</span>
+                    {task.copyQaAutoPassed && <span className="pill">文案质检通过 · 系统</span>}
+                    <span>{stageLabel(task, role)} · {task.state.endsWith('_FAILED') && !task.executionStartedAt && task.progressPercent === 0 ? '进度未记录' : `${task.progressPercent}%`}</span>
+                    <small className="workbench-text-preview" title={isStale(task) ? '超过 30 分钟没有进度，请进入详情处理' : taskProgressMessage(task)}>{isStale(task) ? '超过 30 分钟没有进度，请进入详情处理' : taskProgressMessage(task)}</small>
+                    </>}
+                  </div>
+                </td>
+                <td className="workbench-col-executor" data-label="执行机"><div className="workbench-cell-stack workbench-executors">
+                  <div><small>{executorColumnLabel}</small><span className="mono workbench-text-preview" title={activeView === 'IMAGE_WORK' ? imageExecutorLabel(task) : copyExecutorLabel(task, nodes)}>{activeView === 'IMAGE_WORK' ? imageExecutorLabel(task) : copyExecutorLabel(task, nodes)}</span></div>
+                  {(activeView === 'MANUAL_ARCHIVE' || isAllJobs) && <div><small>生图执行机</small><span className="mono workbench-text-preview" title={imageExecutorLabel(task)}>{imageExecutorLabel(task)}</span></div>}
+                  {activeView === 'PERSONAL' && (task.state.startsWith('IMAGE_') || task.imageExecutorNodeId || isImageRetryExhausted(task)) && <div><small>生图执行机</small><span className="mono workbench-text-preview" title={imageExecutorLabel(task)}>{imageExecutorLabel(task)}</span></div>}
+                  {role === 'ADMIN' && task.activeImageEditExecutions?.map((edit, index, edits) => <div key={edit.executionId}><small>图片修复执行机{edits.length > 1 ? ` ${index + 1}` : ''}</small><span className="mono workbench-text-preview" title={`${edit.nodeName || edit.nodeId} · 执行记录 ${edit.executionId}`}>{edit.nodeName || edit.nodeId}</span></div>)}
+                </div></td>
+                <td className="workbench-col-time" data-label={isAllJobs ? '变更 / 创建 / 耗时' : '创建 / 开始 / 耗时'}><div className="workbench-cell-stack">
+                  {isAllJobs
+                    ? <><time dateTime={taskLatestActivityAt(task)}>最近变更：{timeLabel(taskLatestActivityAt(task))}</time>
+                      <small>创建：<time dateTime={task.createdAt}>{timeLabel(task.createdAt)}</time></small></>
+                    : <time dateTime={task.createdAt}>{timeLabel(task.createdAt)}</time>}
+                  <small>开始：<time dateTime={task.executionStartedAt || undefined}>{timeLabel(task.executionStartedAt, task.state)}</time></small>
+                  <small className="workbench-elapsed"><Clock3 aria-hidden="true" size={13} />本次：{elapsed(task)}</small>
+                  {cumulativeImageElapsed(task) && <small className="workbench-elapsed" title="包含同一恢复链中失败运行与续跑的累计图片生产耗时"><Clock3 aria-hidden="true" size={13} />生图累计：{cumulativeImageElapsed(task)}</small>}
+                </div></td>
+                <td className="workbench-col-actions" data-label="操作">{taskActions(task, context, handlers, busy)}</td>
+              </tr>;
+});
+
 export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, role, viewKey: activeView, initialListState = DEFAULT_WORKBENCH_LIST_STATE, initialPersonalOptions = DEFAULT_PERSONAL_OPTIONS, initialPriorityMode = '' }: {
   nodeId: string; creatorUserId: string; creatorAccountId: number; role: string; viewKey: ViewKey; initialListState?: WorkbenchListState; initialPersonalOptions?: PersonalOptions; initialPriorityMode?: string;
 }) {
@@ -832,6 +1011,9 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   const refreshRequestId = useRef(0);
   const nodesLoadedAt = useRef(0);
   const activeRequest = useRef<AbortController | null>(null);
+  const [refreshCoordinator] = useState(createListRefreshCoordinator);
+  const nodesRequest = useRef<AbortController | null>(null);
+  const [nodesError, setNodesError] = useState('');
   const taskPageCursors = useRef<{ scope: string; values: Map<number, string | null> }>({
     scope: '', values: new Map([[1, null]]),
   });
@@ -849,8 +1031,9 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(initialListState.taskId);
   const [selectedTaskIds, setSelectedTaskIds] = useState<number[]>([]);
   const [assignmentTasks, setAssignmentTasks] = useState<DistributedTask[]>([]);
-  const [batchAction, setBatchAction] = useState<'RETRY' | 'CANCEL_QUEUE' | 'EXPORT' | 'PERMANENT_DELETE' | null>(null);
+  const [batchAction, setBatchAction] = useState<'RETRY' | 'DISCARD' | 'EXPORT' | 'PERMANENT_DELETE' | null>(null);
   const [deliveryHistoryVersion, setDeliveryHistoryVersion] = useState(0);
+  const deliveryHistoryReturnFocus = useRef<HTMLElement | null>(null);
   const [duplicateQueryPreview, setDuplicateQueryPreview] = useState<DuplicateQueryDiscardPreview | null>(null);
   const [duplicateQueryRequestId, setDuplicateQueryRequestId] = useState<string | null>(null);
   const [duplicateQueryError, setDuplicateQueryError] = useState('');
@@ -885,7 +1068,24 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     status: 'ACTIVE',
   }), [creatorAccountId, creatorUserId]);
 
-  const refresh = useCallback(async ({ silent = false } = {}) => {
+  const refreshNodes = useCallback(async () => {
+    if (nodesRequest.current || Date.now() - nodesLoadedAt.current < 30_000) return;
+    const controller = new AbortController();
+    nodesRequest.current = controller;
+    try {
+      const next = await apiRequest<ExecutorNode[]>(apiPath('/v1/nodes'), {
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]),
+      });
+      if (!controller.signal.aborted) {
+        setNodes(next); nodesLoadedAt.current = Date.now(); setNodesError('');
+      }
+    } catch (caught) {
+      if (!controller.signal.aborted) setNodesError(caught instanceof Error ? caught.message : '执行机信息读取失败');
+    } finally { if (nodesRequest.current === controller) nodesRequest.current = null; }
+  }, []);
+  useEffect(() => () => { nodesRequest.current?.abort(); }, []);
+
+  const refreshList = useCallback(async ({ silent = false } = {}) => {
     const requestId = ++refreshRequestId.current;
     activeRequest.current?.abort();
     const controller = new AbortController();
@@ -991,12 +1191,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
           compatibilityTasks = await request<DistributedTask[]>(apiPath(`/v1/tasks?${compatibilitySearch}`));
           return compatibilityTasks;
         });
-      const shouldRefreshNodes = nodesLoadedAt.current === 0
-        || Date.now() - nodesLoadedAt.current >= 30_000;
-      const [rawTaskPage, nextNodes] = await Promise.all([
-        taskPageRequest,
-        shouldRefreshNodes ? request<ExecutorNode[]>(apiPath('/v1/nodes')) : Promise.resolve(null),
-      ]);
+      void refreshNodes();
+      const rawTaskPage = await taskPageRequest;
       let taskPage: TaskPage;
       if (Array.isArray(rawTaskPage)) {
         // Older services return arrays. Filter by account explicitly; missing ownership
@@ -1065,10 +1261,6 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       requestedLastPage.current = null;
       const lastPage = Math.max(1, Math.ceil(taskPage.total / pageSize));
       if (page > lastPage) setPage(lastPage);
-      if (nextNodes) {
-        setNodes(nextNodes);
-        nodesLoadedAt.current = Date.now();
-      }
       setFetchError('');
       setLastUpdatedAt(new Date().toISOString());
     } catch (caught) {
@@ -1086,7 +1278,10 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     }
   }, [activeDefinition, creatorUserId, creatorAccountId, page, pageSize, isAllJobs, creatorFilter,
     assigneeFilter, creatorRoleFilter, createdDateFrom, createdDateTo, personalScope, stateFilter, searchKeyword, queryPackageName,
-    deduplicateQuery, sort, priorityMode, attentionFilter, role, canUseQueryPackageFilter, personalOptions]);
+    deduplicateQuery, sort, priorityMode, attentionFilter, role, canUseQueryPackageFilter, personalOptions, refreshNodes]);
+  const refresh = useCallback(({ silent = false, invalidation = false } = {}) => refreshCoordinator.request(
+    () => refreshList({ silent }), { revision: workspaceUpdateRevision(), invalidation },
+  ), [refreshCoordinator, refreshList]);
 
   useEffect(() => {
     if (leavingWorkbenchView.current) return;
@@ -1116,17 +1311,33 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     }
     const href = search.size ? `${pathname}?${search}` : pathname;
     if (`${window.location.pathname}${window.location.search}` !== href) {
-      if (activeView === 'PERSONAL') window.history.replaceState(null, '', href);
-      else router.replace(href, { scroll: false });
+      window.history.replaceState(null, '', href);
     }
   }, [activeView, assigneeFilter, attentionFilter, creatorFilter, creatorRoleFilter, createdDateFrom, createdDateTo, deduplicateQuery, isAllJobs,
     page, pageSize, pathname, queryPackageName, role, router, searchKeyword, selectedTaskId, sort, stateFilter,
     canUseQueryPackageFilter, personalScope, personalOptions, priorityMode]);
 
   useEffect(() => {
-    if (activeView !== 'PERSONAL') return;
     const restore = () => {
       const input = Object.fromEntries(new URLSearchParams(window.location.search));
+      if (activeView !== 'PERSONAL') {
+        const filters = parseWorkbenchListState(input, { allowAdminFilters: role === 'ADMIN' && isAllJobs });
+        setPage(filters.page); setPageSize(filters.pageSize); setStateFilter(filters.state);
+        setSearchInput(filters.query); setSearchKeyword(filters.query); setSort(filters.sort);
+        setDeduplicateQuery(filters.deduplicateQuery); setAttentionFilter(filters.attention);
+        setQueryPackageInput(canUseQueryPackageFilter ? filters.queryPackageName : '');
+        setQueryPackageName(canUseQueryPackageFilter ? filters.queryPackageName : '');
+        const account = (id: number | null, username: string): JobCreator | null => id && username
+          ? { id, username, displayName: username, role: '', status: 'ACTIVE' } : null;
+        setCreatorFilter(account(filters.createdByAccountId, filters.createdByUserId));
+        setAssigneeFilter(account(filters.assignedToAccountId, filters.assignedToUserId));
+        setCreatorRoleFilter(filters.createdByRole);
+        const useToday = isAllJobs && !filters.createdDateFrom && !filters.createdDateTo;
+        setCreatedDateFrom(useToday ? defaultCreatedDate : filters.createdDateFrom);
+        setCreatedDateTo(useToday ? defaultCreatedDate : filters.createdDateTo);
+        setSelectedTaskId(filters.taskId);
+        return;
+      }
       const options = parsePersonalOptions(input);
       const filters = normalizePersonalFilters({ ...input,...options });
       setPersonalOptions(options); setPersonalScope(filters.personalScope as PersonalTaskScope);
@@ -1137,9 +1348,11 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     };
     window.addEventListener('popstate',restore);
     return () => window.removeEventListener('popstate',restore);
-  },[activeView]);
+  },[activeView, role, isAllJobs, canUseQueryPackageFilter, defaultCreatedDate]);
 
-  useEffect(() => activeView === 'PERSONAL' ? subscribeWorkspaceUpdates(()=>void refresh({silent:true})) : undefined,[activeView,refresh]);
+  useEffect(() => activeView === 'PERSONAL' ? subscribeWorkspaceUpdates(() => {
+    if (document.visibilityState === 'visible') void refresh({ silent: true, invalidation: true });
+  }, {scopes:['tasks']}) : undefined,[activeView,refresh]);
 
   const loadSavedViews = useCallback(async () => {
     if (role !== 'ADMIN') return;
@@ -1165,6 +1378,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       window.clearInterval(timer);
       document.removeEventListener('visibilitychange', refreshVisible);
       refreshRequestId.current += 1;
+      refreshCoordinator.reset();
       activeRequest.current?.abort();
       activeRequest.current = null;
     };
@@ -1190,11 +1404,11 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   }, [selectedTaskIds, visibleTasks]);
   const assignmentEligibleTasks = selectedTasks.filter(canManageTaskAssignment);
   const retryableTasks = selectedTasks.filter((task) => ['COPY_RUNNING', 'COPY_FAILED', 'IMAGE_RUNNING', 'IMAGE_FAILED'].includes(task.state));
-  const queuedTasks = selectedTasks.filter((task) => ['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.state));
+  const discardableTasks = selectedTasks.filter(canAdminDiscardTask);
   const operatorDeliveryMode = role === 'USER' && activeView === 'PERSONAL';
-  const canOperatorDeliverTask = (task: DistributedTask) => operatorDeliveryMode
+  const canOperatorDeliverTask = useCallback((task: DistributedTask) => operatorDeliveryMode
     && task.canOpen !== false && task.state === 'REVIEWED' && (task.deliveryStatus === 'READY' || task.personalWork?.categories.includes('ready'))
-    && isTaskAssignee(task, creatorUserId, creatorAccountId);
+    && isTaskAssignee(task, creatorUserId, creatorAccountId), [operatorDeliveryMode, creatorUserId, creatorAccountId]);
   const exportableTasks = selectedTasks.filter((task) => task.state === 'REVIEWED'
     && (task.deliveryStatus === 'READY' || task.personalWork?.categories.includes('ready'))
     && (role === 'ADMIN' || canOperatorDeliverTask(task)));
@@ -1445,15 +1659,16 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     }
   }
 
-  async function runBatchAction(action: 'RETRY' | 'CANCEL_QUEUE', eligible: DistributedTask[]) {
+  async function runBatchAction(action: 'RETRY' | 'DISCARD', eligible: DistributedTask[]) {
     if (eligible.length === 0 || batchAction) return;
+    if (action === 'DISCARD' && role !== 'ADMIN') return;
     const retry = action === 'RETRY';
     if (!await confirm({
-      title: retry ? `批量重试 ${eligible.length} 条任务？` : `废弃 ${eligible.length} 条排队任务？`,
+      title: retry ? `批量重试 ${eligible.length} 条任务？` : `废弃 ${eligible.length} 条任务？`,
       description: retry
         ? '仅处理当前所选的执行中或失败任务；正在执行的旧流程会作废，并按文案或图片阶段重新排队。'
-        : '任务会立即退出文案或生图队列并标记为已废弃；数据仍会保留，之后可以永久删除或重新排队。',
-      confirmLabel: retry ? '批量重试' : '批量废弃',
+        : '排队中或待文案审核的任务会标记为已废弃，退出当前处理流程；数据仍会保留，管理员之后可以永久删除或从废弃池恢复。',
+      confirmLabel: retry ? '批量重试' : eligible.length === 1 ? '确认废弃' : '批量废弃',
       ...(retry ? {} : { tone: 'danger' as const }),
     })) return;
     setBatchAction(action);
@@ -1463,7 +1678,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action, taskIds: eligible.map((task) => task.id) }),
       });
-      setSelectedTaskIds((current) => current.filter((id) => !result.succeeded.includes(id)));
+      if (retry) setSelectedTaskIds((current) => current.filter((id) => !result.succeeded.includes(id)));
       const label = retry ? '重试' : '废弃';
       setMessage(`批量${label}完成：成功 ${result.succeeded.length} 条${result.failed.length ? `，未处理 ${result.failed.length} 条` : ''}。`);
       setError(result.failed.length ? result.failed.map((item) => `#${item.id}：${item.message}`).join('；') : '');
@@ -1535,6 +1750,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     setCreatorFilter(null);
     setAssigneeFilter(null);
     setCreatorRoleFilter('ALL');
+    setCreatedDateFrom('');
+    setCreatedDateTo('');
     setPersonalScope(activeView === 'PERSONAL' ? 'ASSIGNED' : 'ALL');
     setStateFilter('ALL');
     setAttentionFilter('NONE');
@@ -1640,9 +1857,12 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
 
   async function retryImages(task: DistributedTask) {
     if (!canRequeueImages(task)) return;
+    const exhausted = isImageRetryExhausted(task);
     if (!await confirm({
-      title: '重新生成这组图片？',
-      description: '正在执行的生图任务会立即作废；系统将保留历史记录，清除旧恢复快照，并使用已审核文案重新进入全局待生图队列。',
+      title: exhausted ? '从已审核文案重新生图？' : '重新生成这组图片？',
+      description: exhausted
+        ? '直接重试仍沿用当前已审核文案和图片规划，保留历史失败记录，清除旧恢复快照并重置本轮自动重试计数。若错误源于内容本身，重新生图仍可能失败。'
+        : '正在执行的生图任务会立即作废；系统将保留历史记录，清除旧恢复快照，并使用已审核文案重新进入全局待生图队列。',
       confirmLabel: '重试生图',
     })) return;
     setActingTaskId(task.id);
@@ -1688,27 +1908,6 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     } finally {
       setActingTaskId(null);
     }
-  }
-
-  async function discardQueuedTask(task: DistributedTask) {
-    if (!['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.state)) return;
-    if (!await confirm({
-      title: '废弃这条排队任务？',
-      description: '任务会立即退出队列并标记为已废弃，但保留全部数据。管理员之后可以从废弃池恢复任务。',
-      confirmLabel: '确认废弃',
-      tone: 'danger',
-    })) return;
-    setActingTaskId(task.id);
-    try {
-      await apiRequest(apiPath(`/v1/tasks/${task.id}/cancel`), {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
-      });
-      setMessage(`任务 #${task.id} 已废弃；管理员可从废弃池恢复任务。`);
-      setError('');
-      await refresh({ silent: true });
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : '废弃排队任务失败');
-    } finally { setActingTaskId(null); }
   }
 
   async function restoreCancelledTask(task: DistributedTask) {
@@ -1800,99 +1999,18 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     if (refreshPage === page) await refresh({ silent: true });
   }
 
-  function taskActions(task: DistributedTask) {
-    if (task.canOpen === false) return <span className="muted">历史记录 · 无当前详情权限</span>;
-    const busy = actingTaskId === task.id;
-    const queued = ['COPY_QUEUED', 'IMAGE_QUEUED'].includes(task.state);
-    const currentUserIsAssignee = isTaskAssignee(task, creatorUserId, creatorAccountId);
-    const canHandleAssignedImages = ['ADMIN', 'USER'].includes(role) && currentUserIsAssignee;
-    const canPermanentlyDelete = role === 'ADMIN' && isPermanentlyDeletableTask(task);
-    const visibleActionCount = role === 'ADMIN' && activeView !== 'UNASSIGNED' ? 2 : 1;
-    const assignmentButton = role === 'ADMIN' && canManageTaskAssignment(task) && <Button unstyled className="button small" type="button"
-      disabled={busy} onClick={() => setAssignmentTasks([task])}><UserRound size={14} />{task.assignedToUserId === null ? '分配' : '改派'}</Button>;
-    const permanentDeleteButton = canPermanentlyDelete && <Button unstyled className="button small danger" type="button" disabled={busy || Boolean(batchAction) || batchPermanentDeleteTasks.length > 0} onClick={() => { setDeletionError(''); setDeletionPassword(''); setPermanentDeleteTask(task); }}><Trash2 size={14} />永久删除</Button>;
-    const restoreButton = role === 'ADMIN' && task.state === 'CANCELLED'
-      && <Button unstyled className="button small primary" type="button" disabled={busy || Boolean(batchAction)}
-        onClick={() => { void restoreCancelledTask(task); }}><RotateCcw size={14} />恢复任务</Button>;
-    const directCopyQaButton = role === 'ADMIN' && task.state === 'COPY_QC_PENDING'
-      && <a className="button small" href="/copy-qa">进入质检批次</a>;
-    const allJobsDetailButton = canHandleAssignedImages && task.state === 'MANUAL_ARCHIVE'
-      ? <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><FileCheck2 size={14} />图片初审</Button>
-      : canHandleAssignedImages && task.state === 'IMAGE_REWORK_PENDING'
-        ? <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><RotateCcw size={14} />返修图片</Button>
-        : <Button unstyled className="button small" type="button" onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>;
-    if (isAllJobs) return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
-      {assignmentButton}
-      {directCopyQaButton}
-      {allJobsDetailButton}
-      {restoreButton}
-      {['COPY_RUNNING', 'COPY_FAILED'].includes(task.state) && <Button unstyled className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</Button>}
-      {queued && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardQueuedTask(task); }}><Trash2 size={14} />废弃</Button>}
-      {permanentDeleteButton}
-    </TaskRowActions>;
-    const hasOwnerControl = role === 'ADMIN' || isTaskAssignee(task, creatorUserId, creatorAccountId);
-    const creatorCanControlMachineCopy = taskOwnerId(task) === null
-      && isTaskCreator(task, creatorUserId, creatorAccountId)
-      && ['COPY_QUEUED', 'COPY_RUNNING', 'COPY_FAILED'].includes(task.state);
-    const canDiscard = (hasOwnerControl || creatorCanControlMachineCopy) && task.state !== 'CANCELLED';
-    const canDiscardQueue = role === 'ADMIN' && queued;
-    const canRetryCopy = (hasOwnerControl || creatorCanControlMachineCopy)
-      && ['COPY_RUNNING', 'COPY_FAILED'].includes(task.state);
-    const canRetryImages = hasOwnerControl && task.state !== 'MANUAL_ARCHIVE' && canRequeueImages(task);
-    const retryImageButton = <Button unstyled
-      className="button small"
-      type="button"
-      disabled={busy || !canRetryImages}
-      title={canRetryImages ? '重新进入待生图队列'
-        : task.state === 'MANUAL_ARCHIVE' ? '请进入审核，完成图片评分后选择重试生图'
-          : isImageRetryExhausted(task) ? '生图重试已用尽，请进入详情修改文案并提交强制复检'
-          : '文案尚未审核通过，暂不能重试生图'}
-      onClick={() => { void retryImages(task); }}
-    ><RotateCcw size={14} />重试生图</Button>;
-    if (activeView === 'ALL_COPY') return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
-      {assignmentButton}
-      {directCopyQaButton}
-      <Button unstyled className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
-      {canRetryCopy && <Button unstyled className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</Button>}
-      {canDiscard && !['COPY_REVIEW_PENDING', 'MANUAL_ARCHIVE'].includes(task.state) && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</Button>}
-      {permanentDeleteButton}
-    </TaskRowActions>;
-    if (activeView === 'COPY_REVIEW') return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
-      {assignmentButton}
-      {taskOwnerId(task) === null
-        ? <Button unstyled className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
-        : <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><FileCheck2 size={14} />审核</Button>}
-      {permanentDeleteButton}
-    </TaskRowActions>;
-    if (activeView === 'IMAGE_WORK') return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
-      {assignmentButton}
-      <Button unstyled className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
-      {canDiscardQueue && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardQueuedTask(task); }}><Trash2 size={14} />废弃</Button>}
-      {retryImageButton}
-      {permanentDeleteButton}
-    </TaskRowActions>;
-    if (task.state === 'REVIEWED') return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>{assignmentButton}<Button unstyled className="button small" type="button" onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>{permanentDeleteButton}</TaskRowActions>;
-    if (task.state === 'MANUAL_ARCHIVE') return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
-      {assignmentButton}
-      <Button unstyled className={`button small ${canHandleAssignedImages ? 'primary' : ''}`} type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><FileCheck2 size={14} />{canHandleAssignedImages ? '图片初审' : '查看'}</Button>
-    </TaskRowActions>;
-    if (task.state === 'IMAGE_REWORK_PENDING') return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
-      {assignmentButton}
-      <Button unstyled className={`button small ${canHandleAssignedImages ? 'primary' : ''}`} type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><RotateCcw size={14} />{canHandleAssignedImages ? '返修图片' : '查看返修'}</Button>
-    </TaskRowActions>;
-    return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
-      {assignmentButton}
-      {directCopyQaButton}
-      <Button unstyled className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
-      {canDiscardQueue && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardQueuedTask(task); }}><Trash2 size={14} />废弃</Button>}
-      {restoreButton}
-      {permanentDeleteButton}
-      {canDiscard && canResumeImageTask(task) && <Button unstyled className="button small primary" type="button" disabled={busy} onClick={() => { void resumeImages(task); }}><RotateCcw size={14} />从失败步骤继续</Button>}
-      {activeView === 'PERSONAL' && canRetryCopy && <Button unstyled className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</Button>}
-      {activeView === 'PERSONAL' && retryImageButton}
-      {canDiscard && !canDiscardQueue && !['COPY_REVIEW_PENDING', 'MANUAL_ARCHIVE'].includes(task.state) && <Button unstyled className="button small danger" type="button" disabled={busy} onClick={() => { void discardTask(task); }}><Trash2 size={14} />废弃</Button>}
-    </TaskRowActions>;
-  }
+
+  const selectedTaskIdSet = useMemo(() => new Set(selectedTaskIds), [selectedTaskIds]);
+  const taskRowContext = useMemo<TaskRowContext>(() => ({ role, activeView, creatorUserId, creatorAccountId,
+    isAllJobs, showTaskSelection, executorColumnLabel, nodes, personalMode: personalOptions.mode,
+    batchAction: Boolean(batchAction), batchPermanentDeleteTasks, duplicateQueryCleanupBusy, canOperatorDeliverTask,
+  }), [role, activeView, creatorUserId, creatorAccountId, isAllJobs, showTaskSelection, executorColumnLabel,
+    nodes, personalOptions.mode, batchAction, batchPermanentDeleteTasks, duplicateQueryCleanupBusy, canOperatorDeliverTask]);
+  const taskRowHandlers = useStableEventHandlers<TaskRowHandlers>({
+    toggleTaskSelection, setSelectedTaskId, setAssignmentTasks, refresh, restoreCancelledTask, retryImages,
+    retryCopy, discardTask, resumeImages, runBatchAction,
+    showPermanentDelete: task => { setDeletionError(''); setDeletionPassword(''); setPermanentDeleteTask(task); },
+  });
 
   function resetCreateForm() {
     setQueryText('');
@@ -2018,12 +2136,19 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
       options={personalOptions} onChange={value => { setPersonalOptions(value); setPage(1); }}
       category={stateFilter} onCategory={value => { setStateFilter(value); setPage(1); }}
       scope={personalScope} onScope={value => { setPersonalScope(value); setPage(1); }}
-      counts={personalCounts} onDelivery={operatorDeliveryMode ? () => setDeliveryHistoryOpen(true) : undefined}
+      counts={personalCounts} onDelivery={operatorDeliveryMode ? () => {
+        deliveryHistoryReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        setDeliveryHistoryOpen(true);
+      } : undefined}
     />}
     {operatorDeliveryMode && <Dialog open={deliveryHistoryOpen} onOpenChange={setDeliveryHistoryOpen}>
-      <DialogContent className={personalStyles.deliveryDialog}><DialogTitle>我的交付记录</DialogTitle>
+      <DialogContent className={personalStyles.deliveryDialog} onCloseAutoFocus={event => {
+        if (deliveryHistoryReturnFocus.current?.isConnected) {
+          event.preventDefault(); deliveryHistoryReturnFocus.current.focus();
+        }
+      }}><DialogTitle>我的交付记录</DialogTitle>
         <DialogDescription>查看下载记录并确认交付。</DialogDescription>
-        {deliveryHistoryOpen && <OperatorDeliveryHistory refreshKey={deliveryHistoryVersion} />}
+      {deliveryHistoryOpen && <LazyOperatorDeliveryHistory refreshKey={deliveryHistoryVersion} />}
       </DialogContent>
     </Dialog>}
     <section className="panel workbench-task-panel">
@@ -2032,6 +2157,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
           <span className="section-kicker">Task lifecycle</span>
           <h2>{activeDefinition.label}</h2>
           <p>{activeDefinition.description}</p>
+          {nodesError && <p className="subtle" role="status">执行机信息暂时无法同步；作业列表仍可使用。</p>}
         </div>
         <div className="workbench-toolbar-actions">
           <Button unstyled className="button small" type="button" disabled={refreshing} onClick={() => { void refresh(); }}>
@@ -2285,7 +2411,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
           title={assignmentEligibleTasks.length === 0 ? '所选任务尚未进入可派单阶段' : '分配或改派可处理的任务'}
           onClick={() => setAssignmentTasks(assignmentEligibleTasks)}><UserRound size={14} />批量分配/改派 {assignmentEligibleTasks.length}</Button>
         <Button unstyled className="button small" type="button" disabled={Boolean(batchAction) || duplicateQueryCleanupBusy || retryableTasks.length === 0} onClick={() => { void runBatchAction('RETRY', retryableTasks); }}><RotateCcw size={14} />重试 {retryableTasks.length}</Button>
-        <Button unstyled className="button small danger" type="button" disabled={Boolean(batchAction) || duplicateQueryCleanupBusy || queuedTasks.length === 0} onClick={() => { void runBatchAction('CANCEL_QUEUE', queuedTasks); }}><Trash2 size={14} />废弃排队中 {queuedTasks.length}</Button>
+        <Button unstyled className="button small danger" type="button" title="可废弃排队中和待文案审核的作业；质检退回任务请从质检入口处置" disabled={Boolean(batchAction) || duplicateQueryCleanupBusy || discardableTasks.length === 0} onClick={() => { void runBatchAction('DISCARD', discardableTasks); }}><Trash2 size={14} />废弃 {discardableTasks.length}</Button>
         <Button unstyled className="button small danger" type="button" title={permanentlyDeletableTasks.length > 20 ? '单次最多永久删除 20 条，请减少选择' : permanentDeletionSettlingTasks.length ? '所选任务仍在等待执行机停止，废弃满 3 分钟后可永久删除' : '仅永久删除已失败、已审核或已废弃且执行已停止的任务'} disabled={Boolean(batchAction) || duplicateQueryCleanupBusy || Boolean(actingTaskId) || Boolean(permanentDeleteTask) || permanentlyDeletableTasks.length === 0 || permanentlyDeletableTasks.length > 20} onClick={() => { setDeletionError(''); setDeletionPassword(''); setBatchPermanentDeleteTasks(permanentlyDeletableTasks); }}><Trash2 size={14} />永久删除 {permanentlyDeletableTasks.length}</Button>
         <Button unstyled className="button small" type="button" title={exportableTasks.length > 20 ? '单次最多导出 20 条，请减少选择' : '仅可导出已进入交付池的任务'} disabled={Boolean(batchAction) || duplicateQueryCleanupBusy || exportableTasks.length === 0 || exportableTasks.length > 20} onClick={() => { void exportSelectedTasks(); }}><Download size={14} />导出 {exportableTasks.length}</Button>
         <Button unstyled className="button small" type="button" disabled={Boolean(batchAction) || duplicateQueryCleanupBusy} onClick={() => setSelectedTaskIds([])}>清除选择</Button>
@@ -2308,59 +2434,8 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
           : <div ref={listStart} className="table-wrap mobile-cards workbench-table-wrap" tabIndex={0} role="region" aria-label="作业列表，可横向滚动查看完整列" aria-busy={loading} inert={loading}>
             <table>
               <thead><tr>{showTaskSelection && <th className="workbench-col-select"><Checkbox aria-label="选择当前页全部任务中的可交付项" checked={allVisibleSelected} disabled={selectionCandidates.length === 0} onChange={(event) => setSelectedTaskIds(event.target.checked ? selectionCandidates.map((task) => task.id) : [])} /></th>}<th className="workbench-col-query">作业 / Query</th><th className="workbench-col-creator">负责人 / 创建人</th><th className="workbench-col-progress">状态 / 进度</th><th className="workbench-col-executor">执行机</th><th className="workbench-col-time">{isAllJobs ? '变更 / 创建 / 耗时' : '创建 / 开始 / 耗时'}</th><th className="workbench-col-actions">操作</th></tr></thead>
-              <tbody>{visibleTasks.map((task) => <tr key={task.id}>
-                {showTaskSelection && <td className="workbench-col-select" data-label="选择"><Checkbox aria-label={`选择任务 #${task.id}`} checked={selectedTaskIds.includes(task.id)} disabled={role === 'USER' && !canOperatorDeliverTask(task)} title={role === 'USER' && !canOperatorDeliverTask(task) ? '仅可交付本人负责且已完成的作业' : undefined} onChange={(event) => toggleTaskSelection(task.id, event.target.checked)} /></td>}
-                <td className="query-cell workbench-col-query" data-label="作业 / Query">
-                  <div className="workbench-cell-stack">
-                    <span className="mono workbench-task-id">#{task.id}</span>
-                    <Button unstyled className="workbench-query-preview workbench-text-preview" type="button" disabled={task.canOpen === false} title={task.query} aria-label={`查看作业 #${task.id}：${task.query}`} onClick={() => setSelectedTaskId(task.id)}>{task.query}</Button>
-                    {role !== 'USER' && <small className="workbench-text-preview" title={task.sourceQueryPackageName || '未归属词包'}>词包：{task.sourceQueryPackageName || '未归属词包'}</small>}
-                  </div>
-                </td>
-                <td className="workbench-col-creator" data-label="负责人 / 创建人"><div className="workbench-cell-stack">
-                  <span className={`workbench-text-preview${!task.assignedToUserId && task.state === 'COPY_REVIEW_PENDING' ? ' pill pill-rejected' : ''}`}
-                    title={assignmentLabel(task)}>
-                    负责人：{assignmentLabel(task)}
-                  </span>
-                  {task.assignedToUserId && <small className="mono workbench-text-preview" title={task.assignedToUserId}>{task.assignedToUserId}</small>}
-                  <small className="workbench-text-preview" title={task.createdByDisplayName || task.createdByUserId || '历史任务'}>
-                    创建人：{task.createdByDisplayName || task.createdByUserId || '历史任务'}
-                  </small>
-                  {activeView === 'PERSONAL' && <small className="pill">
-                    {task.canOpen === false ? '本人完成历史' : personalOwnershipLabel(task, creatorUserId, creatorAccountId)}
-                  </small>}
-                  {isAllJobs && <small>{CREATOR_ROLE_LABELS[task.createdByRole || 'UNKNOWN'] || '未知创建者角色'}</small>}
-                </div></td>
-                <td className="workbench-col-progress" data-label="状态 / 进度">
-                  <div className="distributed-progress">
-                    {activeView === 'PERSONAL' && <PersonalWorkDetails work={task.personalWork} events={personalOptions.mode !== 'CURRENT' ? task.personalHistory : undefined} />}
-                    {task.canOpen === false ? <small>仅展示历史记录</small> : <>
-                    <small><PrioritySummary task={task} /></small>
-                    {role === 'ADMIN' && <TaskPriorityControl tasks={[task]} onChanged={() => refresh()} />}
-                    <span className={`pill ${isImageRetryExhausted(task) ? 'pill-rejected' : `workbench-state-${task.state.toLowerCase()}`}${isStale(task) ? ' pill-rejected' : ''}`}>{isImageRetryExhausted(task) ? IMAGE_RETRY_EXHAUSTED_LABEL : taskStateLabel(task, role)}</span>
-                    {task.copyQaAutoPassed && <span className="pill">文案质检通过 · 系统</span>}
-                    <span>{stageLabel(task, role)} · {task.state.endsWith('_FAILED') && !task.executionStartedAt && task.progressPercent === 0 ? '进度未记录' : `${task.progressPercent}%`}</span>
-                    <small className="workbench-text-preview" title={isStale(task) ? '超过 30 分钟没有进度，请进入详情处理' : taskProgressMessage(task)}>{isStale(task) ? '超过 30 分钟没有进度，请进入详情处理' : taskProgressMessage(task)}</small>
-                    </>}
-                  </div>
-                </td>
-                <td className="workbench-col-executor" data-label="执行机"><div className="workbench-cell-stack workbench-executors">
-                  <div><small>{executorColumnLabel}</small><span className="mono workbench-text-preview" title={activeView === 'IMAGE_WORK' ? imageExecutorLabel(task) : copyExecutorLabel(task, nodes)}>{activeView === 'IMAGE_WORK' ? imageExecutorLabel(task) : copyExecutorLabel(task, nodes)}</span></div>
-                  {(activeView === 'MANUAL_ARCHIVE' || isAllJobs) && <div><small>生图执行机</small><span className="mono workbench-text-preview" title={imageExecutorLabel(task)}>{imageExecutorLabel(task)}</span></div>}
-                  {activeView === 'PERSONAL' && (task.state.startsWith('IMAGE_') || task.imageExecutorNodeId || isImageRetryExhausted(task)) && <div><small>生图执行机</small><span className="mono workbench-text-preview" title={imageExecutorLabel(task)}>{imageExecutorLabel(task)}</span></div>}
-                  {role === 'ADMIN' && task.activeImageEditExecutions?.map((edit, index, edits) => <div key={edit.executionId}><small>图片修复执行机{edits.length > 1 ? ` ${index + 1}` : ''}</small><span className="mono workbench-text-preview" title={`${edit.nodeName || edit.nodeId} · 执行记录 ${edit.executionId}`}>{edit.nodeName || edit.nodeId}</span></div>)}
-                </div></td>
-                <td className="workbench-col-time" data-label={isAllJobs ? '变更 / 创建 / 耗时' : '创建 / 开始 / 耗时'}><div className="workbench-cell-stack">
-                  {isAllJobs
-                    ? <><time dateTime={taskLatestActivityAt(task)}>最近变更：{timeLabel(taskLatestActivityAt(task))}</time>
-                      <small>创建：<time dateTime={task.createdAt}>{timeLabel(task.createdAt)}</time></small></>
-                    : <time dateTime={task.createdAt}>{timeLabel(task.createdAt)}</time>}
-                  <small>开始：<time dateTime={task.executionStartedAt || undefined}>{timeLabel(task.executionStartedAt, task.state)}</time></small>
-                  <small className="workbench-elapsed"><Clock3 aria-hidden="true" size={13} />本次：{elapsed(task)}</small>
-                  {cumulativeImageElapsed(task) && <small className="workbench-elapsed" title="包含同一恢复链中失败运行与续跑的累计图片生产耗时"><Clock3 aria-hidden="true" size={13} />生图累计：{cumulativeImageElapsed(task)}</small>}
-                </div></td>
-                <td className="workbench-col-actions" data-label="操作">{taskActions(task)}</td>
-              </tr>)}</tbody>
+              <tbody>{visibleTasks.map(task => <WorkbenchTaskRow key={task.id} task={task}
+                selected={selectedTaskIdSet.has(task.id)} busy={actingTaskId === task.id} context={taskRowContext} handlers={taskRowHandlers} />)}</tbody>
             </table>
           </div>}
 
@@ -2374,7 +2449,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         onPageSizeChange={(size) => { requestedLastPage.current = null; scrollAfterPageLoad.current = true; setPageSize(size as WorkbenchListState['pageSize']); setPage(1); }} />}
     </section>
 
-    <TaskReviewDialog
+    {selectedTaskId !== null && <TaskReviewDialog
       taskId={selectedTaskId}
       nodeId={nodeId}
       role={role}
@@ -2386,7 +2461,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
         setError('');
         await refresh({ silent: true });
       }}
-    />
+    />}
 
     <ToastFeedback id="creation-workbench-feedback" message={message} />
     {error && <div className="notice error" role="alert">{error}</div>}

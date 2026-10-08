@@ -43,10 +43,11 @@ test('reference decoding rejects MIME spoofing, SVG, truncation and excess bytes
   const source=await sharp(await png('red',30,40)).withMetadata({orientation:6}).jpeg().toBuffer();
   const decoded=await decodeReference(source,'image/jpeg');
   const m=await sharp(decoded.bytes).metadata();assert.equal(m.format,'png');assert.equal(m.exif,undefined);assert.equal(decoded.width,40);assert.equal(decoded.height,30);
-  await assert.rejects(()=>decodeReference(source,'image/png'));
-  await assert.rejects(()=>decodeReference(Buffer.from('<svg/>'),'image/png'));
+  await assert.rejects(()=>decodeReference(source,'image/png'),/文件签名与声明类型不符：图片内容实际为 JPEG[\s\S]*\.jpg 或 \.jpeg/u);
+  await assert.rejects(()=>decodeReference(Buffer.from('<svg/>'),'image/png'),error=>error instanceof TypeError
+    && error.message.includes('请重新导出为 PNG、JPEG 或 WebP 后上传') && !error.message.includes('文件后缀'));
   await assert.rejects(()=>decodeReference(source.subarray(0,24),'image/jpeg'));
-  await assert.rejects(()=>decodeReference(Buffer.alloc(5*1024*1024+1),'image/png'));
+  await assert.rejects(()=>decodeReference(Buffer.alloc(5*1024*1024+1),'image/png'),/当前 5\.00 MiB（5,242,881 字节）\/上限 5 MiB（5,242,880 字节）/u);
   const animated=await sharp([await png('red',20,20),await png('blue',20,20)],{join:{animated:true}}).webp().toBuffer();
   assert.equal((await sharp(animated,{animated:true}).metadata()).pages,2);
   await assert.rejects(()=>decodeReference(animated,'image/webp'),/动画/u);

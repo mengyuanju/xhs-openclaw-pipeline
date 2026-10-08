@@ -2,13 +2,14 @@ import {
   DEFAULT_PRODUCTION_SETTINGS,
   normalizeProductionSettings,
 } from '../production-settings.mjs';
+import { pinDefaultDoubaoSearchMode } from '../web-search-config.mjs';
 import { BUILTIN_LAYOUT_CATALOG } from '../../server/src/layout-catalog.mjs';
 import { changeLayoutCatalog, layoutCatalogRecord } from '../../server/src/layout-catalog-settings.mjs';
 
 function rowToProductionSettings(row) {
   if (!row) return null;
   return {
-    settings: normalizeProductionSettings(JSON.parse(row.settings_json)),
+    settings: normalizeProductionSettings(pinDefaultDoubaoSearchMode(JSON.parse(row.settings_json))),
     updatedAt: row.updated_at,
   };
 }
@@ -58,7 +59,7 @@ export function createProductionSettingsStore(db) {
       const modelApi = patch.modelApi === undefined
         ? current.settings.modelApi
         : { ...current.settings.modelApi, ...patch.modelApi };
-      const settings = normalizeProductionSettings({ ...current.settings, ...patch, modelApi });
+      const settings = normalizeProductionSettings(pinDefaultDoubaoSearchMode({ ...current.settings, ...patch, modelApi }));
       const updatedAt = new Date().toISOString();
       db.prepare(`
         UPDATE production_settings SET settings_json = ?, updated_at = ? WHERE id = 1

@@ -1,10 +1,16 @@
 import { isIP } from 'node:net';
 import { codexErrorCode } from './codex-protocol.mjs';
+import { DEFAULT_WEB_SEARCH_RESULT_LIMIT, DEFAULT_WEB_SEARCH_TIMEOUT_MS,
+  validatedWebSearchTimeout } from './web-search-config.mjs';
 
 const RESEARCH_SCHEMA_VERSION = 1;
 const DEFAULT_PROVIDERS = ['codex'];
-const MAX_SOURCES = 5;
+const MAX_SOURCES = 10;
+const MAX_SOURCE_CANDIDATES = 100;
+const MAX_SUMMARY_URL_CANDIDATES = 20;
 const MAX_ATTEMPTS = 5;
+const MULTI_PROVIDER_BUDGET_MS = 300_000;
+const MIN_PROVIDER_TIMEOUT_MS = 5_000;
 
 function cleanExternalText(value, maxLength) {
   if (typeof value !== 'string') return '';
@@ -73,13 +79,22 @@ function urlsFromText(value) {
 function sourceItems(result) {
   const items = [];
   for (const key of ['results', 'sources', 'citations']) {
-    if (Array.isArray(result?.[key])) items.push(...result[key]);
+    if (!Array.isArray(result?.[key])) continue;
+    for (const item of result[key]) {
+      items.push(item);
+      if (items.length === MAX_SOURCE_CANDIDATES) return items;
+    }
   }
-  if (Array.isArray(result?.searches)) items.push(...result.searches);
+  if (Array.isArray(result?.searches)) {
+    for (const item of result.searches) {
+      items.push(item);
+      if (items.length === MAX_SOURCE_CANDIDATES) return items;
+    }
+  }
   return items;
 }
 
-function normalizeSources(result, provider, retrievedAt) {
+function normalizeSources(result, provider, retrievedAt, limit = DEFAULT_WEB_SEARCH_RESULT_LIMIT) {
   const summary = cleanExternalText(
     result?.content ?? result?.answer ?? result?.text ?? result?.summary,
     6_000,
@@ -98,7 +113,9 @@ function normalizeSources(result, provider, retrievedAt) {
       siteName: item.siteName ?? item.site_name ?? item.domain,
     });
   }
-  for (const url of urlsFromText(summary)) candidates.push({ url });
+  for (const url of urlsFromText(summary).slice(0, MAX_SUMMARY_URL_CANDIDATES)) {
+    candidates.push({ url });
+  }
 
   const sources = [];
   const seen = new Set();
@@ -115,10 +132,9 @@ function normalizeSources(result, provider, retrievedAt) {
       provider,
       retrievedAt,
     });
-    if (sources.length === MAX_SOURCES) break;
   }
   sources.sort((left, right) => sourceAuthorityScore(right) - sourceAuthorityScore(left));
-  return { summary: summary || null, sources };
+  return { summary: summary || null, sources: sources.slice(0, limit) };
 }
 
 export function normalizeResearchEvidence(result, provider, retrievedAt) {
@@ -134,7 +150,7 @@ function hasGroundedSummary(evidence, provider, citationOnlyProviders) {
       || evidence.sources.some((source) => typeof source.snippet === 'string' && source.snippet)));
 }
 
-function hasSufficientDeepSeekEvidence(evidence) {
+function hasSufficientApiSearchEvidence(evidence, limit) {
   if (!evidence.summary) return false;
   // Distinct official help pages on one product domain are useful independent
   // evidence for ordinary how-to content. High-risk topics still use the
@@ -142,7 +158,37 @@ function hasSufficientDeepSeekEvidence(evidence) {
   const completeUrls = new Set(evidence.sources.filter((source) => source.snippet.trim()
     && source.title !== new URL(source.url).hostname)
     .map((source) => source.url));
-  return completeUrls.size >= 2;
+  return completeUrls.size >= Math.min(2, limit);
+}
+
+function isSearchCancellation(error) {
+  return error?.name === 'AbortError'
+    || ['ABORT_ERR', 'ERR_ABORTED', 'ERR_CANCELED'].includes(error?.code);
+}
+
+async function runTimedWebSearch(client, input, timeoutMs) {
+  const deadline = new AbortController();
+  const timeoutError = Object.assign(new Error('web search attempt timed out'), { name: 'TimeoutError' });
+  const timer = setTimeout(() => deadline.abort(timeoutError), timeoutMs);
+  let onAbort;
+  const expired = new Promise((_, reject) => {
+    onAbort = () => reject(deadline.signal.reason ?? timeoutError);
+    deadline.signal.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([
+      client.runWebSearch({ ...input, timeoutMs, signal: deadline.signal }),
+      expired,
+    ]);
+  } catch (error) {
+    // An adapter may turn our timeout signal into an AbortError. It is still a
+    // provider timeout, so another configured provider can be tried.
+    if (deadline.signal.aborted) throw timeoutError;
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    deadline.signal.removeEventListener('abort', onAbort);
+  }
 }
 
 const MEDICAL_RESEARCH = /(诊断|诊疗|疾病|症状|用药|药物|剂量|手术|治疗|急救|孕期|婴幼儿健康)/u;
@@ -264,13 +310,17 @@ export async function createResearchSnapshot({
   client,
   query,
   providers = client?.webSearchProviders ?? DEFAULT_PROVIDERS,
-  limit = MAX_SOURCES,
+  limit = DEFAULT_WEB_SEARCH_RESULT_LIMIT,
   now = () => new Date().toISOString(),
   requireAuthoritative = false,
   supplementalSearch = true,
   citationOnlyProviders = ['codex'],
+  monotonicNow = () => performance.now(),
 }) {
   if (!client?.runWebSearch) throw new TypeError('Model web search client is required');
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_SOURCES) {
+    throw new RangeError(`research source limit must be an integer between 1 and ${MAX_SOURCES}`);
+  }
   if (typeof requireAuthoritative !== 'boolean') throw new TypeError('requireAuthoritative must be boolean');
   if (typeof supplementalSearch !== 'boolean') throw new TypeError('supplementalSearch must be boolean');
   if (!Array.isArray(citationOnlyProviders) || citationOnlyProviders.some((value) => typeof value !== 'string')) {
@@ -282,6 +332,13 @@ export async function createResearchSnapshot({
   if (!Array.isArray(providers) || providers.length < 1 || providers.length > 5) {
     throw new RangeError('research providers are invalid');
   }
+  const orderedProviders = [...new Set(providers.map((value) => normalizedProvider(value)))];
+  const boundedFailover = Array.isArray(client.webSearchProviders)
+    && client.webSearchProviders.length > 1 && orderedProviders.length > 1;
+  const providerTimeoutMs = boundedFailover
+    ? validatedWebSearchTimeout(client.webSearchTimeoutMs ?? DEFAULT_WEB_SEARCH_TIMEOUT_MS) : null;
+  const startedAt = boundedFailover ? monotonicNow() : null;
+  if (boundedFailover && !Number.isFinite(startedAt)) throw new TypeError('research clock is invalid');
   const searchedAt = normalizedTimestamp(now(), 'research searchedAt');
   const attempts = [];
   const unavailableProviders = new Set();
@@ -292,14 +349,30 @@ export async function createResearchSnapshot({
   let bestFallback = null;
   searchLoop:
   for (const searchQuery of queryVariants) {
-    for (const rawProvider of providers) {
+    for (const provider of orderedProviders) {
       if (attempts.length >= MAX_ATTEMPTS) break searchLoop;
-      const provider = normalizedProvider(rawProvider);
       if (unavailableProviders.has(provider)) continue;
+      let attemptTimeoutMs = null;
+      if (boundedFailover) {
+        const elapsedMs = monotonicNow() - startedAt;
+        if (!Number.isFinite(elapsedMs)) throw new TypeError('research clock is invalid');
+        const remainingMs = Math.floor(MULTI_PROVIDER_BUDGET_MS - Math.max(0, elapsedMs));
+        if (remainingMs < MIN_PROVIDER_TIMEOUT_MS) {
+          attempts.push({ provider, status: 'FAILED', error: 'web search total time budget exhausted' });
+          break searchLoop;
+        }
+        attemptTimeoutMs = Math.min(providerTimeoutMs, remainingMs);
+      }
       try {
-        const response = await client.runWebSearch({ query: searchQuery, provider, limit });
+        const request = { query: searchQuery, provider, limit };
+        const response = boundedFailover
+          ? await runTimedWebSearch(client, request, attemptTimeoutMs)
+          : await client.runWebSearch(request);
         const actualProvider = normalizedProvider(response?.provider ?? provider);
-        const evidence = normalizeSources(response?.result, actualProvider, searchedAt);
+        if (boundedFailover && actualProvider !== provider) {
+          throw new Error('web search provider mismatch');
+        }
+        const evidence = normalizeSources(response?.result, actualProvider, searchedAt, limit);
         if (evidence.sources.length === 0) {
           attempts.push({
             provider,
@@ -321,7 +394,8 @@ export async function createResearchSnapshot({
         attempts.push({ provider, status: 'COMPLETED', error: null });
         if (authorityScore > 0 || (!requireAuthoritative && (
           (citationOnly.has(actualProvider) && groundedSummary)
-          || (actualProvider === 'deepseek' && hasSufficientDeepSeekEvidence(evidence))))) {
+          || (['deepseek', 'doubao'].includes(actualProvider)
+            && hasSufficientApiSearchEvidence(evidence, limit))))) {
           return normalizeResearchSnapshot({
             schemaVersion: RESEARCH_SCHEMA_VERSION,
             status: 'COMPLETED',
@@ -339,7 +413,8 @@ export async function createResearchSnapshot({
           bestFallback = candidate;
         }
       } catch (error) {
-        if (codexErrorCode(error)) throw error;
+        if (isSearchCancellation(error)) throw error;
+        if (orderedProviders.length === 1 && codexErrorCode(error)) throw error;
         unavailableProviders.add(provider);
         attempts.push({ provider, status: 'FAILED', error: redactedError(error) });
       }

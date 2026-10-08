@@ -135,7 +135,7 @@ export const WORKBENCH_VIEWS: Array<{
     key: 'COPY_REVIEW',
     href: '/workbench/copy-review',
     label: '待文案审核',
-    description: '显示待人工审核的文案；生图连续3次失败的任务会回到此处，等待重新审核。',
+    description: '显示待人工审核的文案；生图连续3次失败的任务会回到此处，可核对原因后直接重试或修改并提交强制复检。',
     icon: FileCheck2,
     states: ['COPY_REVIEW_PENDING'],
   },

@@ -15,6 +15,7 @@ export const DEFAULT_PRODUCTION_SETTINGS = Object.freeze({
     webSearchProvider: null,
     deepseekSearchModel: null,
     webSearchTimeoutMs: null,
+    webSearchResultLimit: null,
     textModel: null,
     capacityFallbackModel: null,
     modelCapacityCooldownMs: null,

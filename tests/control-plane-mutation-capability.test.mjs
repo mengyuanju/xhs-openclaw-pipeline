@@ -9,6 +9,8 @@ import {
 
 test('protected control-plane operations declare their version contracts', () => {
   for (const [routePath, method, capability, minimumVersion] of [
+    ['/v1/admin/reassignment-cases/batch', 'POST', 'secondaryAssignmentBatchVersion', 1],
+    ['/v1/admin/reassignment-cases/42/reset', 'POST', 'secondaryAssignmentVersion', 1],
     ['/v1/copy-qa/reason-tags', 'POST', 'copyQaReasonTagsVersion', 1],
     ['/v1/copy-qa/reason-tags/11111111-1111-4111-8111-111111111111', 'PATCH', 'copyQaReasonTagsVersion', 1],
     ['/v1/tasks/42/restore', 'POST', 'taskRestoreVersion', 1],
@@ -386,4 +388,19 @@ test('unrelated mutations do not perform a capability request', async () => {
     fetchImpl: async () => { calls += 1; throw new Error('must not run'); },
   });
   assert.equal(calls, 0);
+});
+
+test('secondary assignment batches require their dedicated capability even on a single-item capable center', async () => {
+  for (const capabilities of [{ secondaryAssignmentVersion: 1 },
+    { secondaryAssignmentVersion: 1, secondaryAssignmentBatchVersion: 0 }]) {
+    await assert.rejects(assertMutationCapability({
+      root: 'http://center.test', routePath: '/v1/admin/reassignment-cases/batch', method: 'POST',
+      fetchImpl: async () => Response.json({ data: { capabilities } }),
+    }), error => error instanceof ApiError && error.status === 503
+      && error.code === 'CONTROL_PLANE_UPGRADE_REQUIRED');
+  }
+  await assertMutationCapability({
+    root: 'http://center.test', routePath: '/v1/admin/reassignment-cases/batch', method: 'POST',
+    fetchImpl: async () => Response.json({ data: { capabilities: { secondaryAssignmentBatchVersion: 1 } } }),
+  });
 });

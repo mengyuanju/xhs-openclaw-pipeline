@@ -26,6 +26,8 @@ type RouteMeta = {
   icon: LucideIcon;
 };
 
+const fallbackRouteMeta: RouteMeta = { section: '作业中心', title: '工作台', icon: LayoutDashboard };
+
 const routeMeta: Array<{ match: (pathname: string) => boolean; meta: RouteMeta }> = [
   { match: (pathname) => pathname === '/workbench/personal-statistics', meta: { section:'作业中心', title:'个人数据统计', icon:BarChart3 } },
   { match: (pathname) => pathname === '/work-mode', meta: { section: '作业中心', title: '作业模式', icon: PanelsTopLeft } },
@@ -34,7 +36,9 @@ const routeMeta: Array<{ match: (pathname: string) => boolean; meta: RouteMeta }
   { match: (pathname) => pathname.startsWith('/reports/task-data'), meta: { section: '报表统计', title: '任务数据统计', icon: BarChart3 } },
   { match: (pathname) => pathname.startsWith('/reports/annotation-jobs'), meta: { section: '报表统计', title: '标注作业统计报表', icon: BarChart3 } },
   { match: (pathname) => pathname.startsWith('/query-packages'), meta: { section: '创作工作台', title: 'Query 词包', icon: PackageSearch } },
+  { match: (pathname) => pathname === '/copy-flow' || pathname.startsWith('/copy-flow/'), meta: { section: '质量与审核', title: '文案工作入口', icon: ShieldCheck } },
   { match: (pathname) => pathname.startsWith('/copy-qa'), meta: { section: '质量与审核', title: '文案质检', icon: ShieldCheck } },
+  { match: (pathname) => pathname === '/image-qa' || pathname.startsWith('/image-qa/'), meta: { section: '质量与审核', title: '图片质检', icon: ShieldCheck } },
   { match: (pathname) => pathname.startsWith('/reassignment'), meta: { section: '创作工作台', title: '待二次分配', icon: Users } },
   { match: (pathname) => pathname.startsWith('/delivery-pool'), meta: { section: '创作工作台', title: '交付池', icon: PackageCheck } },
   ...WORKBENCH_VIEWS.map((view) => ({
@@ -52,7 +56,7 @@ const routeMeta: Array<{ match: (pathname: string) => boolean; meta: RouteMeta }
 
 export function AppTopbar() {
   const pathname = usePathname();
-  const current = routeMeta.find((route) => route.match(pathname))?.meta ?? routeMeta[0].meta;
+  const current = routeMeta.find((route) => route.match(pathname))?.meta ?? fallbackRouteMeta;
   const Icon = current.icon;
 
   return (

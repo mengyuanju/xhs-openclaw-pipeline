@@ -1,19 +1,26 @@
 import { normalizePageLayout } from '../server/src/image-options.mjs';
-import { visibleCharacterCount } from './visible-text.mjs';
+import { imagePlanBulletCount, visibleCharacterCount } from './visible-text.mjs';
+import { IMAGE_PLAN_BULLET_HARD_MAX } from './image-plan-editing.mjs';
 
 const IMAGE_PLAN_KINDS = Object.freeze(['hero', 'steps', 'checklist', 'comparison', 'detail', 'summary']);
 const IMAGE_PLAN_FIELDS = Object.freeze(['kind', 'headline', 'subtitle', 'bullets', 'prompt']);
 
-function normalizedImagePlanText(value, location, { min = 1, max }) {
+function normalizedImagePlanText(value, location, { min = 1, max, count = visibleCharacterCount, rawMax = null }) {
   if (typeof value !== 'string') throw new TypeError(`${location}必须是文本`);
   const text = value.replace(/\r\n?/gu, '\n').trim();
-  const length = visibleCharacterCount(text);
+  const length = count(text);
   if (length < min) {
     throw new RangeError(length === 0
       ? `${location}为空，请填写内容`
       : `${location}至少需要 ${min} 字（当前 ${length} 字）`);
   }
   if (length > max) throw new RangeError(`${location}超过 ${max} 字（当前 ${length} 字）`);
+  if (rawMax !== null) {
+    const rawLength = visibleCharacterCount(text);
+    if (rawLength > rawMax) {
+      throw new RangeError(`${location}超过 ${rawMax} 个原始可见字符（当前 ${rawLength} 个）`);
+    }
+  }
   return text;
 }
 
@@ -22,7 +29,9 @@ function normalizedImagePlanBullets(value, pageNumber, itemMax) {
   if (!Array.isArray(value)) throw new TypeError(`${location}必须是逐行填写的列表`);
   // Check existing lines first so an extra blank line points to the precise row.
   const bullets = value.map((item, index) => normalizedImagePlanText(
-    item, `${location}第 ${index + 1} 行`, { max: itemMax },
+    item, `${location}第 ${index + 1} 行`, {
+      max: itemMax, count: imagePlanBulletCount, rawMax: IMAGE_PLAN_BULLET_HARD_MAX,
+    },
   ));
   if (bullets.length < 2 || bullets.length > 5) {
     throw new RangeError(`${location}需要 2–5 行（当前 ${bullets.length} 行）`);

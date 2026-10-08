@@ -1,0 +1,2 @@
+The ordered local image files for this call are: {{slot1}}
+Pass every path above, in exactly that order, to the native image tool's referenced_image_paths. These are validated local PNG/JPEG copies readable by the tool; the first image retains the attachment role described above. Do not use num_last_images_to_include, remote image URLs, or manually copied/reconstructed base64. Do not omit any supplied image. If reading an input fails, report the tool error and stop without retrying.

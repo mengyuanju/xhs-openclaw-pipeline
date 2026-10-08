@@ -1,0 +1,27 @@
+.card { display: grid; gap: 10px; min-width: 0; padding: 11px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--control-bg-muted); color: var(--ink); font-size: 12px; line-height: 1.65; }
+.heading { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.heading > svg { flex: 0 0 auto; color: var(--muted); }
+.heading h4 { margin: 0; font-size: 13px; line-height: 1.5; }
+.badge { padding: 1px 6px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); background: var(--surface); font-size: 10px; }
+.help { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.entry { display: grid; gap: 6px; min-width: 0; }
+.entryHeading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 10px; min-width: 0; }
+.entryHeading strong { font-size: 11px; }
+.entryHeading time { color: var(--muted); font-size: 10px; }
+.tags { display: flex; flex-wrap: wrap; gap: 5px; min-width: 0; margin: 0; padding: 0; list-style: none; }
+.tags li { max-width: 100%; padding: 2px 6px; border: 1px solid #e3d2ba; border-radius: 5px; color: #80542b; background: #fffaf4; overflow-wrap: anywhere; font-size: 11px; line-height: 1.5; }
+.noteBlock { display: grid; justify-items: start; gap: 3px; min-width: 0; }
+.note { margin: 0; min-width: 0; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
+.toggle, .historyToggle { padding: 4px 0; border: 0; background: transparent; color: var(--red-dark); font-size: 11px; font-weight: 650; text-align: left; cursor: pointer; }
+.toggle:focus-visible, .historyToggle:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; border-radius: 3px; }
+.history { min-width: 0; padding-top: 3px; border-top: 1px solid var(--line); }
+.historyToggle { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; color: var(--muted); }
+.historyToggle svg { flex: 0 0 auto; }
+.expanded { transform: rotate(180deg); }
+.historyEntries { display: grid; gap: 12px; min-width: 0; padding-top: 8px; }
+.historyEntries[hidden] { display: none; }
+
+@media (max-width: 500px) {
+  .card { padding: 10px; }
+  .entryHeading { align-items: flex-start; }
+}

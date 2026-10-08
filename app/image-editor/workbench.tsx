@@ -6,26 +6,21 @@ import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogTitle, DialogDescription, DialogTrigger } from '@/components/ui/dialog';
 import { apiRequest } from '../components/api-client';
 import { createRequestId } from '../components/request-id';
-import { StandaloneImageEditor } from '../components/standalone-image-editor';
+import { LazyStandaloneImageEditor } from './lazy-standalone-image-editor';
 import { ImageEditorList } from './image-editor-list';
 import { STANDALONE_IMAGE_EDITOR_LIMITS as limits } from '../../src/standalone-image-editor-config.mjs';
+import { referenceUploadSizeMessage } from '../../src/image-upload-validation.mjs';
+import { uploadEditorImages } from './upload-images';
 import styles from './workbench.module.css';
 
 type Workspace = { status:string; operation?:string; id:number; title:string; runId:string; copyRevisionId:number; assets:Array<{id:number;url:string;sha256:string}>; runs:Array<{id:string;result:{processing?:{type:string}}|null}> };
 const url = (value:string) => `/api/control-plane${value}`;
-function encodedFile(file:File):Promise<string> {
-  return new Promise((resolve,reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error('读取图片失败'));
-    reader.onload = () => resolve(String(reader.result).split(',')[1]);
-    reader.readAsDataURL(file);
-  });
-}
 export function ImageEditorWorkbench() {
   const [open,setOpen] = useState(false), [workspace,setWorkspace] = useState<Workspace|null>(null);
   const [page,setPage] = useState(1), [title,setTitle] = useState('');
   const [busy,setBusy] = useState(false), [editorBusy,setEditorBusy] = useState(false);
   const [running,setRunning] = useState(false);
+  const [uploadProgress,setUploadProgress] = useState('');
   const [error,setError] = useState(''), [notice,setNotice] = useState(''), [refreshKey,setRefreshKey] = useState(0);
   const requestId = useRef(createRequestId()), selection = useRef(0);
   const locked = busy || editorBusy;
@@ -58,20 +53,29 @@ export function ImageEditorWorkbench() {
   }
   async function upload(files:File[]) {
     if(!files.length)return;
-    if(files.length > limits.maxImages || files.some(file => !limits.formats.includes(file.type) || file.size > limits.maxUploadBytes)) {
-      setError(`每次最多上传 ${limits.maxImages} 张 PNG/JPEG/WebP，每张不超过 ${limits.maxUploadBytes/1024/1024} MB`);return;
+    if(files.length > limits.maxImages) {
+      setError(`当前选择了 ${files.length} 张图片，每次最多上传 ${limits.maxImages} 张。`);return;
     }
-    setBusy(true);setError('');
+    const oversized=files.find(file=>file.size>limits.maxUploadBytes);
+    if(oversized) {
+      setError(`${oversized.name}：${referenceUploadSizeMessage(oversized.size)}`);return;
+    }
+    const unsupported=files.find(file=>!limits.formats.includes(file.type));
+    if(unsupported) {
+      setError(`${unsupported.name}：仅支持 PNG/JPEG/WebP，请检查图片格式与文件后缀。`);return;
+    }
+    const token = ++selection.current;
+    setBusy(true);setError('');setUploadProgress('正在上传图片…');
     try {
-      const images = await Promise.all(files.map(async file => ({mediaType:file.type,base64:await encodedFile(file)})));
-      const value = await apiRequest<Workspace>(url('/v1/image-editor/workspaces'), {
-        method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({requestId:requestId.current,title:title.trim() || files[0].name.slice(0,200),images}),
+      const value = await uploadEditorImages<Workspace>(files, {
+        requestId:requestId.current,title:title.trim() || files[0].name.slice(0,200),
+        onProgress:(completed,total)=>{if(selection.current===token)setUploadProgress(`正在上传图片（${completed} / ${total}）…`);},
       });
+      if(selection.current!==token)return;
       setWorkspace(value);setPage(1);
       window.history.replaceState(null,'',`/image-editor?workspace=${value.id}`);
-    } catch(e) { setError(e instanceof Error ? e.message : '上传失败'); }
-    finally { setBusy(false); }
+    } catch(e) { if(selection.current===token)setError(e instanceof Error ? e.message : '上传失败'); }
+    finally { if(selection.current===token){setBusy(false);setUploadProgress('');} }
   }
   async function changed() {
     setRefreshKey(key => key+1);
@@ -99,13 +103,13 @@ export function ImageEditorWorkbench() {
             <div className={styles.pages}>{workspace.assets.map((item,index) => <Button key={item.id} size="sm" variant={page === index+1 ? 'default' : 'outline'} disabled={locked} aria-pressed={page === index+1} onClick={() => setPage(index+1)}>第 {index+1} 张</Button>)}</div>
           </div> : <>
             <label className={styles.titleInput}>图片名称（可选）<Input maxLength={200} value={title} disabled={busy} onChange={event => {setTitle(event.target.value);requestId.current=createRequestId();}} placeholder="例如：产品图片调整"/></label>
-            <label className={styles.filePicker}><UploadCloud size={26} aria-hidden="true"/><strong>{busy ? '正在读取图片…' : '选择要编辑的图片'}</strong><span className="subtle">{limits.width} × {limits.height} · PNG / JPEG / WebP · 每张最多 {limits.maxUploadBytes/1024/1024} MB · 最多 {limits.maxImages} 张</span>
+            <label className={styles.filePicker}><UploadCloud size={26} aria-hidden="true"/><strong aria-live="polite">{busy ? uploadProgress || '正在读取图片…' : '选择要编辑的图片'}</strong><span className="subtle">{limits.width} × {limits.height} · PNG / JPEG / WebP · 每张最多 {limits.maxUploadBytes/1024/1024} MiB · 最多 {limits.maxImages} 张</span>
               <Input aria-label="上传待编辑图片" type="file" multiple accept={limits.formats.join(',')} disabled={busy} onChange={event => {const files=Array.from(event.target.files ?? []);event.target.value='';requestId.current=createRequestId();void upload(files);}}/>
             </label>
           </>}
           {error && <p className="notice" role="alert">{error}</p>}
         </section>
-        {workspace && asset && <StandaloneImageEditor key={`${workspace.id}:${page}`} taskId={workspace.id} runId={workspace.runId} copyRevisionId={workspace.copyRevisionId} asset={asset} assets={workspace.assets} page={page} runs={workspace.runs} onChanged={changed} onSubmitted={submitted} onBusyChange={setEditorBusy} initialStatus={workspace.status} onRunningChange={setRunning}/>}
+        {open && workspace && asset && <LazyStandaloneImageEditor key={`${workspace.id}:${page}`} taskId={workspace.id} runId={workspace.runId} copyRevisionId={workspace.copyRevisionId} asset={asset} assets={workspace.assets} page={page} runs={workspace.runs} onChanged={changed} onSubmitted={submitted} onBusyChange={setEditorBusy} initialStatus={workspace.status} onRunningChange={setRunning}/>}
       </div>
     </DialogContent>
   </Dialog>;

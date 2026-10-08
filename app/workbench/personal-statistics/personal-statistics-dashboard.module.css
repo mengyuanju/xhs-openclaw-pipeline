@@ -6,6 +6,22 @@
 .actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .refreshButton { min-width: 82px; }
 .checkedTime { font-variant-numeric: tabular-nums; }
+.overview { display: grid; gap: 12px; min-width: 0; }
+.overviewHeading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
+.overviewHeading h2 { margin: 0 0 4px; font-size: 18px; }
+.overviewGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.overviewCard { display: grid; align-content: start; gap: 10px; min-width: 0; padding: 22px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface); color: var(--ink); font: inherit; text-align: left; text-decoration: none; box-shadow: 0 4px 16px rgba(45, 35, 28, .025); }
+button.overviewCard, a.overviewCard { cursor: pointer; }
+button.overviewCard:disabled { cursor: default; }
+button.overviewCard:hover:not(:disabled), a.overviewCard:hover { border-color: var(--control-accent-border); }
+.overviewCard:focus-visible { outline: 3px solid var(--control-ring); outline-offset: 2px; }
+.overviewCardHeading { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 14px; font-weight: 650; }
+.overviewCardHeading svg { flex: none; color: var(--muted); }
+.overviewCard > strong { display: flex; align-items: baseline; gap: 8px; font-size: 38px; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.overviewCard small, .overviewSource { color: var(--muted); font-size: 12px; line-height: 1.5; font-weight: 400; }
+.overviewSource { margin-top: -6px; font-size: 11px; }
+.overviewDelivery { background: var(--control-accent-bg); border-color: var(--control-accent-border); }
+.overviewDelivery > strong, .overviewDelivery .overviewCardHeading svg { color: var(--red-dark); }
 .tabs { display: grid; gap: 20px; min-width: 0; }
 .tabList { display: flex; width: fit-content; max-width: 100%; gap: 6px; padding: 4px; border: 1px solid var(--line); border-radius: 11px; background: var(--control-bg-muted); }
 .tab { min-width: 126px; min-height: 38px; border-radius: 8px; }
@@ -15,11 +31,25 @@
 .sectionHeader { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
 .sectionHeader h2 { margin: 0; font-size: 18px; }
 .sectionHeader p { margin: 5px 0 0; }
+.dateFilter { display: grid; gap: 16px; padding: 16px 22px; }
+.dateControls { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.datePresets { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.datePresets button { min-height: 38px; padding: 8px 16px; }
+.datePresets button[aria-pressed='true'] { background: var(--control-accent-bg); border-color: var(--control-accent-border); color: var(--red-dark); font-weight: 650; }
+.customDates { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 12px; padding-top: 14px; border-top: 1px solid var(--line); }
+.dateField { display: grid; gap: 5px; width: 180px; max-width: 100%; color: var(--muted); font-size: 12px; }
+.dateField :global(.ui-date-field) { width: 100%; }
+.dateError { flex-basis: 100%; color: var(--red-dark); font-size: 12px; }
 .stageGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .stage { display: grid; align-content: start; gap: 16px; min-width: 0; padding: 20px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface); }
 .stage h3 { margin: 0; font-size: 16px; }
 .stageNote { margin: -8px 0 0; }
 .metricGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.copyPrimaryGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.copyDetailGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.copyPrimaryGrid .metric { background: var(--control-accent-bg); border-color: var(--control-accent-border); }
+.copyPrimaryGrid .metric > span { color: var(--ink); font-size: 13px; font-weight: 650; }
+.copyPrimaryGrid .metric strong { color: var(--red-dark); font-size: 30px; }
 .metric { display: grid; align-content: start; justify-items: start; gap: 6px; min-width: 0; padding: 15px; border: 1px solid var(--line); border-radius: 10px; background: var(--control-bg-muted); color: var(--ink); text-align: left; text-decoration: none; font: inherit; }
 button.metric { cursor: pointer; }
 button.metric:hover:not(:disabled), a.metric:hover { border-color: var(--control-accent-border); background: var(--control-accent-bg); }
@@ -89,3 +119,5 @@ button.metric:hover:not(:disabled), a.metric:hover { border-color: var(--control
 @media (max-width: 1100px) { .qaGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 760px) { .section { padding: 16px; } .stageGrid { grid-template-columns: 1fr; } .statusGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 520px) { .heading h1 { font-size: 23px; } .tabList { width: 100%; } .tab { flex: 1; min-width: 0; } .stage { padding: 15px; } .qaGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .statusGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .activityDialog { width: calc(100vw - 20px); max-height: calc(100dvh - 20px); border-radius: 13px; } .activityHeader { padding: 19px 54px 16px 18px; } .activityTitle { font-size: 18px; } .activityBody { padding: 17px 18px 20px; } .pagination { padding: 12px 18px; } .deliveryDialog { width: calc(100vw - 20px); max-height: calc(100dvh - 20px); padding: 18px; } }
+@media (max-width: 760px) { .overviewGrid { grid-template-columns: 1fr; gap: 10px; } .overviewCard { padding: 18px; } .dateFilter { padding: 16px; } }
+@media (max-width: 520px) { .copyPrimaryGrid { grid-template-columns: 1fr; } .copyDetailGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .copyDetailGrid > :last-child { grid-column: 1 / -1; } .dateField { flex: 1 1 150px; } .datePresets { width: 100%; } .datePresets button { flex: 1 1 auto; } .customDates > button { width: 100%; } }

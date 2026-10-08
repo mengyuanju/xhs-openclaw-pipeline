@@ -5,6 +5,8 @@ const PUBLIC_PATHS = new Set(['/login', '/api/auth/login']);
 const PROFILE_PATH = '/profile';
 const PASSWORD_CHANGE_API_PATHS = new Set([
   '/api/auth/logout',
+  '/api/auth/session',
+  '/api/auth/renew',
   '/api/control-plane/v1/profile',
   '/api/control-plane/v1/profile/password',
 ]);
@@ -53,7 +55,7 @@ export function evaluateAdminProxyRequest(request, environment = process.env) {
     const role = session.roles?.[0];
     const alwaysAllowed = url.pathname === '/profile'
       || url.pathname.startsWith('/api/profile')
-      || url.pathname === '/api/auth/logout'
+      || ['/api/auth/logout', '/api/auth/session', '/api/auth/renew'].includes(url.pathname)
       || (['USER', 'REVIEWER'].includes(role) && url.pathname === '/api/workbench-statistics')
       || (['USER', 'REVIEWER'].includes(role) && url.pathname === '/api/human-quality-settings')
       || url.pathname.startsWith('/api/control-plane/');

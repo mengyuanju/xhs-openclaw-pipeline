@@ -1,22 +1,27 @@
+import { readTaskReviewSource } from './helpers/task-review-source.mjs';
+import { readRepositorySource } from '../server/tests/helpers/repository-source.mjs';
+import { readControlPlaneHttpSource } from './control-plane-http-source.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 const projectFile = (path) => new URL(`../${path}`, import.meta.url);
 
-test('copy QA can recommend discard without directly terminating the task', async () => {
+test('V2 copy QA discard requires an explicit reason, note, confirmation and replayable request', async () => {
   const source = await readFile(projectFile('app/copy-qa/copy-qa-workbench.tsx'), 'utf8');
-
-  assert.match(source, /returnRecommendation.*'REWORK' \| 'DISCARD'/u);
-  assert.match(source, /<SelectItem value="REWORK">要求返工修改<\/SelectItem>/u);
-  assert.match(source, /<SelectItem value="DISCARD">建议任务负责人废弃<\/SelectItem>/u);
-  assert.match(source, /recommendedDisposition: returnRecommendation/u);
-  assert.match(source, /质检建议不会直接终止任务/u);
-  assert.match(source, /建议废弃时必须填写明确原因/u);
+  // V2 replaced a recommendation with an audited task disposition.
+  assert.match(source, /!discardReasonCode\|\|!discardNote\.trim\(\)/u);
+  assert.match(source, /COPY_QA_DISCARD_REASONS\.map/u);
+  assert.match(source, /废弃说明（必填）/u);
+  assert.match(source, /confirm\(\{title:'确认废弃这条任务？'/u);
+  assert.match(source, /历史记录保留/u);
+  assert.match(source, /discardMutation\.current\?\.fingerprint!==fingerprint/u);
+  assert.match(source, /requestId=discardMutation\.current\.requestId/u);
+  assert.match(source, /discardReasonCode:decision==='DISCARD'\?discardReasonCode:undefined/u);
 });
 
 test('assigned worker gets a dedicated audited action for QA-returned copy', async () => {
-  const source = await readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8');
+  const source = await readTaskReviewSource();
 
   assert.match(source, /const canDiscardReturnedCopy = Boolean\(editable && hasOwnerControl/u);
   assert.match(source, /mandatoryCopyQcOrigin === 'QA_RETURN'/u);
@@ -30,8 +35,8 @@ test('assigned worker gets a dedicated audited action for QA-returned copy', asy
 });
 
 test('server prevents generic cancel and score-discard from bypassing returned-copy disposition', async () => {
-  const source = await readFile(projectFile('server/src/postgres-repository.mjs'), 'utf8');
-  const http = await readFile(projectFile('server/src/http-server.mjs'), 'utf8');
+  const source = await readRepositorySource();
+  const http = await readControlPlaneHttpSource();
 
   assert.ok((source.match(/RETURNED_COPY_DISCARD_REQUIRES_DISPOSITION/gu) ?? []).length >= 2);
   assert.match(source, /task\.state === 'COPY_REVIEW_PENDING'.*task\.mandatory_copy_qc === true/su);

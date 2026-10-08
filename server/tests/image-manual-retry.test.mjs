@@ -5,7 +5,13 @@ import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 
 const executionId = '55555555-5555-4555-8555-555555555555';
 
-function taskRow(state, { approved = true, running = false, currentStage = state } = {}) {
+function taskRow(state, {
+  approved = true, running = false, currentStage = state,
+  releasedRevisionId = currentStage === 'IMAGE_RETRY_EXHAUSTED' ? 12 : null,
+  mandatoryCopyQc = currentStage === 'IMAGE_RETRY_EXHAUSTED',
+  mandatoryCopyQcOrigin = currentStage === 'IMAGE_RETRY_EXHAUSTED' ? 'IMAGE_RETRY_REVIEW' : null,
+  copyQaReworkPending = false,
+} = {}) {
   return {
     id: 51,
     query: '重新生图',
@@ -17,6 +23,10 @@ function taskRow(state, { approved = true, running = false, currentStage = state
     created_by_user_id: 'alice',
     copy_executor_node_id: 'copy-a',
     current_copy_revision_id: 12,
+    copy_qc_released_revision_id: releasedRevisionId,
+    mandatory_copy_qc: mandatoryCopyQc,
+    mandatory_copy_qc_origin: mandatoryCopyQcOrigin,
+    copy_qa_rework_pending: copyQaReworkPending,
     current_image_run_id: 'old-run',
     current_execution_id: running ? executionId : null,
     current_stage: currentStage,
@@ -43,6 +53,9 @@ function fixture(state, options = {}) {
       if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
       if (sql.includes('SELECT * FROM tasks WHERE id')) return { rows: [{ ...task }] };
       if (sql.includes('SELECT id FROM copy_revisions')) return { rows: task.approved ? [{ id: 12 }] : [] };
+      if (sql.includes('SELECT copy_quality_image_eligible(')) {
+        return { rows: [{ eligible: options.qualityEligible !== false }] };
+      }
       if (sql.includes('SELECT * FROM task_executions')) {
         return { rows: [{ id: executionId, kind: 'IMAGE', status: 'RUNNING' }] };
       }
@@ -60,6 +73,8 @@ function fixture(state, options = {}) {
           execution_started_at: null,
           finished_at: null,
           error: null,
+          mandatory_copy_qc: values[1] ? false : task.mandatory_copy_qc,
+          mandatory_copy_qc_origin: values[1] ? null : task.mandatory_copy_qc_origin,
         });
         return { rows: [{ ...task }] };
       }
@@ -99,6 +114,48 @@ test('copy awaiting first approval cannot bypass review through image retry', as
   await assert.rejects(repository.requeueImageTask(51), { code: 'IMAGE_RETRY_UNAVAILABLE' });
   assert.equal(calls.some(({ sql }) => sql.includes('UPDATE tasks SET')), false);
   assert.equal(calls.at(-1).sql, 'ROLLBACK');
+});
+
+test('exhausted image retries can restart the previously released copy without a new QA round', async () => {
+  const { calls, repository } = fixture('COPY_REVIEW_PENDING', {
+    currentStage: 'IMAGE_RETRY_EXHAUSTED',
+  });
+  const task = await repository.requeueImageTask(51);
+  assert.equal(task.state, 'IMAGE_QUEUED');
+  assert.equal(task.currentCopyRevisionId, 12);
+  assert.equal(task.currentImageRunId, null);
+  assert.equal(task.mandatoryCopyQc, false);
+  assert.equal(task.mandatoryCopyQcOrigin, null);
+  assert.deepEqual(calls.find(({ sql }) => sql.includes('SELECT copy_quality_image_eligible('))?.values,
+    [51, 12]);
+  const update = calls.find(({ sql }) => sql.includes('UPDATE tasks SET'));
+  assert.deepEqual(update.values, [51, true]);
+  assert.match(update.sql, /pending_snapshot = NULL/u);
+  assert.match(update.sql, /image_production_chain_id = NULL/u);
+  assert.match(update.sql, /mandatory_copy_qc = CASE WHEN \$2 THEN false/u);
+  assert.match(update.sql, /mandatory_copy_qc_origin = CASE WHEN \$2 THEN NULL/u);
+  assert.equal(calls.some(({ sql }) => sql.includes('INSERT INTO copy_revisions')), false);
+  assert.equal(calls.at(-1).sql, 'COMMIT');
+});
+
+test('exhausted image retry does not bypass unreleased copy or active QA requirements', async () => {
+  for (const options of [
+    { releasedRevisionId: null },
+    { qualityEligible: false },
+    { mandatoryCopyQcOrigin: 'QA_RETURN' },
+    { copyQaReworkPending: true },
+    { approved: false },
+  ]) {
+    const { calls, repository } = fixture('COPY_REVIEW_PENDING', {
+      currentStage: 'IMAGE_RETRY_EXHAUSTED', ...options,
+    });
+    await assert.rejects(repository.requeueImageTask(51), {
+      code: options.mandatoryCopyQcOrigin === 'QA_RETURN' || options.copyQaReworkPending
+        ? 'IMAGE_RETRY_REVIEW_REQUIRED' : 'IMAGE_RETRY_UNAVAILABLE',
+    });
+    assert.equal(calls.some(({ sql }) => sql.includes('UPDATE tasks SET')), false);
+    assert.equal(calls.at(-1).sql, 'ROLLBACK');
+  }
 });
 
 test('copy-only and cancelled tasks cannot be sent to image generation', async () => {

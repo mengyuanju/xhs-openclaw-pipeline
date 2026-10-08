@@ -2,6 +2,7 @@ import { ApiError } from '../../../../src/admin/http.mjs';
 import { controlPlaneUrl } from '../../../../src/control-plane/next-runtime.mjs';
 import { assetConditionalHeaders, assetResponseHeaders } from '../../../../src/control-plane/asset-proxy.mjs';
 import { assertMutationCapability } from '../../../../src/control-plane/mutation-capability.mjs';
+import { invalidateControlPlaneCapabilities } from '../../../../src/control-plane/capability-cache.mjs';
 import {
   isKnowledgeControlPlaneRoute,
   nonAdminCanAccessQueryPackageRoute,
@@ -38,7 +39,9 @@ async function proxyRequest(
     throw new ApiError(403, 'FORBIDDEN', '当前账号尚未迁移到用户管理中心');
   }
   const routePath = `/${path.join('/')}`;
-  const bodyLimit = routePath === '/v1/image-editor/workspaces' ? 36 * 1024 * 1024 : MAX_PROXY_BODY_BYTES;
+  const binaryUpload = request.method === 'POST' && /^\/v1\/image-editor\/uploads\/[^/]+\/[1-5]$/u.test(routePath);
+  const bodyLimit = binaryUpload ? 5 * 1024 * 1024
+    : routePath === '/v1/image-editor/workspaces' ? 36 * 1024 * 1024 : MAX_PROXY_BODY_BYTES;
   if (role !== 'ADMIN' && /^\/v1\/admin(?:\/|$)/u.test(routePath)) {
     throw new ApiError(403, 'FORBIDDEN', '仅管理员可查看团队人员统计');
   }
@@ -115,14 +118,24 @@ async function proxyRequest(
   if (Number.isFinite(declaredLength) && declaredLength > bodyLimit) {
     throw new ApiError(413, 'PAYLOAD_TOO_LARGE', '请求内容过大');
   }
-  const body = ['GET', 'HEAD'].includes(request.method)
-    ? undefined
-    : await request.arrayBuffer();
-  if (body && body.byteLength > bodyLimit) {
+  let streamedBodyTooLarge = false;
+  let streamedBytes = 0;
+  const body = ['GET', 'HEAD'].includes(request.method) ? undefined
+    : binaryUpload ? request.body?.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        streamedBytes += chunk.byteLength;
+        if (streamedBytes > bodyLimit) {
+          streamedBodyTooLarge = true;
+          throw new ApiError(413, 'PAYLOAD_TOO_LARGE', '请求内容过大');
+        }
+        controller.enqueue(chunk);
+      },
+    })) : await request.arrayBuffer();
+  if (body instanceof ArrayBuffer && body.byteLength > bodyLimit) {
     throw new ApiError(413, 'PAYLOAD_TOO_LARGE', '请求内容过大');
   }
   let capabilityBody = null;
-  if (body && /^\/v1\/users(?:\/[^/]+)?$/u.test(routePath)) {
+  if (body instanceof ArrayBuffer && /^\/v1\/users(?:\/[^/]+)?$/u.test(routePath)) {
     try { capabilityBody = JSON.parse(new TextDecoder().decode(body)); } catch { /* Upstream validates JSON. */ }
   }
   await assertMutationCapability({ root, routePath, method: request.method, body: capabilityBody });
@@ -150,13 +163,19 @@ async function proxyRequest(
           : {}),
       },
       body,
+      ...(binaryUpload ? { duplex: 'half' as const } : {}),
       cache: 'no-store',
       signal: deliveryTokenDownload
         ? request.signal
         : AbortSignal.any([request.signal, timeoutSignal]),
     });
   } catch {
+    invalidateControlPlaneCapabilities(root);
+    if (streamedBodyTooLarge) throw new ApiError(413, 'PAYLOAD_TOO_LARGE', '请求内容过大');
     throw new ApiError(503, 'CONTROL_PLANE_UNAVAILABLE', '无法连接远端中心服务');
+  }
+  if (upstream.status >= 500 || [404, 405].includes(upstream.status)) {
+    invalidateControlPlaneCapabilities(root);
   }
   const contentDisposition = upstream.headers.get('content-disposition');
   const contentLength = upstream.headers.get('content-length');

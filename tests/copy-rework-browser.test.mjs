@@ -6,7 +6,7 @@ import test from 'node:test';
 import { DEFAULT_HUMAN_QUALITY_SETTINGS } from '../src/human-quality-settings.mjs';
 import { DEFAULT_IMAGE_SETTINGS } from '../server/src/image-options.mjs';
 
-test('browser: returned copy accepts plan-only direct submit and saved plans without another edit', {
+test('browser: restored copy starts fresh and actual returns accept plan-only direct submit and saved plans', {
   skip: process.env.RUN_COPY_REWORK_BROWSER !== '1', timeout: 90_000,
 }, async () => {
   const { build } = await import('esbuild');
@@ -47,14 +47,18 @@ test('browser: returned copy accepts plan-only direct submit and saved plans wit
   let task;
   let requests = [];
   let failSubmit = false;
-  const reset = origin => {
+  let nextRevisionId = 100;
+  const reset = (origin, { pending = false, mandatory = true, revisionOrigin = origin } = {}) => {
     requests = [];
-    task = { id: 1, query: '返工测试', state: 'COPY_REVIEW_PENDING', mandatoryCopyQc: true,
+    const revisionId = ++nextRevisionId;
+    task = { id: 1, query: '返工测试', state: 'COPY_REVIEW_PENDING', mandatoryCopyQc: mandatory,
+      copyQaReworkPending: pending,
       mandatoryCopyQcOrigin: origin, assignedToUserId: 'worker', assignedToAccountId: 8,
-      currentCopyRevisionId: 101, aiDisclosureEnabled: false, currentImageRunId: null,
+      currentCopyRevisionId: revisionId, aiDisclosureEnabled: false, currentImageRunId: null,
       priorityPaused: false, xiaohongshuLinks: [], assets: [], imageRuns: [], executions: [],
-      humanQualityAssessments: [], copyRevisions: [{ id: 101, revision: 1, executionId: null,
-        revisionOrigin: origin, reworkOrigin: origin, reworkTarget: origin === 'FINAL_REWORK' ? 'COPY' : null,
+      humanQualityAssessments: [], copyRevisions: [{ id: revisionId, revision: 1, executionId: null,
+        revisionOrigin, reworkOrigin: ['QA_RETURN', 'FINAL_REWORK'].includes(revisionOrigin) ? revisionOrigin : null,
+        reworkTarget: revisionOrigin === 'FINAL_REWORK' ? 'COPY' : null,
         copyReworkSatisfied: false, approvedAt: null, content: structuredClone(content) }] };
   };
   reset('QA_RETURN');
@@ -104,19 +108,38 @@ test('browser: returned copy accepts plan-only direct submit and saved plans wit
     const errors = []; page.on('pageerror', error => errors.push(error.message));
     const url = `http://127.0.0.1:${server.address().port}`;
     const submit = page.getByRole('button', { name: '提交复检并下一条', exact: true });
-    for (const origin of ['QA_RETURN', 'FINAL_REWORK']) {
-      reset(origin);
+    for (const origin of ['SECOND_ASSIGNMENT', 'DISCARD_RESTORE']) {
+      reset(origin, { revisionOrigin: origin === 'SECOND_ASSIGNMENT' ? 'SECOND_ASSIGNMENT_RESET' : 'GENERATION' });
       await page.goto(url);
       await page.locator('#review-plan-headline-0').waitFor();
-      assert.equal(await submit.isDisabled(), true);
+      assert.equal(await submit.count(), 0, `${origin} starts with ordinary review`);
+      assert.equal(await page.getByRole('button', { name: '提交并下一条', exact: true }).isDisabled(), true,
+        'restored initial content still requires an original score');
+      assert.equal(await page.locator('#review-copy-title').isEditable(), false,
+        'restored initial content does not skip original rating');
+    }
+    for (const { origin, pending = false, mandatory = true, revisionOrigin = origin } of [
+      { origin: 'QA_RETURN' },
+      { origin: 'FINAL_REWORK' },
+      { origin: null, pending: true, mandatory: false, revisionOrigin: 'QA_RETURN' },
+      { origin: 'SECOND_ASSIGNMENT', pending: true, revisionOrigin: 'QA_RETURN' },
+      { origin: 'DISCARD_RESTORE', pending: true, revisionOrigin: 'QA_RETURN' },
+    ]) {
+      reset(origin, { pending, mandatory, revisionOrigin });
+      await page.goto(url);
+      await page.locator('#review-plan-headline-0').waitFor();
+      const reviewSubmit = pending ? page.getByRole('button', { name: '提交审核并下一条', exact: true }) : submit;
+      assert.equal(await reviewSubmit.isDisabled(), true);
       assert.equal(await page.locator('#review-plan-headline-0').isEditable(), true);
+      assert.equal(await page.locator('#review-copy-title').isEditable(), true,
+        `${origin} actual return does not require another original score`);
       await page.locator('#review-plan-headline-0').fill('只改规划直接提交');
       failSubmit = true;
-      await submit.click();
+      await reviewSubmit.click();
       await page.getByRole('alert').filter({ hasText: '测试提交失败' }).waitFor();
       assert.equal(await page.locator('#review-plan-headline-0').inputValue(), '只改规划直接提交');
       failSubmit = false;
-      await submit.click();
+      await reviewSubmit.click();
       await page.locator('output').filter({ hasText: '提交强制复检' }).waitFor();
       assert.equal(requests.length, 2);
       assert.ok(requests.every(request => request.decision === 'APPROVE'));

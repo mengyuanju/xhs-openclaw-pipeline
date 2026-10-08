@@ -66,11 +66,14 @@ test('operator dashboard browser: weighted pass rate, account outcomes, explanat
         ]}));return;}
         if(fail&&!url.pathname.endsWith('/export')){res.statusCode=503;res.setHeader('Content-Type','application/json');res.end(JSON.stringify({error:{code:'TEST_DOWN',message:'统计服务暂不可用'}}));return;}
         if(url.pathname.endsWith('/export')){res.setHeader('Content-Type','text/csv');res.end(performanceCsv(snapshot));return;}
+        // Refresh controls the center cache, not the statistics filter schema.
+        delete input.refresh;
+        delete input.currentPage;delete input.currentPageSize;
         const filters=normalizePerformanceFilters(input,now);let data;
         if(/\/tasks$/u.test(url.pathname)){
           const accountId=Number(url.pathname.split('/').at(-2));
           const items=performanceMetricRows(snapshot.rows.filter(row=>!accountId||row.accountId===accountId),filters.metric,filters.stage,filters.sampleSet);
-          data={person:accountId?snapshot.people.find(p=>p.accountId===accountId):{...snapshot.summary,displayName:'团队'},asOf:at,range:snapshot.range,items:items.slice(0,15),total:items.length,page:1,pageSize:15,trend:snapshot.trend,current:[],timeline:[]};
+          data={person:accountId?snapshot.people.find(p=>p.accountId===accountId):{...snapshot.summary,displayName:'团队'},asOf:at,range:snapshot.range,items:items.slice(0,15),total:items.length,page:1,pageSize:15,trend:snapshot.trend,current:[],currentTotal:0,currentPage:1,currentPageSize:20,timeline:[]};
         }else{
           snapshot=buildPerformanceSnapshot(structuredClone(rows),[],[],filters,new Date(now).toISOString());
           const {rows:unused,people,...report}=snapshot;
@@ -106,6 +109,12 @@ test('operator dashboard browser: weighted pass rate, account outcomes, explanat
     assert.match(await overall.textContent(),/通过 8 \/ 判定 15 项次/u,'team pass rate includes initial, recheck and batch-affected decisions by QA operators');
     assert.match(await overall.textContent(),/文案62\.50%5 \/ 8 项次/u);
     assert.match(await overall.textContent(),/图片42\.86%3 \/ 7 项次/u);
+    assert.ok(requests.filter(path=>new URL(path,base).pathname.endsWith('/admin/operator-performance')).every(path=>!new URL(path,base).searchParams.has('refresh')),'initial reads use shared report cache');
+    await Promise.all([page.waitForResponse(response=>new URL(response.url()).searchParams.get('refresh')==='true'),
+      page.getByRole('button',{name:'刷新',exact:true}).click()]);
+    await page.getByRole('button',{name:'刷新',exact:true}).waitFor();
+    await Promise.all([page.waitForResponse(response=>{const url=new URL(response.url());return url.pathname.endsWith('/admin/operator-performance')&&!url.searchParams.has('refresh');}),
+      page.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')))]);
     assert.equal(await page.getByRole('note').count(),0,'explanations start collapsed');
     await overall.getByRole('button',{name:'通过率口径',exact:true}).click();
     await page.getByRole('note').getByText(/返修/u).waitFor();
@@ -125,11 +134,10 @@ test('operator dashboard browser: weighted pass rate, account outcomes, explanat
     await page.getByText('所选人员质检',{exact:true}).waitFor();
     assert.match(await page.getByRole('region',{name:'质检操作通过率'}).textContent(),/0\.00%通过 0 \/ 判定 0 项次/u,'producer with no QA decisions displays a numeric zero QA rate');
     await page.screenshot({path:join(screenshots,'overview-desktop.png'),fullPage:true});
-    await page.getByRole('button',{name:'账号数据',exact:true}).click();
+    await page.goto(`${base}/workbench-statistics?view=accounts&period=7d&accountId=11`);
     await page.waitForFunction(()=>new URLSearchParams(location.search).get('stage')==='COPY');
     assert.match(await page.getByRole('combobox',{name:'内容类型'}).textContent(),/文案/u);
-    assert.match(await page.getByRole('combobox',{name:'人员'}).textContent(),/标注甲（worker-a）/u,'person scope survives the view switch');
-    await page.goto(`${base}/workbench-statistics?view=accounts&period=7d&accountId=11`);
+    assert.match(await page.getByRole('combobox',{name:'人员'}).textContent(),/标注甲（worker-a）/u,'person scope is preserved in the account view link');
     await page.getByRole('button',{name:'标注甲',exact:true}).waitFor();
     assert.equal(new URL(page.url()).searchParams.get('stage'),'COPY','old account links without a stage restore the copy scope');
     await chooseSelect(page,'人员','全部人员');

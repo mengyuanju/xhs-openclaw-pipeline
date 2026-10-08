@@ -1,3 +1,4 @@
+import { readTaskReviewSource } from './helpers/task-review-source.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
@@ -64,7 +65,7 @@ test('copy QA tag migration and both review surfaces preserve scoped reusable la
     readFile(projectFile('app/copy-qa/copy-qa-reason-picker.tsx'), 'utf8'),
     readFile(projectFile('app/copy-qa/copy-qa-workbench.tsx'), 'utf8'),
     readFile(projectFile('app/work-mode/work-quality-editor.tsx'), 'utf8'),
-    readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
+    readTaskReviewSource(),
   ]);
   assert.match(migration, /CREATE TABLE copy_qa_reason_tags/u);
   assert.match(migration, /visibility IN \('PRIVATE', 'PUBLIC'\)/u);
@@ -74,7 +75,10 @@ test('copy QA tag migration and both review surfaces preserve scoped reusable la
   assert.match(picker, /添加我的标签/u);
   assert.match(picker, /REQUEST_PUBLIC/u);
   assert.match(picker, /PUBLISH/u);
-  assert.ok((standalone.match(/<CopyQaReasonPicker/gu) ?? []).length >= 2);
+  // V2 has one return dialog; the server automatically applies the batch policy.
+  assert.equal((standalone.match(/<CopyQaReasonPicker/gu) ?? []).length, 1);
+  assert.match(standalone, /selected=\{reasonCodes\} onChange=\{setReasonCodes\}/u);
+  assert.match(standalone, /reasonCodes:decision==='RETURN'\?reasonCodes:\[\]/u);
   assert.match(workMode, /<CopyQaReasonPicker/u);
   assert.match(worker, /copyQaReasonLabels/u);
   assert.match(worker, /reworkReasonSnapshots/u);

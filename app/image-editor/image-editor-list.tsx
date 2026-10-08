@@ -6,6 +6,7 @@ import { Checkbox } from '@/components/ui/input';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 import { createRequestId } from '../components/request-id';
 import { useBackgroundTasks } from '../components/background-tasks';
+import { subscribeWorkspaceUpdates } from '../components/workspace-updates';
 import styles from './workbench.module.css';
 
 type Item = { id:number; title:string; owner:string; status:string; operation?:string; nodeId:string|null; error:string|null; createdAt?:string };
@@ -29,22 +30,29 @@ export function ImageEditorList({refreshKey=0,onSelect}:{refreshKey?:number;onSe
   useEffect(() => {setOffset(0);},[refreshKey]);
   useEffect(() => {
     const controller = new AbortController();
-    let active = true, pending = false;
+    let active = true, pending = false, lastRead = 0, running = false;
     setLoading(true);
     const refresh = async () => {
       if(pending)return;
       pending = true;
+      lastRead=Date.now();
       try {
         const value = await apiRequest<{items:Item[];total:number}>(`/api/control-plane/v1/image-editor/workspaces?offset=${offset}&limit=20&queue=true`,{signal:controller.signal});
         if(!active)return;
         if(offset > 0 && !value.items.length && value.total <= offset) {setOffset(Math.max(0,Math.ceil(value.total/20)-1)*20);return;}
         setData(value);setSelected(current=>current.filter(id=>value.items.some(item=>item.id===id&&item.status!=='RUNNING')));setError('');
+        running=value.items.some(item=>['RUNNING','QUEUED'].includes(item.status));lastRead=Date.now();
       } catch(e) {if(active)setError(e instanceof Error ? e.message : '读取图片列表失败');}
       finally {pending=false;if(active)setLoading(false);}
     };
     void refresh();
-    const timer = setInterval(() => void refresh(),5000);
-    return () => {active=false;controller.abort();clearInterval(timer);};
+    const visible=()=>{if(document.visibilityState==='visible')void refresh();};
+    const timer = setInterval(() => {
+      if(document.visibilityState==='visible'&&Date.now()-lastRead>(running?5000:15_000))void refresh();
+    },1000);
+    const unsubscribe=subscribeWorkspaceUpdates(visible,{scopes:['image-editor']});
+    document.addEventListener('visibilitychange',visible);
+    return () => {active=false;controller.abort();clearInterval(timer);unsubscribe();document.removeEventListener('visibilitychange',visible);};
   },[offset,refreshKey,revision]);
   const selectable=data.items.filter(item=>item.status!=='RUNNING').map(item=>item.id);
   async function remove(ids:number[]) {

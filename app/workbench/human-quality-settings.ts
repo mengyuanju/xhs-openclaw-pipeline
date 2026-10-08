@@ -4,6 +4,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { apiRequest } from '../components/api-client';
 import { DEFAULT_HUMAN_QUALITY_SETTINGS } from '../../src/human-quality-settings.mjs';
+import { browserSessionGeneration } from '../components/session-client';
+import { createSessionReadCache } from '../components/session-read-cache';
+import { notifyWorkspaceUpdated, subscribeWorkspaceUpdates, workspaceUpdateRevision } from '../components/workspace-updates';
 
 export type HumanQualityReasonOption = { code: string; label: string };
 export type HumanScore = 1 | 2 | 2.5 | 3;
@@ -44,23 +47,35 @@ export const DEFAULT_SETTINGS: HumanQualitySettings = {
   imageReviewDisplay: { ...DEFAULT_HUMAN_QUALITY_SETTINGS.imageReviewDisplay },
 };
 
-export async function loadHumanQualitySettings() {
-  return apiRequest<HumanQualitySettings>('/api/human-quality-settings');
+const settingsCache = createSessionReadCache<HumanQualitySettings>({
+  scope: browserSessionGeneration, ttlMs: 60_000,
+  read: signal => apiRequest('/api/human-quality-settings', {
+    signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]), cache: 'no-store',
+  }),
+});
+let invalidatedRevision = -1;
+
+export function loadHumanQualitySettings() { return settingsCache.load(); }
+
+export function invalidateHumanQualitySettings() {
+  settingsCache.invalidate();
+  notifyWorkspaceUpdated({ scopes: ['settings'] });
 }
 
-export function useHumanQualitySettings(refreshKey?: string | number | null) {
+export function useHumanQualitySettings(refreshKey?: string | number | null, enabled = true) {
   const [settings, setSettings] = useState<HumanQualitySettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const requestRef = useRef(0);
 
-  const refresh = useCallback(async () => {
+  const read = useCallback(async (fresh = false) => {
+    if (!enabled) return null;
     const requestId = ++requestRef.current;
     setLoading(true);
     setError(null);
     setSettings(null);
     try {
-      const value = await loadHumanQualitySettings();
+      const value = await settingsCache.load({ fresh });
       if (requestId === requestRef.current) setSettings(value);
       return value;
     } catch (caught) {
@@ -71,12 +86,19 @@ export function useHumanQualitySettings(refreshKey?: string | number | null) {
     } finally {
       if (requestId === requestRef.current) setLoading(false);
     }
-  }, []);
+  }, [enabled]);
+  const refresh = useCallback(() => read(true), [read]);
 
   useEffect(() => {
-    void refresh();
-    return () => { requestRef.current += 1; };
-  }, [refresh, refreshKey]);
+    if (!enabled) { setSettings(null); setLoading(false); setError(null); return; }
+    void read();
+    const unsubscribe = subscribeWorkspaceUpdates(() => {
+      const revision = workspaceUpdateRevision();
+      if (revision !== invalidatedRevision) { invalidatedRevision = revision; settingsCache.invalidate(); }
+      void read();
+    }, { scopes: ['settings'] });
+    return () => { requestRef.current += 1; unsubscribe(); };
+  }, [read, refreshKey, enabled]);
 
   return { settings, loading, error, refresh };
 }

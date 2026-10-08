@@ -61,7 +61,7 @@ test('escaped source and locked copy never become strict schema literals, includ
       const text = changed.properties.allowedVisibleText.properties;
       assert.deepEqual(text.headline, { type: 'string', minLength: 1, maxLength: 18 });
       assert.deepEqual(text.subtitle, { type: 'string', minLength: 0, maxLength: 30 });
-      assert.deepEqual(text.bullets.items, { type: 'string', minLength: 1, maxLength: 30 });
+      assert.deepEqual(text.bullets.items, { type: 'string', minLength: 1, maxLength: 200 });
       assert.equal(text.bullets.minItems, 2);
       assert.equal(text.bullets.maxItems, 2);
     }
@@ -71,6 +71,19 @@ test('escaped source and locked copy never become strict schema literals, includ
     assert.deepEqual(data.sourceEvidenceOptions, visualEvidenceOptions(original));
     assert.deepEqual(post, original, 'schema compatibility must not rewrite approved copy');
   }
+});
+
+test('strict schema admits approved bullet text beyond the weighted recommendation', () => {
+  const post = createMockPost(3);
+  const longBullet = '清'.repeat(45);
+  post.imagePlan[1].bullets[0] = longBullet;
+  const schema = withPromptRuntime(runtime, () => visualPlanSchema(post));
+  const page = schema.properties.pages.items.anyOf.find(item => item.properties.index.enum[0] === 2);
+  assert.equal(page.properties.allowedVisibleText.properties.bullets.items.maxLength, 200);
+  assert.ok(page.properties.allowedVisibleText.properties.bullets.items.enum.includes(longBullet));
+  const unpinnedSchema = visualPlanSchema(post);
+  const unpinnedPage = unpinnedSchema.properties.pages.items.anyOf.find(item => item.properties.index.enum[0] === 2);
+  assert.equal(unpinnedPage.properties.allowedVisibleText.properties.bullets.items.maxLength, 200);
 });
 
 test('quoted copy completes planning through a strict fake and retains server-owned evidence', async () => {

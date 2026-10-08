@@ -6,6 +6,7 @@ import { drainReferenceCleanup, scheduleReferenceCleanupForDeletedWorkspace } fr
 import { decodeReference, imageHash, shortText } from '../../src/image-edit-pixels.mjs';
 import { STANDALONE_IMAGE_EDITOR_LIMITS as LIMITS } from '../../src/standalone-image-editor-config.mjs';
 import { normalizeTaskId, normalizeUuid, ControlPlaneAuthorizationError, ControlPlaneNotFoundError, ControlPlaneConflictError } from './domain.mjs';
+import { createStandaloneImageUploads, normalizeUploadManifest } from './standalone-image-uploads.mjs';
 
 const assetUrl = id => `/v1/image-editor/assets/${id}`;
 const visibleWorkspace = alias => `NOT EXISTS (SELECT 1 FROM image_edit_events removed WHERE removed.task_id=${alias}.task_id AND removed.action='DELETE_WORKSPACE')`;
@@ -18,6 +19,7 @@ async function currentActor(c, actor) {
 }
 export function createStandaloneImageEditor({ pool, storageRoot, onProgrammaticReady }) {
   const edits = createImageEditingService({ pool, storageRoot, onProgrammaticReady });
+  const uploads = createStandaloneImageUploads({ storageRoot, authorize: actor => currentActor(pool, actor) });
   async function access(id, actor, c = pool, { includeDeleted = false } = {}) {
     const row = (await c.query(`SELECT w.*,t.current_image_run_id,t.current_copy_revision_id,NOT (${visibleWorkspace('w')}) AS deleted
       FROM standalone_image_workspaces w JOIN tasks t ON t.id=w.task_id
@@ -87,6 +89,25 @@ export function createStandaloneImageEditor({ pool, storageRoot, onProgrammaticR
         return {id:Number(a.id),sha256:a.sha256,url:assetUrl(a.id)}; }) };
   }
   async function create(input, actor) {
+    if (Object.hasOwn(input, 'uploads')) {
+      if (Object.hasOwn(input, 'images')) throw new TypeError('请使用一种图片上传方式');
+      const manifest = normalizeUploadManifest(input.uploads);
+      const requestId = normalizeUuid(input.requestId, 'requestId');
+      const title = shortText(input.title ?? '上传图片', 200);
+      await currentActor(pool, actor);
+      const prior = (await pool.query('SELECT task_id,title,limits FROM standalone_image_workspaces WHERE owner_id=$1 AND request_id=$2',
+        [actor.userId, requestId])).rows[0];
+      if (prior) {
+        const expected = prior.limits?.uploadManifest?.map(({ index, token }) => ({ index, token }));
+        if (prior.title !== title || JSON.stringify(expected) !== JSON.stringify(manifest)) {
+          throw new ControlPlaneConflictError('UPLOAD_CONFLICT', '相同请求编号对应不同上传内容');
+        }
+        await uploads.finalize({ requestId, uploads: manifest }, actor, Number(prior.task_id));
+        return detail(Number(prior.task_id), actor);
+      }
+      return uploads.commit({ ...input, requestId, uploads: manifest }, actor,
+        (images, uploadManifest) => createPrepared(input, actor, images, uploadManifest));
+    }
     const requestId=normalizeUuid(input.requestId,'requestId');
     const title=shortText(input.title??'上传图片',200);
     if (!Array.isArray(input.images)||!input.images.length||input.images.length>LIMITS.maxImages) throw new TypeError('请上传 1 至 5 张图片');
@@ -100,6 +121,11 @@ export function createStandaloneImageEditor({ pool, storageRoot, onProgrammaticR
       if (decoded.width!==LIMITS.width||decoded.height!==LIMITS.height) throw new TypeError('原图必须为 1086×1448，不会自动拉伸或裁切');
       images.push(decoded);
     }
+    return createPrepared({ ...input, requestId }, actor, images);
+  }
+  async function createPrepared(input, actor, images, uploadManifest) {
+    const requestId=normalizeUuid(input.requestId,'requestId');
+    const title=shortText(input.title??'上传图片',200);
     const hash=imageHash(Buffer.from(JSON.stringify({title,images:images.map(image=>image.sha256)})));
     const paths=[];
     let id;
@@ -130,18 +156,21 @@ export function createStandaloneImageEditor({ pool, storageRoot, onProgrammaticR
         const members=[];
         for(const [index,image] of images.entries()) {
           const path=resolve(directory,`${randomUUID()}.png`);
-          await writeFile(path,image.bytes,{flag:'wx'});paths.push(path);
+          const bytes=image.bytes??await readFile(editStoragePath(storageRoot,image.bytesFile));
+          if(imageHash(bytes)!==image.sha256)throw new TypeError('上传图片完整性校验失败，请重新上传');
+          await writeFile(path,bytes,{flag:'wx'});paths.push(path);
           const a=(await c.query(`INSERT INTO assets(task_id,image_run_id,media_type,byte_size,sha256,storage_path,
             original_name,image_production_chain_id,artifact_key,origin_image_run_id,asset_role,edit_metadata)
             VALUES($1,$2,'image/png',$3,$4,$5,$6,$2,$7,$2,'DELIVERY',$8) RETURNING id`,
-          [taskId,runId,image.bytes.length,image.sha256,path,`upload-${index+1}.png`,randomUUID(),
+          [taskId,runId,bytes.length,image.sha256,path,`upload-${index+1}.png`,randomUUID(),
             {source:'USER_UPLOAD',uploadedBy:actor.username,originalSha256:image.originalSha256,originalMediaType:image.originalMediaType}])).rows[0];
           members.push({pageIndex:index+1,assetId:Number(a.id),deliveryAssetId:Number(a.id),url:assetUrl(a.id),sha256:image.sha256});
         }
         await c.query('UPDATE image_runs SET result=$2,finished_at=now() WHERE id=$1',[runId,{images:members,source:'USER_UPLOAD'}]);
         await c.query('UPDATE tasks SET current_copy_revision_id=$2,current_image_run_id=$3 WHERE id=$1',[taskId,revision.id,runId]);
         await c.query(`INSERT INTO standalone_image_workspaces(task_id,owner_id,request_id,upload_hash,title,limits)
-          VALUES($1,$2,$3,$4,$5,$6)`,[taskId,actor.userId,requestId,hash,title,LIMITS]);
+          VALUES($1,$2,$3,$4,$5,$6)`,[taskId,actor.userId,requestId,hash,title,
+            uploadManifest?{...LIMITS,uploadManifest}:LIMITS]);
         return taskId;
       });
     } catch(error) {await Promise.all(paths.map(path=>unlink(path).catch(()=>{})));throw error;}
@@ -183,6 +212,14 @@ export function createStandaloneImageEditor({ pool, storageRoot, onProgrammaticR
   }
   return {
     limits:LIMITS,access,detail,create,remove,createBatch,
+    uploads,
+    async editState(id,actor,options={}) {
+      const workspace=await access(id,actor,pool,{includeDeleted:true});
+      if(workspace.deleted)return {status:'DELETED',signature:'deleted',items:[]};
+      const result=await edits.state(workspace.task_id,options);
+      await access(id,actor);
+      return result;
+    },
     async list(actor,{offset=0,limit=20,queue=false}={}) {
       if(!['ADMIN','USER'].includes(actor?.role))throw new ControlPlaneAuthorizationError();
       offset=Number(offset);limit=Number(limit);

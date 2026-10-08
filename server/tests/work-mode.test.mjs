@@ -42,9 +42,54 @@ test('copy work is removed after submission, returns on rework, and scope preced
   }
   tasks[1].state = 'COPY_QC_PENDING';
   assert.equal((await loadWorkModePage(repository, { kind: 'COPY' }, actor)).total, 0);
-  tasks[1].state = 'COPY_REVIEW_PENDING'; tasks[1].mandatoryCopyQc = true; tasks[1].currentCopyRevisionId++;
+  tasks[1].state = 'COPY_REVIEW_PENDING'; tasks[1].copyQaReworkPending = true; tasks[1].currentCopyRevisionId++;
   page = await loadWorkModePage(repository, { kind: 'COPY' }, actor);
   assert.equal(page.items[0].rework, true); assert.equal(page.items[0].version, 103);
+});
+
+test('copy work labels returns without treating restored initial content as rework', async () => {
+  const cases = [
+    { name: 'new copy', fields: {}, rework: false },
+    { name: 'ordinary QA return', fields: { copyQaReworkPending: true, mandatoryCopyQc: false }, rework: true },
+    { name: 'secondary assignment', fields: { mandatoryCopyQc: true, mandatoryCopyQcOrigin: 'SECOND_ASSIGNMENT', copyQaReworkPending: false }, rework: false },
+    { name: 'discard restoration', fields: { mandatoryCopyQc: true, mandatoryCopyQcOrigin: 'DISCARD_RESTORE', copyQaReworkPending: false }, rework: false },
+    { name: 'returned again after secondary assignment', fields: { mandatoryCopyQc: true, mandatoryCopyQcOrigin: 'SECOND_ASSIGNMENT', copyQaReworkPending: true }, rework: true },
+    { name: 'returned again after discard restoration', fields: { mandatoryCopyQc: true, mandatoryCopyQcOrigin: 'DISCARD_RESTORE', copyQaReworkPending: true }, rework: true },
+    { name: 'legacy QA return', fields: { mandatoryCopyQc: true, mandatoryCopyQcOrigin: 'QA_RETURN' }, rework: true },
+    { name: 'final review return', fields: { mandatoryCopyQc: true, mandatoryCopyQcOrigin: 'FINAL_REWORK' }, rework: true },
+    { name: 'image failure revision', fields: { mandatoryCopyQc: true, mandatoryCopyQcOrigin: 'IMAGE_RETRY_REVIEW' }, rework: true },
+    { name: 'image retry exhausted without mandatory inspection', fields: { currentStage: 'IMAGE_RETRY_EXHAUSTED', mandatoryCopyQc: false }, rework: true },
+    { name: 'image retry exhausted after secondary assignment', fields: { currentStage: 'IMAGE_RETRY_EXHAUSTED', mandatoryCopyQc: true, mandatoryCopyQcOrigin: 'SECOND_ASSIGNMENT' }, rework: true },
+    { name: 'legacy mandatory copy without origin', fields: { mandatoryCopyQc: true }, rework: true },
+  ];
+  const tasks = cases.map(({ fields }, index) => task(index + 1, 'COPY_REVIEW_PENDING', fields));
+  const repository = { getUserByUsername: async () => user,
+    listTasks: async () => ({ items: tasks, total: tasks.length }) };
+  const page = await loadWorkModePage(repository, { kind: 'COPY' }, actor);
+  assert.equal(page.total, cases.length);
+  assert.equal(page.hasMore, false);
+  for (const [index, expected] of cases.entries()) {
+    assert.equal(page.items[index].rework, expected.rework, expected.name);
+    assert.equal(page.items[index].taskId, tasks[index].id);
+    assert.equal(page.items[index].version, tasks[index].currentCopyRevisionId);
+  }
+});
+
+test('image work labels only image returns, regardless of copy inspection obligations', async () => {
+  const tasks = [
+    task(1, 'MANUAL_ARCHIVE'),
+    task(2, 'MANUAL_ARCHIVE', { mandatoryCopyQc: true, mandatoryCopyQcOrigin: 'SECOND_ASSIGNMENT' }),
+    task(3, 'MANUAL_ARCHIVE', { mandatoryCopyQc: true, mandatoryCopyQcOrigin: 'QA_RETURN', copyQaReworkPending: true }),
+    task(4, 'MANUAL_ARCHIVE', { mandatoryImageQc: true, mandatoryImageQcOrigin: 'SECOND_ASSIGNMENT' }),
+    task(5, 'IMAGE_REWORK_PENDING'),
+    task(6, 'IMAGE_REWORK_PENDING', { mandatoryCopyQc: true, mandatoryCopyQcOrigin: 'SECOND_ASSIGNMENT' }),
+    task(7, 'MANUAL_ARCHIVE', { currentStage: 'IMAGE_RETRY_EXHAUSTED', copyQaReworkPending: true }),
+  ];
+  const repository = { getUserByUsername: async () => user,
+    listTasks: async () => ({ items: tasks, total: tasks.length }) };
+  const page = await loadWorkModePage(repository, { kind: 'IMAGE' }, actor);
+  assert.deepEqual(page.items.map(item => item.rework), [false, false, false, false, true, true, false]);
+  assert.deepEqual(page.items.map(item => item.version), tasks.map(item => item.currentImageRunId));
 });
 
 test('work mode rechecks live account permission and stable identity', async () => {
@@ -81,6 +126,7 @@ test('quality work delegates copy items to the active V2 queue and preserves pag
     const page = await loadWorkModePage(repository, { kind, limit: 2 }, { ...actor, role: 'REVIEWER' });
     assert.equal(page.items.length, 2); assert.equal(page.hasMore, true); assert.equal(page.total, null);
     assert.equal(page.items[0].source, null); assert.equal(page.items[0].taskId, undefined);
+    assert.equal(page.items[0].rework, true, `${kind} mandatory recheck label`);
     if (kind === 'COPY_QA') {
       assert.deepEqual(page.items[0].qa.previousReturn, qa[0].previousReturn);
       assert.equal(calls.at(-1).options.limit, 2);
@@ -117,6 +163,7 @@ test('copy QA kind is applied before pagination and is rejected for other work',
   const reviewerActor = { ...actor, role: 'REVIEWER' };
   const first = await loadWorkModePage(repository, { kind: 'COPY_QA', sampleKind: 'MANDATORY_RECHECK', limit: 2 }, reviewerActor);
   assert.deepEqual(first.items.map(item => item.id), ['mandatory-0', 'mandatory-1']);
+  assert.equal(first.items[0].rework, true);
   assert.equal(first.hasMore, true);
   assert.equal(first.total, null);
   assert.equal(calls[0].sampleKind, 'MANDATORY_RECHECK');
@@ -126,6 +173,7 @@ test('copy QA kind is applied before pagination and is rejected for other work',
   assert.equal(second.total, 3);
   const random = await loadWorkModePage(repository, { kind: 'COPY_QA', sampleKind: 'RANDOM', limit: 2 }, reviewerActor);
   assert.deepEqual(random.items.map(item => item.id), ['random-0', 'random-1']);
+  assert.equal(random.items[0].rework, false);
   assert.equal(calls.at(-1).sampleKind, 'RANDOM');
   const all = await loadWorkModePage(repository, { kind: 'COPY_QA', limit: 2 }, reviewerActor);
   assert.deepEqual(all.items.map(item => item.id), ['random-0', 'random-1']);

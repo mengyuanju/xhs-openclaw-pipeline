@@ -105,6 +105,9 @@ describe('content stage review contract', () => {
       evidence: {
         referenceText: '法规原文明确要求转弯前减速慢行。',
         referenceUrls: ['https://example.com/source'],
+        webResearch: { provider: 'codex', sources: Array.from({ length: 10 }, (_, index) => ({
+          title: `检索来源 ${index + 1}`, url: `https://example${index + 1}.com/source`, snippet: '资料',
+        })) },
       },
     });
     assert.match(textPrompt, /<trusted_business_rules kind="TEXT_REVIEW_SYSTEM">/u);
@@ -121,6 +124,7 @@ describe('content stage review contract', () => {
     assert.equal(textData.evidence.referenceText, '法规原文明确要求转弯前减速慢行。');
     assert.deepEqual(textData.allowedSources, ['https://example.com/source']);
     assert.deepEqual(textData.evidence.referenceUrls, ['https://example.com/source']);
+    assert.equal(textData.evidence.webResearch.sources.length, 10);
     assert.match(textPrompt, /PASS 不得包含 BLOCKING/u);
     assert.match(textPrompt, /REJECT 必须至少包含一个 BLOCKING/u);
     assert.doesNotMatch(textPrompt, /第一人称不是正文必须采用的主要叙述视角/u);

@@ -3,11 +3,11 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input, Radio } from '@/components/ui/input';
-import { AI_DISCLOSURE_FALLBACK_COLOR, normalizeAiDisclosureBadgeColor } from '../../src/ai-disclosure-badge.mjs';
+import { AI_DISCLOSURE_DEFAULT_COLOR, normalizeAiDisclosureBadgeColor } from '../../src/ai-disclosure-badge.mjs';
 import styles from './image-disclosure-color-control.module.css';
 
 export type DisclosureColorMode = 'AUTO' | 'CUSTOM';
-export const DISCLOSURE_COLOR_ERROR = '请输入有效的颜色值，例如 #68744A。';
+export const DISCLOSURE_COLOR_ERROR = `请输入有效的颜色值，例如 ${AI_DISCLOSURE_DEFAULT_COLOR}。`;
 
 export function normalizeDisclosureBadgeColor(value:unknown):string|null {
   try{return normalizeAiDisclosureBadgeColor(value);}catch{return null;}
@@ -64,8 +64,8 @@ export function ImageDisclosureColorControl({mode,color,disabled,onModeChange,on
     </div>
     {mode==='CUSTOM'?<>
       <div className={styles.fields}>
-        <label className={styles.pickerLabel}>取色器<Input type="color" className={styles.picker} aria-label="程序标识取色器" value={normalizedColor??AI_DISCLOSURE_FALLBACK_COLOR} disabled={disabled||picking} onChange={event=>{setPickerError('');onColorChange(event.target.value.toUpperCase());}}/></label>
-        <label className={styles.hexLabel}>颜色值<Input aria-label="程序标识颜色值" aria-invalid={!normalizedColor} aria-describedby={!normalizedColor?`${id}-color-error`:undefined} value={color} maxLength={7} placeholder="#68744A" spellCheck={false} autoComplete="off" disabled={disabled||picking} onChange={event=>{setPickerError('');onColorChange(event.target.value);}}/></label>
+        <label className={styles.pickerLabel}>取色器<Input type="color" className={styles.picker} aria-label="程序标识取色器" value={normalizedColor??AI_DISCLOSURE_DEFAULT_COLOR} disabled={disabled||picking} onChange={event=>{setPickerError('');onColorChange(event.target.value.toUpperCase());}}/></label>
+        <label className={styles.hexLabel}>颜色值<Input aria-label="程序标识颜色值" aria-invalid={!normalizedColor} aria-describedby={!normalizedColor?`${id}-color-error`:undefined} value={color} maxLength={7} placeholder={AI_DISCLOSURE_DEFAULT_COLOR} spellCheck={false} autoComplete="off" disabled={disabled||picking} onChange={event=>{setPickerError('');onColorChange(event.target.value);}}/></label>
         {canPickScreen&&<Button className={styles.screenButton} variant="outline" size="sm" type="button" disabled={disabled||picking} onClick={()=>void pickScreenColor()}>{picking?'正在取色…':'屏幕取色'}</Button>}
       </div>
       {!normalizedColor&&<p id={`${id}-color-error`} className={styles.error} role="alert">{DISCLOSURE_COLOR_ERROR}</p>}

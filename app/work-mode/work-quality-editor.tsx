@@ -13,6 +13,7 @@ import { ImageDiscardButton } from '../components/image-discard-button';
 import { ImageCarouselNavigation } from '../components/image-carousel-navigation';
 import { ImageManualModificationNote } from '../components/image-manual-modification-note';
 import { ImagePreview } from '../components/image-preview';
+import { AssetThumbnail } from '../components/asset-thumbnail';
 import { ImagePreviewBackgroundControl, type PreviewBackdrop } from '../components/image-preview-background-control';
 import { createRequestId } from '../components/request-id';
 import { copyRevisionView, type CopyQaItem } from '../copy-qa/types';
@@ -188,7 +189,7 @@ export function WorkQualityEditor({ item, navigationGuardRef, onSkip, onComplete
             <nav className={styles.qualityThumbnails} aria-label="选择待检图片">
               {assets.map((asset, index) => <Button unstyled key={asset.id} aria-label={`选择待检图片第 ${pageNumber(index)} 页`}
                 aria-pressed={index === selectedImage} data-problem={problemAssets.includes(asset.id)} onClick={() => showImage(index)}>
-                <img src={apiPath(asset.url)} alt="" loading={index === 0 ? 'eager' : 'lazy'} /><span>第{pageNumber(index)}页{problemAssets.includes(asset.id) ? ' · 问题' : ''}</span>
+                <AssetThumbnail src={apiPath(asset.url)} alt="" loading={index === 0 ? 'eager' : 'lazy'} /><span>第{pageNumber(index)}页{problemAssets.includes(asset.id) ? ' · 问题' : ''}</span>
               </Button>)}
             </nav>
           </> : <p className="notice warning">当前没有可预览的图片，暂不能通过质检。</p>}

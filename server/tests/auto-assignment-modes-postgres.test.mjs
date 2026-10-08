@@ -86,6 +86,42 @@ test('fixed allocation for a new worker stays at five across background replenis
     member = await repository.getAutoAssignmentWorker(worker.username);
     assert.equal(member.currentTaskCount, 6);
     assert.equal(member.fixedQuantityAssignedTotal, 5);
+
+    // Complete one copy review without running an image executor. The actual
+    // scheduler must fill the released pending-copy slot exactly once, while
+    // preserving the historical manual fixed-dispatch counters.
+    await repository.pool.query(`
+      UPDATE tasks SET state = 'IMAGE_QUEUED', current_stage = 'IMAGE_QUEUED'
+      WHERE id = $1 AND assigned_to_user_id = $2
+    `, [tasks[0].id, worker.username]);
+    assert.equal((await repository.getAutoAssignmentWorker(worker.username)).currentTaskCount, 5);
+    assert.equal((await repository.replenishAutoAssignments()).assignedCount, 1);
+    member = await repository.getAutoAssignmentWorker(worker.username);
+    assert.equal(member.currentTaskCount, 6);
+    assert.equal(member.fixedQuantityAssignedTotal, 5);
+    assert.equal(member.fixedQuantityAssignedToday, 5);
+    assert.equal((await repository.replenishAutoAssignments()).assignedCount, 0,
+      'continuous replenishment must stop at the configured pending-copy limit');
+
+    // The global switch stops later replenishment but retains existing owners.
+    const overview = await repository.getAutoAssignmentOverview();
+    await repository.updateAutoAssignmentSettings({
+      enabled: false, mode: 'CONTINUOUS', expectedVersion: overview.settings.version, actor,
+    });
+    await repository.pool.query(`
+      UPDATE tasks SET state = 'IMAGE_QUEUED', current_stage = 'IMAGE_QUEUED'
+      WHERE id = $1 AND assigned_to_user_id = $2
+    `, [tasks[1].id, worker.username]);
+    const disabled = await repository.replenishAutoAssignments();
+    assert.equal(disabled.outcome, 'DISABLED');
+    assert.equal(disabled.assignedCount, 0);
+    member = await repository.getAutoAssignmentWorker(worker.username);
+    assert.equal(member.currentTaskCount, 5);
+    assert.equal(member.fixedQuantityAssignedTotal, 5);
+    assert.equal(member.fixedQuantityAssignedToday, 5);
+    assert.equal(Number((await repository.pool.query(`
+      SELECT count(*) FROM tasks WHERE assigned_to_user_id = $1
+    `, [worker.username])).rows[0].count), 7, 'closing the switch cannot reclaim previous assignments');
   } finally {
     await repository.pool.end();
     await database.stop();

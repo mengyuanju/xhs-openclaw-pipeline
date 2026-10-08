@@ -8,6 +8,7 @@ import { createCodexClient } from '../src/codex.mjs';
 import { createCodexRuntime } from '../src/codex-runtime.mjs';
 import { createResearchSnapshot } from '../src/research.mjs';
 import { createPromptRuntime, withPromptRuntime } from '../src/prompt-runtime.mjs';
+import { withModelCallTracing } from '../src/model-call-trace.mjs';
 
 function success(answer, items = []) {
   return { status: 0, stderr: '', stdout: [
@@ -317,6 +318,56 @@ test('image edits attach copies, accept image-only native completion and never o
   await assert.rejects(readFile(attachment), { code: 'ENOENT' });
   await assert.rejects(client.runImageEdit({ prompt: 'Make the background lighter.', inputPaths: [target], outputPath: target }));
   assert.deepEqual(await readFile(target), original);
+});
+
+test('native editing supplies every prepared path in order and retains transport evidence on missing output', async t => {
+  const records = [];
+  let calls = 0, preparedPaths;
+  const { client, root } = await fixture(t, async (_command, args) => {
+    calls++;
+    preparedPaths = args.flatMap((arg, index) => arg === '--image' ? [args[index + 1]] : []);
+    const instructions = JSON.parse(args.find(arg => arg.startsWith('developer_instructions=')).split('=').slice(1).join('='));
+    assert.ok(instructions.includes(JSON.stringify(preparedPaths)));
+    assert.match(instructions, /referenced_image_paths/u);
+    assert.match(instructions, /Do not use num_last_images_to_include/u);
+    assert.match(instructions, /exactly once/u);
+    return { ...success({ rawText: 'The image tool could not read the reference.' }),
+      rawStdout: 'native reference reader diagnostic', stderr: 'Bearer private-token-123 helper decoding error' };
+  });
+  const target = join(root, 'target.png'), reference = join(root, 'reference.png');
+  await sharp({ create: { width: 24, height: 32, channels: 3, background: '#aabbcc' } }).png().toFile(target);
+  await sharp({ create: { width: 32, height: 24, channels: 4, background: '#11223388' } }).png().toFile(reference);
+  const originals = await Promise.all([target, reference].map(path => readFile(path)));
+  const outputPath = join(root, 'missing.png');
+  await withModelCallTracing({ executionId: 'fixture-image-edit', controlPlane: {
+    recordModelCall: async (_executionId, _callId, record) => records.push(structuredClone(record)),
+  } }, () => assert.rejects(client.runImageEdit({ prompt: 'Replace the product using the supplied reference.',
+    inputPaths: [target, reference], outputPath }), { code: 'CODEX_IMAGE_UNVERIFIED' }));
+  const final = records.at(-1);
+  const response = JSON.parse(final.response), request = JSON.parse(final.request).payload;
+  assert.equal(final.status, 'FAILED');
+  assert.deepEqual(response.images, []);
+  assert.match(response.rawText, /could not read/u);
+  assert.equal(response.transport.stdout, 'native reference reader diagnostic');
+  assert.match(response.transport.stderr, /helper decoding error/u);
+  assert.doesNotMatch(final.response, /private-token-123/u);
+  assert.deepEqual(request.inputImages.map(image => image.path), preparedPaths);
+  assert.ok(request.inputImages.every(image => image.byteSize > 0 && image.sha256.length === 64));
+  assert.equal(calls, 1, 'a missing native image must never trigger a billable retry');
+  for (const path of [...preparedPaths, outputPath]) await assert.rejects(readFile(path), { code: 'ENOENT' });
+  assert.deepEqual(await Promise.all([target, reference].map(path => readFile(path))), originals);
+});
+
+test('native calls reject more than five images before starting a model turn', async t => {
+  let calls = 0;
+  const { client, root } = await fixture(t, async () => { calls++; return success({ rawText: 'unused' }); });
+  const path = join(root, 'reference.png');
+  await sharp({ create: { width: 24, height: 32, channels: 3, background: '#aabbcc' } }).png().toFile(path);
+  for (const run of [client.runImage, client.runImageEdit]) {
+    await assert.rejects(run({ prompt: 'Use all supplied images in one edit.', inputPaths: Array(6).fill(path),
+      outputPath: join(root, 'unused.png') }), /requires 1-5 input images/u);
+  }
+  assert.equal(calls, 0);
 });
 
 test('image paths outside the native output roots and stale files are rejected', async (t) => {

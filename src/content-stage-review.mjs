@@ -114,7 +114,7 @@ function normalizedReviewEvidence(value) {
       provider: boundedEvidenceText(research.provider, 100),
       searchedAt: boundedEvidenceText(research.searchedAt, 100),
       summary: boundedEvidenceText(research.summary, 6_000),
-      sources: Array.isArray(research.sources) ? research.sources.slice(0, 5).map((source) => {
+      sources: Array.isArray(research.sources) ? research.sources.slice(0, 10).map((source) => {
         const item = isRecord(source) ? source : {};
         return {
           title: boundedEvidenceText(item.title, 200),

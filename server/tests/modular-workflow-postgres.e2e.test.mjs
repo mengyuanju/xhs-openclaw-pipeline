@@ -206,6 +206,7 @@ async function startRealControlPlane(repository) {
       if (server.listening) {
         await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
       }
+      await app.context.disposeControlPlaneResources?.();
       await rm(storageRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
@@ -590,35 +591,7 @@ test('legacy delivery migrations retain their checksums and upgrade through the 
     'legacy 0027 leaves a valid-looking READY entry when its task is no longer REVIEWED');
 
     const appliedUpgrade = await applyInTransaction(migrations);
-    assert.deepEqual(appliedUpgrade, [
-      '0028_mutation_receipt_actor_identity',
-      '0029_final_delivery_compatibility_repair',
-      '0030_delivery_asset_runtime_integrity',
-      '0031_xhs_query_search',
-      '0032_duplicate_query_discard',
-      '0033_query_package_preassignment_repair',
-      '0034_xhs_query_search_result_limit',
-      '0035_delivery_preview_links',
-      '0036_delivery_preview_url_derivation',
-      '0037_xhs_search_account_status',
-      '0038_xhs_search_auth_checked_at',
-      '0039_query_package_item_paging',
-      '0040_query_package_item_assignments',
-      '0041_xhs_search_strategy',
-      '0042_xhs_search_rate_limits',
-      '0043_xhs_search_node_retirement',
-      '0044_xhs_search_node_retirement_compatibility_repair',
-      '0045_workflow_integrity_repairs',
-      '0046_codex_pool_and_image_lineage',
-      '0047_task_query_performance',
-      '0048_admin_direct_copy_qa',
-      '0049_auto_assignment_modes',
-      '0050_queue_priority',
-      '0051_copy_quality_flow',
-      '0052_image_editing',
-      '0053_account_review_assignment',
-      '0054_delivery_batches',
-    ]);
+    assert.deepEqual(appliedUpgrade, migrations.filter(({ id }) => id > '0027_delivery_archive_integrity').map(({ id }) => id));
 
     const repairedRevisionState = (await pool.query(`
       SELECT id, parent_revision_id, revision_origin, copy_content_changed_from_machine
@@ -783,33 +756,7 @@ test('delivery runtime integrity migration withdraws JavaScript-unsafe asset ids
       result_asset_id: unsafeAssetId,
     });
 
-    assert.deepEqual(await applyInTransaction(migrations), [
-      '0030_delivery_asset_runtime_integrity',
-      '0031_xhs_query_search',
-      '0032_duplicate_query_discard',
-      '0033_query_package_preassignment_repair',
-      '0034_xhs_query_search_result_limit',
-      '0035_delivery_preview_links',
-      '0036_delivery_preview_url_derivation',
-      '0037_xhs_search_account_status',
-      '0038_xhs_search_auth_checked_at',
-      '0039_query_package_item_paging',
-      '0040_query_package_item_assignments',
-      '0041_xhs_search_strategy',
-      '0042_xhs_search_rate_limits',
-      '0043_xhs_search_node_retirement',
-      '0044_xhs_search_node_retirement_compatibility_repair',
-      '0045_workflow_integrity_repairs',
-      '0046_codex_pool_and_image_lineage',
-      '0047_task_query_performance',
-      '0048_admin_direct_copy_qa',
-      '0049_auto_assignment_modes',
-      '0050_queue_priority',
-      '0051_copy_quality_flow',
-      '0052_image_editing',
-      '0053_account_review_assignment',
-      '0054_delivery_batches',
-    ]);
+    assert.deepEqual(await applyInTransaction(migrations), migrations.filter(({ id }) => id > '0029_final_delivery_compatibility_repair').map(({ id }) => id));
     const repairedDelivery = (await pool.query(`
       SELECT status, withdrawn_at FROM delivery_entries WHERE task_id = $1
     `, [taskId])).rows[0];
@@ -1135,10 +1082,10 @@ test('mutation receipt migration isolates a same-name replacement and retains de
     `, [replacement.id, copyRequestId, 'b'.repeat(64)]);
     const replacementBatch = (await pool.query(`
       INSERT INTO production_batches(
-        public_id, query_package_name, created_by_account_id, created_by_username,
+        public_id, query_package_name, client_batch_code, created_by_account_id, created_by_username,
         request_id, request_fingerprint
       ) VALUES (
-        '36363636-3636-4636-8636-363636363636', '同名新账号批次', $1,
+        '36363636-3636-4636-8636-363636363636', '同名新账号批次', '11111111111111111111111111111111', $1,
         'receipt-reused-name', $2, $3
       ) RETURNING id
     `, [replacement.id, batchRequestId, 'b'.repeat(64)])).rows[0];
@@ -1324,30 +1271,7 @@ test('Query-package preassignment repair clears only the proven legacy signature
     try {
       await migrationClient.query('BEGIN');
       await migrationClient.query('SET LOCAL search_path TO public');
-      assert.deepEqual(await applyMigrations(migrationClient, migrations), [
-        repair.id,
-        '0034_xhs_query_search_result_limit',
-        '0035_delivery_preview_links',
-        '0036_delivery_preview_url_derivation',
-        '0037_xhs_search_account_status',
-        '0038_xhs_search_auth_checked_at',
-        '0039_query_package_item_paging',
-        '0040_query_package_item_assignments',
-        '0041_xhs_search_strategy',
-        '0042_xhs_search_rate_limits',
-      '0043_xhs_search_node_retirement',
-      '0044_xhs_search_node_retirement_compatibility_repair',
-      '0045_workflow_integrity_repairs',
-      '0046_codex_pool_and_image_lineage',
-      '0047_task_query_performance',
-      '0048_admin_direct_copy_qa',
-      '0049_auto_assignment_modes',
-      '0050_queue_priority',
-      '0051_copy_quality_flow',
-      '0052_image_editing',
-      '0053_account_review_assignment',
-      '0054_delivery_batches',
-      ]);
+      assert.deepEqual(await applyMigrations(migrationClient, migrations), migrations.filter(({ id }) => id >= repair.id).map(({ id }) => id));
       await migrationClient.query('COMMIT');
     } catch (error) {
       await migrationClient.query('ROLLBACK');
@@ -1716,11 +1640,13 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
       userId: Number(workerRow.id), username: workerRow.username, role: workerRow.role,
       credentialVersion: Number(workerRow.credential_version),
     };
+    await repository.pool.query('UPDATE app_users SET auto_copy_batch_enabled=true, auto_copy_batch_size=1, copy_full_inspection=true WHERE id=$1', [worker.userId]);
     const reviewer = {
       userId: Number(reviewerRow.id), username: reviewerRow.username, role: reviewerRow.role,
       credentialVersion: Number(reviewerRow.credential_version),
     };
 
+    await repository.pool.query('UPDATE app_users SET image_qc_enabled=true WHERE id=$1', [reviewer.userId]);
     controlPlane = await startRealControlPlane(repository);
     const health = await requestJson(controlPlane.root, '/health');
     assert.equal(health.data.ok, true);
@@ -1738,6 +1664,7 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
       body: {
       expectedVersion: currentSettings.version,
       queryPackage: { workerImportEnabled: false },
+      imageSampling: { enabled: true, rateBps: 10000, blindReviewEnabled: true },
       copySampling: {
         enabled: true,
         rateBps: 10_000,
@@ -2142,38 +2069,14 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     };
     assert.equal(productionBatch.taskIds.length, 2);
 
-    const deniedWorkerReadiness = await requestJson(
-      controlPlane.root, `/v1/production-batches/${productionBatch.id}/copy-sampling-readiness`, {
-        actor: worker,
-        expectedStatus: 403,
-      },
-    );
-    assert.equal(deniedWorkerReadiness.error.code, 'FORBIDDEN');
-    const reviewerReadiness = (await requestJson(
-      controlPlane.root, `/v1/production-batches/${productionBatch.id}/copy-sampling-readiness`, {
-        actor: reviewer,
-      },
-    )).data;
-    assert.deepEqual({
-      totalCount: reviewerReadiness.totalCount,
-      approvedCount: reviewerReadiness.approvedCount,
-      cancelledCount: reviewerReadiness.cancelledCount,
-      blockerCount: reviewerReadiness.blockerCount,
-      ready: reviewerReadiness.ready,
-    }, {
-      totalCount: 2,
-      approvedCount: 0,
-      cancelledCount: 0,
-      blockerCount: 2,
-      ready: false,
-    });
-    assert.equal(Object.hasOwn(reviewerReadiness, 'blockerTaskIds'), false);
-    const adminReadiness = (await requestJson(
-      controlPlane.root, `/v1/production-batches/${productionBatch.id}/copy-sampling-readiness`, {
-        actor: admin,
-      },
-    )).data;
-    assert.deepEqual(adminReadiness.blockerTaskIds, productionBatch.taskIds);
+    for (const actor of [worker, reviewer, admin]) {
+      const retiredReadiness = await requestJson(
+        controlPlane.root, `/v1/production-batches/${productionBatch.id}/copy-sampling-readiness`, {
+          actor, expectedStatus: 410,
+        },
+      );
+      assert.equal(retiredReadiness.error.code, 'LEGACY_COPY_QA_RETIRED');
+    }
 
     const queuedTasks = (await repository.pool.query(`
       SELECT id, state, current_stage, created_by_user_id,
@@ -2302,11 +2205,6 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     )).data;
     assert.equal(firstApproved.state, 'COPY_QC_PENDING');
     assertUserTaskHidesSensitiveFields(firstApproved, 'USER approve-copy response');
-    assert.equal(Number((await repository.pool.query(
-      'SELECT COUNT(*) AS count FROM copy_sampling_freezes WHERE production_batch_id = $1',
-      [productionBatch.id],
-    )).rows[0].count), 1, '100% inspection freezes each reviewer-owned chunk as soon as it is ready');
-
     const secondApproved = (await requestJson(
       controlPlane.root, `/v1/tasks/${completedCopies[1].task.id}/approve-copy`, {
         actor: worker,
@@ -2323,44 +2221,43 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     assert.equal(secondApproved.state, 'COPY_QC_PENDING');
     assertUserTaskHidesSensitiveFields(secondApproved, 'USER approve-copy response');
 
-    const freezes = (await repository.pool.query(`
-      SELECT * FROM copy_sampling_freezes WHERE production_batch_id = $1 ORDER BY id
-    `, [productionBatch.id])).rows;
-    assert.equal(freezes.length, 2);
-    assert.ok(freezes.every(freeze => freeze.population_count === 1));
-    assert.ok(freezes.every(freeze => freeze.sample_count === 1));
-    assert.ok(freezes.every(freeze => freeze.rate_bps === 10_000));
-    assert.ok(freezes.every(freeze => freeze.blind_review_enabled === true));
-    assert.ok(freezes.every(freeze => freeze.status === 'INSPECTING'));
-    const frozen = freezes[0];
+    const qaBatches = (await repository.pool.query(
+      "SELECT * FROM copy_qa_batches_v2 WHERE account_id=$1 ORDER BY id", [worker.userId],
+    )).rows;
+    assert.equal(qaBatches.length, 2);
+    assert.ok(qaBatches.every(batch => batch.member_count === 1 && batch.sample_count === 1
+      && batch.sampling_rate_bps === 10000 && batch.blind_review_enabled === true
+      && batch.full_inspection === true && batch.status === 'INSPECTING'));
+    assert.equal(Number((await repository.pool.query(
+      'SELECT count(*) AS count FROM copy_sampling_freezes WHERE production_batch_id=$1',
+      [productionBatch.id],
+    )).rows[0].count), 0, 'V2 must not create retired production-batch freezes');
 
-    const assignedBlindItems = (await requestJson(
-      controlPlane.root, '/v1/copy-qa/items?status=PENDING', { actor: reviewer },
-    )).data;
-    assert.equal(assignedBlindItems.length, 2, 'the only account with QC permission receives both reviewer-owned chunks');
-    // Administrators can share opaque links without changing existing direct-link review rights.
     async function allBlindQaItems() {
-      const all = (await requestJson(controlPlane.root, '/v1/copy-qa/items?status=PENDING', { actor: admin })).data;
-      return Promise.all(all.map(async item => (await requestJson(controlPlane.root,
-        `/v1/copy-qa/items/${encodeURIComponent(item.id)}`, { actor: reviewer })).data));
+      const batches = (await requestJson(controlPlane.root, '/v2/copy-qa/batches?view=PENDING',
+        { actor: reviewer })).data;
+      const details = await Promise.all(batches.map(batch => requestJson(controlPlane.root,
+        `/v2/copy-qa/batches/${batch.id}`, { actor: reviewer })));
+      return details.flatMap(({ data }) => data.items.map(item => ({
+        ...item, batchId: data.batch.id, blindReview: item.taskId === null,
+      })));
     }
     const blindItems = await allBlindQaItems();
     assert.equal(blindItems.length, 2);
-    blindItems.forEach(assertBlindQaAllowlist);
-    assert.equal(normalizeCopyQaList(blindItems).length, 2);
-    const blindDetail = (await requestJson(
-      controlPlane.root, `/v1/copy-qa/items/${encodeURIComponent(blindItems[0].id)}`, { actor: reviewer },
-    )).data;
-    assertBlindQaAllowlist(blindDetail);
-
-    const adminQaItems = (await requestJson(
-      controlPlane.root, '/v1/copy-qa/items?status=PENDING', { actor: admin },
-    )).data;
-    const normalizedAdminQaItems = normalizeCopyQaList(adminQaItems);
-    assert.equal(normalizedAdminQaItems.length, 2);
-    assert.ok(normalizedAdminQaItems.every((item) => item.taskId !== null));
-    assert.ok(normalizedAdminQaItems.every((item) => item.productionBatchId === productionBatch.id));
-    assert.ok(normalizedAdminQaItems.every((item) => item.finalApproverAccountId === worker.userId));
+    for (const item of blindItems) {
+      assert.equal(item.taskId, null);
+      assert.equal(item.query, null);
+      assert.equal(item.approverUsername, null);
+      assert.ok(item.content.copy.title);
+      assert.match(item.revisionToken, /^[0-9a-f]{64}$/u);
+      assert.equal(Object.hasOwn(item.content, 'manualReview'), false);
+    }
+    const adminQaItems = (await Promise.all(qaBatches.map(batch => requestJson(controlPlane.root,
+      `/v2/copy-qa/batches/${batch.public_id}`, { actor: admin }))))
+      .flatMap(({ data }) => data.items);
+    assert.equal(adminQaItems.length, 2);
+    assert.ok(adminQaItems.every(item => productionBatch.taskIds.includes(item.taskId)));
+    assert.ok(adminQaItems.every(item => item.approverUsername === worker.username));
 
     await repository.listTasks({ reviewAssignedToAccountId: reviewer.userId, excludeActiveBlindQa: true, limit: 100 });
     const reviewerTaskList = (await requestJson(
@@ -2378,22 +2275,23 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     assert.equal(guessedBlindTask.error.code, 'TASK_NOT_FOUND');
 
     const returnedItemRow = (await repository.pool.query(`
-      SELECT task_id FROM copy_sampling_items WHERE public_id = $1
+      SELECT task_id FROM copy_qa_batch_members_v2 WHERE public_id = $1
     `, [blindItems[0].id])).rows[0];
     const returnedTaskId = Number(returnedItemRow.task_id);
     const singleReturn = (await requestJson(
-      controlPlane.root, `/v1/copy-qa/items/${encodeURIComponent(blindItems[0].id)}/return`, {
+      controlPlane.root, `/v2/copy-qa/items/${encodeURIComponent(blindItems[0].id)}/decision`, {
         actor: reviewer,
         method: 'POST',
         body: {
-          expectedRevisionToken: blindItems[0].approvedRevision.revisionToken,
+          decision: 'RETURN', revisionToken: blindItems[0].revisionToken,
           reasonCodes: ['FACT_ERROR'],
           note: '隔离测试：单条抽检退回并要求修改正文',
           requestId: randomUUID(),
         },
       },
     )).data;
-    assert.deepEqual(singleReturn, { id: blindItems[0].id, status: 'RETURNED' });
+    assert.equal(singleReturn.status, 'RETURNED');
+    assert.deepEqual(singleReturn.caseIds, []);
 
     const settingsAfterReturn = (await requestJson(
       controlPlane.root, '/v1/workflow-quality-settings', { actor: admin },
@@ -2413,8 +2311,8 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
 
     const returnedTask = await repository.getTask(returnedTaskId);
     assert.equal(returnedTask.state, 'COPY_REVIEW_PENDING');
-    assert.equal(returnedTask.mandatoryCopyQc, true);
-    assert.equal(returnedTask.mandatoryCopyQcOrigin, 'QA_RETURN');
+    assert.equal(returnedTask.copyQaReworkPending, true, 'V2 retains a separate rework obligation');
+    assert.equal(returnedTask.mandatoryCopyQc, false);
     assert.equal((await repository.getTaskAccess(returnedTaskId)).activeBlindQa, true);
     const returnedRevision = returnedTask.copyRevisions.find(
       (revision) => revision.id === returnedTask.currentCopyRevisionId,
@@ -2448,22 +2346,22 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     const remainingRandomItem = pendingAfterResubmit.find((item) => item.sampleKind === 'RANDOM');
     assert.ok(mandatoryItem, 'returned copy must create a mandatory QA item');
     assert.ok(remainingRandomItem, 'the other random sample must remain held');
-    assertBlindQaAllowlist(mandatoryItem);
+    assert.equal(mandatoryItem.blindReview, false);
     const mandatoryFreezePolicy = await repository.pool.query(`
-      SELECT sampling_freeze.blind_review_enabled
-      FROM copy_sampling_items AS item
-      JOIN copy_sampling_freezes AS sampling_freeze ON sampling_freeze.id = item.freeze_id
+      SELECT sampling_batch.blind_review_enabled
+      FROM copy_qa_batch_members_v2 AS item
+      JOIN copy_qa_batches_v2 AS sampling_batch ON sampling_batch.id = item.batch_id
       WHERE item.public_id = $1
     `, [mandatoryItem.id]);
-    assert.equal(mandatoryFreezePolicy.rows[0].blind_review_enabled, true,
-      'mandatory recheck inherits the parent freeze even after the global blind switch changes');
+    assert.equal(mandatoryFreezePolicy.rows[0].blind_review_enabled, false,
+      'V2 creates a separate full-inspection recheck under the current policy');
 
     const mandatoryPass = (await requestJson(
-      controlPlane.root, `/v1/copy-qa/items/${encodeURIComponent(mandatoryItem.id)}/pass`, {
+      controlPlane.root, `/v2/copy-qa/items/${encodeURIComponent(mandatoryItem.id)}/decision`, {
         actor: reviewer,
         method: 'POST',
         body: {
-          expectedRevisionToken: mandatoryItem.approvedRevision.revisionToken,
+          decision: 'PASS', revisionToken: mandatoryItem.revisionToken,
           requestId: randomUUID(),
         },
       },
@@ -2472,11 +2370,11 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     assert.equal((await repository.getTask(returnedTaskId)).state, 'IMAGE_QUEUED');
 
     const finalRandomPass = (await requestJson(
-      controlPlane.root, `/v1/copy-qa/items/${encodeURIComponent(remainingRandomItem.id)}/pass`, {
+      controlPlane.root, `/v2/copy-qa/items/${encodeURIComponent(remainingRandomItem.id)}/decision`, {
         actor: reviewer,
         method: 'POST',
         body: {
-          expectedRevisionToken: remainingRandomItem.approvedRevision.revisionToken,
+          decision: 'PASS', revisionToken: remainingRandomItem.revisionToken,
           requestId: randomUUID(),
         },
       },
@@ -2493,16 +2391,11 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     const rechecked = releasedTasks.rows.find(row => Number(row.id) === returnedTaskId);
     assert.equal(rechecked.rework_count, 1, 'successful recheck must not count the same return twice');
     assert.equal(rechecked.system_priority, 300);
-    const originalBatchClosure = (await repository.pool.query(`
-      SELECT sampling_freeze.status AS freeze_status, batch.status AS batch_status,
-        batch.sampling_status
-      FROM copy_sampling_freezes AS sampling_freeze
-      JOIN production_batches AS batch ON batch.id = sampling_freeze.production_batch_id
-      WHERE sampling_freeze.id = $1
-    `, [frozen.id])).rows[0];
-    assert.equal(originalBatchClosure.freeze_status, 'RELEASED');
-    assert.equal(originalBatchClosure.batch_status, 'RELEASED');
-    assert.equal(originalBatchClosure.sampling_status, 'COMPLETED');
+    const originalBatchClosure = (await repository.pool.query(
+      'SELECT status FROM copy_qa_batches_v2 WHERE id=ANY($1::bigint[]) ORDER BY id',
+      [qaBatches.map(batch => batch.id)],
+    )).rows;
+    assert.ok(originalBatchClosure.every(batch => batch.status === 'COMPLETED'));
     const reviewerDetailAfterClosure = await requestJson(
       controlPlane.root, `/v1/tasks/${returnedTaskId}`, { actor: reviewer },
     );
@@ -2552,13 +2445,13 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
 
     await completeSyntheticImage(imageClaim, 'initial');
     assert.equal((await repository.getTask(imageClaim.task.id)).state, 'MANUAL_ARCHIVE');
-    const deniedWorkerPrematureArchive = await requestJson(
+    const workerPrematureArchive = await requestJson(
       controlPlane.root, `/v1/tasks/${imageClaim.task.id}/archive`, {
         actor: worker,
-        expectedStatus: 403,
+        expectedStatus: 409,
       },
     );
-    assert.equal(deniedWorkerPrematureArchive.error.code, 'FORBIDDEN');
+    assert.equal(workerPrematureArchive.error.code, 'INVALID_TASK_STATE');
     const prematureArchive = await requestJson(
       controlPlane.root, `/v1/tasks/${imageClaim.task.id}/archive`, {
         actor: admin,
@@ -2567,28 +2460,38 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     );
     assert.equal(prematureArchive.error.code, 'INVALID_TASK_STATE');
 
-    const finalRework = (await requestJson(
+    const movedReview = await requestJson(
       controlPlane.root, `/v1/tasks/${imageClaim.task.id}/review-images`, {
-        actor: reviewer,
-        method: 'POST',
+        actor: reviewer, method: 'POST', body: {}, expectedStatus: 410,
+      },
+    );
+    assert.equal(movedReview.error.code, 'IMAGE_REVIEW_MOVED');
+    const initialImageReview = (await requestJson(
+      controlPlane.root, `/v1/tasks/${imageClaim.task.id}/submit-image-self-review`, {
+        actor: worker, method: 'POST',
+        body: { imageRunId: imageClaim.execution.id, reviewSessionId: randomUUID() },
+      },
+    )).data;
+    assert.equal(initialImageReview.state, 'IMAGE_QC_PENDING');
+    const initialImageQa = (await requestJson(controlPlane.root, '/v1/image-qa/items?status=PENDING',
+      { actor: reviewer })).data.items[0];
+    assert.ok(initialImageQa);
+    const finalRework = (await requestJson(
+      controlPlane.root, `/v1/image-qa/items/${initialImageQa.id}/return`, {
+        actor: reviewer, method: 'POST',
         body: {
-          imageRunId: imageClaim.execution.id,
-          decision: 'REWORK',
-          reworkTarget: 'COPY',
-          copyFields: ['BODY'],
-          score: 2,
-          reasons: ['CONTENT_MISMATCH'],
-          note: '隔离测试：图片终审要求修改文案并重新经过强制质检',
-          problemAssetIds: [],
-          reviewSessionId: randomUUID(),
+          reworkTarget: 'COPY', copyFields: ['BODY'], score: 2,
+          reasonCodes: ['TEXT_ERROR'], note: '隔离测试：图片质检要求修改文案并重新经过强制质检',
+          problemAssetIds: [], requestId: randomUUID(),
         },
       },
     )).data;
-    assert.equal(finalRework.state, 'COPY_REVIEW_PENDING');
-    assert.equal(finalRework.mandatoryCopyQc, true);
-    assert.equal(finalRework.mandatoryCopyQcOrigin, 'FINAL_REWORK');
-    assert.equal(finalRework.currentImageRunId, null);
+    assert.equal(finalRework.taskState, 'COPY_REVIEW_PENDING');
     const finalReworkTask = await repository.getTask(imageClaim.task.id);
+    assert.equal(finalReworkTask.mandatoryCopyQc, true);
+    assert.equal(finalReworkTask.mandatoryCopyQcOrigin, 'FINAL_REWORK');
+    assert.equal(finalReworkTask.currentImageRunId, imageClaim.execution.id,
+      'current image QA preserves the returned image for the owner to inspect during copy rework');
     const finalReworkPlaceholder = finalReworkTask.copyRevisions.find(
       (revision) => revision.id === finalReworkTask.currentCopyRevisionId,
     );
@@ -2620,15 +2523,17 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     assert.equal(finalReworkQaItem.blindReview, false,
       'FINAL_REWORK mandatory QA uses the live policy because it has no original random-sample parent');
     const finalReworkQaRow = (await repository.pool.query(`
-      SELECT parent_item_id FROM copy_sampling_items WHERE public_id = $1
+      SELECT batch.full_inspection, batch.sample_count FROM copy_qa_batch_members_v2 AS member
+      JOIN copy_qa_batches_v2 AS batch ON batch.id=member.batch_id WHERE member.public_id = $1
     `, [finalReworkQaItem.id])).rows[0];
-    assert.equal(finalReworkQaRow.parent_item_id, null);
+    assert.equal(finalReworkQaRow.full_inspection, true);
+    assert.equal(finalReworkQaRow.sample_count, 1);
     const finalReworkPass = (await requestJson(
-      controlPlane.root, `/v1/copy-qa/items/${encodeURIComponent(finalReworkQaItem.id)}/pass`, {
+      controlPlane.root, `/v2/copy-qa/items/${encodeURIComponent(finalReworkQaItem.id)}/decision`, {
         actor: reviewer,
         method: 'POST',
         body: {
-          expectedRevisionToken: finalReworkQaItem.approvedRevision.revisionToken,
+          decision: 'PASS', revisionToken: finalReworkQaItem.revisionToken,
           requestId: randomUUID(),
         },
       },
@@ -2658,21 +2563,21 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     await completeSyntheticImage(finalImageClaim, 'after-final-rework');
     assert.equal((await repository.getTask(imageClaim.task.id)).state, 'MANUAL_ARCHIVE');
 
-    const reviewed = (await requestJson(
-      controlPlane.root, `/v1/tasks/${imageClaim.task.id}/review-images`, {
-        actor: reviewer,
-        method: 'POST',
-        body: {
-          imageRunId: finalImageClaim.execution.id,
-          decision: 'APPROVE',
-          score: 3,
-          reasons: [],
-          problemAssetIds: [],
-          reviewSessionId: randomUUID(),
-        },
+    const finalInitialReview = (await requestJson(
+      controlPlane.root, `/v1/tasks/${imageClaim.task.id}/submit-image-self-review`, {
+        actor: worker, method: 'POST',
+        body: { imageRunId: finalImageClaim.execution.id, reviewSessionId: randomUUID() },
       },
     )).data;
-    assert.equal(reviewed.state, 'REVIEWED');
+    assert.equal(finalInitialReview.state, 'IMAGE_QC_PENDING');
+    const finalImageQa = (await requestJson(controlPlane.root, '/v1/image-qa/items?status=PENDING',
+      { actor: reviewer })).data.items[0];
+    assert.ok(finalImageQa, 'image return requires an independent mandatory image recheck');
+    const imageQaPassed = (await requestJson(controlPlane.root, `/v1/image-qa/items/${finalImageQa.id}/pass`, {
+      actor: reviewer, method: 'POST', body: { score: 3, requestId: randomUUID() },
+    })).data;
+    assert.equal(imageQaPassed.status, 'PASSED');
+    assert.equal((await repository.getTask(imageClaim.task.id)).state, 'REVIEWED');
     const delivery = await repository.assertTaskReadyForDelivery(imageClaim.task.id);
     assert.equal(delivery.taskId, imageClaim.task.id);
     assert.equal(delivery.status, 'READY');
@@ -2712,10 +2617,11 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
     const deniedWorkerDeliveryDownload = await requestJson(
       controlPlane.root, `/v1/delivery-pool/archive/${preparedDelivery.downloadId}`, {
         actor: worker,
-        expectedStatus: 403,
+        expectedStatus: 404,
       },
     );
-    assert.equal(deniedWorkerDeliveryDownload.error.code, 'FORBIDDEN');
+    assert.equal(deniedWorkerDeliveryDownload.error.code, 'NOT_FOUND',
+      'a prepared export is private to its creator and does not reveal its existence');
     const allDeliveryResponse = await fetch(
       `${controlPlane.root}/v1/delivery-pool/archive/${preparedDelivery.downloadId}`,
       { headers: actorHeaders(admin) },
@@ -2781,13 +2687,13 @@ test('real PostgreSQL 18 modular workflow reaches the delivery pool after blind 
       },
     );
     assert.equal(repeatedBatch.error.code, 'DELIVERY_POOL_HAS_NO_PENDING_ITEMS');
-    const deniedWorkerTaskArchive = await requestJson(
+    const deniedReviewerTaskArchive = await requestJson(
       controlPlane.root, `/v1/tasks/${imageClaim.task.id}/archive`, {
-        actor: worker,
+        actor: reviewer,
         expectedStatus: 403,
       },
     );
-    assert.equal(deniedWorkerTaskArchive.error.code, 'FORBIDDEN');
+    assert.equal(deniedReviewerTaskArchive.error.code, 'FORBIDDEN');
     const archiveResponse = await fetch(
       `${controlPlane.root}/v1/tasks/${imageClaim.task.id}/archive`,
       { headers: actorHeaders(admin) },
@@ -2990,9 +2896,9 @@ test('real PostgreSQL 18 discards only previewed pristine duplicate Query tasks 
     });
     const productionBatchId = Number((await repository.pool.query(`
       INSERT INTO production_batches(
-        public_id, query_package_name, created_by_account_id, created_by_username,
+        public_id, query_package_name, client_batch_code, created_by_account_id, created_by_username,
         request_id, request_fingerprint
-      ) VALUES ($1, '隔离去重恢复边界', $2, $3, $4, $5)
+      ) VALUES ($1, '隔离去重恢复边界', '22222222222222222222222222222222', $2, $3, $4, $5)
       RETURNING id
     `, [randomUUID(), admin.userId, admin.username, randomUUID(), 'b'.repeat(64)])).rows[0].id);
     await repository.pool.query(`
@@ -3244,7 +3150,7 @@ test('queue priority migration, atomic admin changes, fair claims and frozen gat
         VALUES ('priority fixture','{}',$1,'priority-a','priority-worker','MANUAL',now(),'{}') RETURNING *`, [state])).rows[0];
       if (Object.keys(overrides).length) {
         for (const [key, value] of Object.entries(overrides)) {
-          assert.ok(['mandatory_copy_qc','rework_count','queue_entered_at','priority_mode','production_batch_id'].includes(key));
+          assert.ok(['mandatory_copy_qc','rework_count','queue_entered_at','priority_mode','production_batch_id','assigned_to_user_id'].includes(key));
           await pool.query(`UPDATE tasks SET ${key} = $2 WHERE id = $1`, [row.id, value]);
         }
       }
@@ -3296,8 +3202,8 @@ test('queue priority migration, atomic admin changes, fair claims and frozen gat
     await adjust([frozen], 'HIGHEST');
     assert.equal((await pool.query('SELECT state FROM tasks WHERE id = $1',[frozen])).rows[0].state, 'COPY_QC_PENDING');
     assert.equal(await repository.claimImage('priority-b'), null, 'priority cannot release frozen copy QA');
-    const batch = Number((await pool.query(`INSERT INTO production_batches(public_id,query_package_name,created_by_username,request_id,request_fingerprint)
-      VALUES ($1,'priority batch','admin',$2,$3) RETURNING id`,[randomUUID(),randomUUID(),'a'.repeat(64)])).rows[0].id);
+    const batch = Number((await pool.query(`INSERT INTO production_batches(public_id,query_package_name,client_batch_code,created_by_username,request_id,request_fingerprint)
+      VALUES ($1,'priority batch','33333333333333333333333333333333','admin',$2,$3) RETURNING id`,[randomUUID(),randomUUID(),'a'.repeat(64)])).rows[0].id);
     await pool.query('UPDATE tasks SET production_batch_id = $2 WHERE id = ANY($1::bigint[])',[[frozen,paused],batch]);
     const batchScope = await repository.getPriorityScope({ productionBatchId: batch }, { actor: admin });
     await repository.setTaskPriority({ productionBatchId: batch, mode: 'DEFER', reason: 'batch delay',
@@ -3333,14 +3239,17 @@ test('queue priority migration, atomic admin changes, fair claims and frozen gat
     await pool.query("UPDATE tasks SET state = 'MANUAL_ARCHIVE' WHERE id = $1", [pausedTransition]);
     assert.equal((await pool.query('SELECT review_assigned_to_account_id FROM tasks WHERE id = $1',[pausedTransition])).rows[0].review_assigned_to_account_id, null);
     await adjust([pausedTransition], 'SYSTEM');
-    assert.notEqual((await pool.query('SELECT review_assigned_to_account_id FROM tasks WHERE id = $1',[pausedTransition])).rows[0].review_assigned_to_account_id, null);
+    assert.equal((await pool.query('SELECT review_assigned_to_account_id FROM tasks WHERE id = $1',[pausedTransition])).rows[0].review_assigned_to_account_id, null,
+      'resuming priority must retain current image initial review with the production owner');
     await pool.query(`INSERT INTO app_users(username,display_name,role,password_hash,copy_review_enabled)
       VALUES ('priority-review-user','Permission reviewer','USER','unused',true)`);
-    const reviews = [await task('MANUAL_ARCHIVE'), await task('MANUAL_ARCHIVE')];
-    const owners = (await pool.query('SELECT review_assigned_to_account_id FROM tasks WHERE id = ANY($1::bigint[]) ORDER BY id',[reviews])).rows;
-    assert.notEqual(owners[0].review_assigned_to_account_id, owners[1].review_assigned_to_account_id);
+    const reviews = [await task('MANUAL_ARCHIVE', { assigned_to_user_id: 'priority-review-user' }),
+      await task('MANUAL_ARCHIVE', { assigned_to_user_id: 'priority-review-user' })];
+    const owners = (await pool.query('SELECT assigned_to_user_id, review_assigned_to_account_id FROM tasks WHERE id = ANY($1::bigint[]) ORDER BY id',[reviews])).rows;
+    assert.ok(owners.every(owner => owner.assigned_to_user_id === 'priority-review-user'
+      && owner.review_assigned_to_account_id === null));
     await adjust(reviews, 'HIGHEST');
-    assert.deepEqual((await pool.query('SELECT review_assigned_to_account_id FROM tasks WHERE id = ANY($1::bigint[]) ORDER BY id',[reviews])).rows, owners);
+    assert.deepEqual((await pool.query('SELECT assigned_to_user_id, review_assigned_to_account_id FROM tasks WHERE id = ANY($1::bigint[]) ORDER BY id',[reviews])).rows, owners);
     await pool.query('UPDATE app_users SET must_change_password = false');
     http = await startRealControlPlane(repository);
     for (const actor of [null, worker]) {
@@ -3371,7 +3280,7 @@ test('queue priority upgrade counts QA returns and excludes past review ownershi
   const cluster = await startTemporaryPostgres18();
   const pool = new pg.Pool({ connectionString: cluster.connectionString });
   try {
-    const migrations = await loadMigrations();
+    const migrations = (await loadMigrations()).filter(({ id }) => id <= '0054_delivery_batches');
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -3386,13 +3295,7 @@ test('queue priority upgrade counts QA returns and excludes past review ownershi
     const upgrade = await pool.connect();
     try {
       await upgrade.query('BEGIN');
-      assert.deepEqual(await applyMigrations(upgrade,migrations), [
-        '0050_queue_priority',
-        '0051_copy_quality_flow',
-        '0052_image_editing',
-        '0053_account_review_assignment',
-        '0054_delivery_batches',
-      ]);
+      assert.deepEqual(await applyMigrations(upgrade,migrations), migrations.filter(({ id }) => id >= '0050_queue_priority').map(({ id }) => id));
       await upgrade.query('COMMIT');
     } finally { upgrade.release(); }
     const row = (await pool.query('SELECT * FROM tasks WHERE id = $1',[id])).rows[0];

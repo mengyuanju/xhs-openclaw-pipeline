@@ -127,8 +127,10 @@ const inRange = (date, range) => Date.parse(date) >= range.startMs && Date.parse
 
 // This compact view counts durable events, rather than distinct tasks. The
 // annotation rates use the same verdict-day denominator as the admin report.
-export function summarizePersonalToday(submissions, qualityFacts, qaFacts, range, now = Date.now(), coverageFacts = []) {
+export function summarizePersonalToday(submissions, qualityFacts, qaFacts, range, now = Date.now(), coverageFacts = [], discardFacts = []) {
   const annotation = {}, qa = {};
+  const copyDiscards = discardFacts.filter(row => row.kind === 'ANNOTATION_DISCARD' && row.stage === 'COPY'
+    && !row.exclusion && inRange(row.at, range));
   for (const stage of ['COPY', 'IMAGE']) {
     const submitted = submissions.filter(row => row.kind === 'COMPLETE' && row.stage === stage);
     const firstSubmissions = submitted.filter(row => row.firstSubmission === true && row.rework !== true);
@@ -136,7 +138,9 @@ export function summarizePersonalToday(submissions, qualityFacts, qaFacts, range
     // Ordinary repeat submissions belong in the total even when neither
     // firstSubmission nor rework is set.
     const result = summarizeAnnotationOverall(qualityFacts.filter(row => row.stage === stage));
-    annotation[stage] = { firstSubmissions:firstSubmissions.length,
+    const discarded = stage === 'COPY' ? copyDiscards.length : 0;
+    annotation[stage] = { firstReviews:firstSubmissions.length + discarded, discarded,
+      firstSubmissions:firstSubmissions.length,
       reworkSubmissions:reworkSubmissions.length, submissions:submitted.length,
       quality:{firstPassed:result.firstPassed,passed:result.passed,decided:result.decided,
         firstPassRate:result.decided ? result.firstPassRate : null,

@@ -11,7 +11,7 @@ export function proxy(request: NextRequest) {
   if (decision.type === 'unauthorized') {
     return Response.json({
       error: { code: 'AUTH_REQUIRED', message: 'Please sign in to continue' },
-    }, { status: 401 });
+    }, { status: 401, headers: { 'cache-control': 'no-store' } });
   }
   return new Response('Forbidden', {
     status: 403,

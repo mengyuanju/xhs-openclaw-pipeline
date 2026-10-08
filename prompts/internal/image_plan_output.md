@@ -1,1 +1,1 @@
-只返回 {"imagePlan":[...]}；3～5页，首项kind=hero，其他kind为steps/checklist/comparison/detail/summary。每项必须包含kind/headline/subtitle/bullets/prompt字段；headline为1～18字符，subtitle允许为空字符串、非空时≤30字符，bullets为2～5项，每项checklist≤40否则≤30、prompt为10～1000字符。不得修改正文。
+只返回 {"imagePlan":[...]}；3～5页，首项kind=hero，其他kind为steps/checklist/comparison/detail/summary。每项必须包含kind/headline/subtitle/bullets/prompt字段；headline为1～18字符，subtitle允许为空字符串、非空时≤30字符，bullets为2～5项，每项checklist≤40字否则≤30字、原始可见字符≤200个，prompt为10～1000字符。仅 bullets 中连续英文字母算1字，中文、数字、标点、空格和换行逐个计数；其他字段仍按可见字符逐个计数。不得修改正文。

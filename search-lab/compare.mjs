@@ -40,6 +40,13 @@ function normalizedSelection(value, catalogue) {
   const fields = provider.fields ?? [];
   for (const field of fields) {
     const input = suppliedOptions[field.name];
+    if (field.type === 'boolean') {
+      if (input !== undefined && typeof input !== 'boolean') {
+        throw new TypeError(`${provider.label} ${field.label}不正确`);
+      }
+      options[field.name] = input ?? (field.defaultValue === true);
+      continue;
+    }
     const normalized = typeof input === 'string' ? input.trim() : '';
     if ((field.required && !normalized) || normalized.length > 256
       || (normalized && field.pattern && !(new RegExp(field.pattern, 'u')).test(normalized))) {
@@ -54,8 +61,8 @@ export function validateCompareRequest(body, catalogue = providerCatalogue) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new TypeError('请求格式不正确');
   const query = typeof body.query === 'string' ? body.query.replace(/\s+/gu, ' ').trim() : '';
   if (!query || [...query].length > 500) throw new RangeError('Query 需要 1–500 个字符');
-  if (!Array.isArray(body.providers) || body.providers.length < 1 || body.providers.length > 12) {
-    throw new RangeError('请选择 1–12 家服务商');
+  if (!Array.isArray(body.providers) || body.providers.length < 1 || body.providers.length > 13) {
+    throw new RangeError('请选择 1–13 家服务商');
   }
   const selections = body.providers.map((item) => normalizedSelection(item, catalogue));
   const ids = selections.map(({ provider }) => provider.id);

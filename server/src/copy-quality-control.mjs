@@ -667,13 +667,17 @@ export async function flushExpiredCopyQualityBatches(pool) {
 
 export async function routeManualCopyApproval(client, {
   task, revision, assessment, actor, reviewSessionId, aiDisclosureEnabled,
+  retryExhaustedCopyChanged = false,
 }) {
   const approval = await insertCopyApprovalEvent(client, {
     taskId: Number(task.id), copyRevisionId: Number(revision.id),
     assessmentId: assessment?.id ?? null, actor, reviewSessionId,
     content: revision.content,
   });
-  return routeCopyApprovalV2(client, { task, revision, approval, actor, aiDisclosureEnabled });
+  const routedTask = retryExhaustedCopyChanged ? {
+    ...task, mandatory_copy_qc: true, mandatory_copy_qc_origin: 'IMAGE_RETRY_REVIEW',
+  } : task;
+  return routeCopyApprovalV2(client, { task: routedTask, revision, approval, actor, aiDisclosureEnabled });
 }
 
 export async function freezeCopySamplingBatch(pool, rawProductionBatchId, input, rawActor) {

@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DEFAULT_HUMAN_QUALITY_SETTINGS } from '../src/human-quality-settings.mjs';
 import { DEFAULT_IMAGE_SETTINGS } from '../server/src/image-options.mjs';
+import { loadWorkModePage } from '../server/src/work-mode.mjs';
 
 test('work mode browser: embedded review, draft-safe navigation, failure retention, completion, QA and rework', {
   skip: process.env.RUN_WORK_MODE_BROWSER !== '1', timeout: 120_000,
@@ -110,10 +111,21 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
       if (pathname.endsWith('/work-mode/items')) {
         if (failList) { reply('测试列表暂时不可用', 503); return; }
         const kind = url.searchParams.get('kind'); const offset = Number(url.searchParams.get('offset')); const limit = Number(url.searchParams.get('limit'));
-        const rows = kind === 'COPY' ? tasks.filter(t => t.state === 'COPY_REVIEW_PENDING').map(t => ({ id: String(t.id), taskId: t.id, kind, label: t.query,
-          version: t.currentCopyRevisionId, state: t.state, source: '测试词包', rework: !!t.mandatoryCopyQc }))
-          : kind === 'IMAGE' ? tasks.filter(t => ['MANUAL_ARCHIVE', 'IMAGE_REWORK_PENDING'].includes(t.state)).map(t => ({ id: String(t.id), taskId: t.id, kind, label: t.query, version: t.currentImageRunId }))
-          : (kind === 'COPY_QA' ? qaItems : imageQaItems).filter(q => q.status === 'PENDING'
+        if (kind === 'COPY' || kind === 'IMAGE') {
+          const workUser = { id: 8, username: 'worker', role: 'USER', status: 'ACTIVE', credentialVersion: 1, copyReviewEnabled: true };
+          const repository = { getUserByUsername: async () => workUser, listTasks: async options => {
+            const rows = tasks.filter(t => options.states.split(',').includes(t.state)
+              && t.assignedToUserId === options.assignedToUserId && t.assignedToAccountId === options.assignedToAccountId
+              && !t.priorityPaused && (options.taskId === undefined || t.id === options.taskId));
+            return { total: rows.length, items: rows.slice(options.offset, options.offset + options.limit)
+              .map(t => ({ ...t, sourceQueryPackageName: '测试词包' })) };
+          } };
+          const page = await loadWorkModePage(repository, { kind, offset, limit,
+            ...(url.searchParams.has('itemId') ? { itemId: url.searchParams.get('itemId') } : {}) },
+          { ...workUser, userId: workUser.id });
+          reply({ ...page, kinds: ['COPY','IMAGE','COPY_QA','IMAGE_QA'] }); return;
+        }
+        const rows = (kind === 'COPY_QA' ? qaItems : imageQaItems).filter(q => q.status === 'PENDING'
             && (kind !== 'COPY_QA' || !url.searchParams.has('sampleKind') || url.searchParams.get('sampleKind') === 'ALL'
               || q.sampleKind === url.searchParams.get('sampleKind'))).map(q => ({ id: q.id, kind, label: q.anonymousCode,
             source: null, rework: q.sampleKind === 'MANDATORY_RECHECK', qa: q }));
@@ -183,6 +195,11 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     await page.locator('#review-copy-title').waitFor();
     assert.equal(await page.getByRole('dialog').count(), 0, 'editor must be inline');
+    const loadedSearch = page.getByRole('textbox', { name: '筛选已加载待办', exact: true });
+    const loadedQueue = page.getByRole('complementary', { name: '待处理作业', exact: true });
+    await loadedSearch.fill('没有匹配的合成需求'); assert.equal(await loadedQueue.getByRole('button', { name: /#\d+/ }).count(), 0);
+    await loadedSearch.fill('Query 1'); await loadedQueue.getByRole('button', { name: /#1\b.*Query 1/ }).waitFor(); assert.equal(await loadedQueue.getByRole('button', { name: /#2\b.*Query 2/ }).count(), 0);
+    await loadedSearch.fill(''); await loadedQueue.getByRole('button', { name: /#2\b.*Query 2/ }).waitFor();
     const assertViewportWorkspace = async () => {
       assert.equal(await page.evaluate(() => document.documentElement.scrollHeight > innerHeight + 1), false, 'desktop must not have an outer page scrollbar');
       const submit = page.getByRole('button', { name: /^(提交并下一条|通过并下一条|打回并下一条)$/u }).first();
@@ -300,7 +317,14 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     await page.getByRole('button', { name: /本次已提交 2/u }).click();
     failList = false;
     tasks[0].state = 'COPY_REVIEW_PENDING'; tasks[0].mandatoryCopyQc = true; tasks[0].currentCopyRevisionId = 201;
-    tasks[0].copyRevisions[0].id = 201; tasks[0].copyRevisions[0].revisionOrigin = 'QA_RETURN';
+    tasks[0].mandatoryCopyQcOrigin = 'SECOND_ASSIGNMENT'; tasks[0].copyQaReworkPending = false;
+    tasks[0].copyRevisions[0].id = 201; tasks[0].copyRevisions[0].revisionOrigin = 'SECOND_ASSIGNMENT_RESET';
+    await page.getByRole('button', { name: '刷新待办', exact: true }).click();
+    await page.getByRole('button', { name: /#1/u }).waitFor();
+    assert.equal(await page.getByRole('button', { name: /#1.*需要返工/u }).count(), 0,
+      'secondary assignment with mandatory inspection starts without a rework label');
+    tasks[0].mandatoryCopyQc = false; tasks[0].mandatoryCopyQcOrigin = null; tasks[0].copyQaReworkPending = true;
+    tasks[0].copyRevisions[0].revisionOrigin = 'QA_RETURN';
     await page.getByRole('button', { name: '刷新待办', exact: true }).click();
     await page.getByRole('button', { name: /#1.*需要返工/u }).waitFor();
     await page.screenshot({ path: join(directory, 'desktop.png'), fullPage: true });
@@ -457,6 +481,7 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false, 'image work overflow at ' + width);
       assert.equal(await imageToolbar.getByRole('button', { name: '修改图片', exact: true }).isVisible(), true);
       if (width <= 760) await assertDocumentScroll(imagePanel);
+      await page.screenshot({ path: join(directory, `image-before-preview-${width}.png`), fullPage: true });
       await page.getByRole('button', { name: /^放大查看第 1 页/u }).click();
       await preview.waitFor();
       const bounds = await preview.boundingBox();

@@ -8,6 +8,7 @@ import { Cpu, Image as ImageIcon, RefreshCw, Search, ServerCog, Trash2 } from 'l
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { apiRequest } from '../components/api-client';
+import { useXhsSearchNodes } from '../components/use-xhs-search-nodes';
 import {
   type XhsSearchNodeStatus,
   xhsAuthStatusLabel,
@@ -80,7 +81,7 @@ export function ExecutorManager({
 }) {
   const confirm = useConfirmDialog();
   const [nodes, setNodes] = useState(initialNodes);
-  const [xhsSearchNodes, setXhsSearchNodes] = useState(initialXhsSearchNodes);
+  const { nodes: xhsSearchNodes, refresh: refreshXhsSearchNodes, error: xhsReadError } = useXhsSearchNodes(true, initialXhsSearchNodes);
   const [refreshing, setRefreshing] = useState(false);
   const [deletingNodeId, setDeletingNodeId] = useState('');
   const [deletingXhsNodeId, setDeletingXhsNodeId] = useState('');
@@ -92,6 +93,7 @@ export function ExecutorManager({
   const [xhsActionError, setXhsActionError] = useState('');
   const latestRefreshId = useRef(0);
   const manualRefreshRunning = useRef(false);
+  const executorFlight = useRef<Promise<ExecutorStatus[]> | null>(null);
 
   const refresh = useCallback(async ({ silent = false } = {}) => {
     if (silent && manualRefreshRunning.current) return;
@@ -100,14 +102,19 @@ export function ExecutorManager({
       manualRefreshRunning.current = true;
       setRefreshing(true);
     }
+    const executorRequest = executorFlight.current ??= apiRequest<ExecutorStatus[]>('/api/control-plane/v1/executor-statuses', {
+      signal: AbortSignal.timeout(15_000), cache: 'no-store',
+    });
+    void executorRequest.finally(() => {
+      if (executorFlight.current === executorRequest) executorFlight.current = null;
+    }).catch(() => {});
     try {
-      const [next, nextXhsSearchNodes] = await Promise.all([
-        apiRequest<ExecutorStatus[]>('/api/control-plane/v1/executor-statuses'),
-        apiRequest<XhsSearchNodeStatus[]>('/api/control-plane/v1/xhs-search-statuses'),
+      const [next] = await Promise.all([
+        executorRequest,
+        silent ? Promise.resolve(null) : refreshXhsSearchNodes(),
       ]);
       if (refreshId !== latestRefreshId.current) return;
       setNodes(next);
-      setXhsSearchNodes(nextXhsSearchNodes);
       setLastRefreshedAt(new Date().toISOString());
       setRefreshError('');
     } catch (caught) {
@@ -120,11 +127,13 @@ export function ExecutorManager({
         setRefreshing(false);
       }
     }
-  }, []);
+  }, [refreshXhsSearchNodes]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => { void refresh({ silent: true }); }, 15_000);
-    return () => window.clearInterval(timer);
+    const visible = () => { if (document.visibilityState === 'visible') void refresh({ silent: true }); };
+    const timer = window.setInterval(visible, 15_000);
+    document.addEventListener('visibilitychange', visible);
+    return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', visible); };
   }, [refresh]);
 
   const summary = useMemo(() => ({
@@ -201,7 +210,7 @@ export function ExecutorManager({
         body: JSON.stringify({ nodeId: node.id }),
       });
       latestRefreshId.current += 1;
-      setXhsSearchNodes((current) => current.filter((candidate) => candidate.id !== node.id));
+      await refreshXhsSearchNodes();
       setLastRefreshedAt(new Date().toISOString());
       setXhsActionMessage(`搜索节点 ${node.name} 的信息已移除。`);
     } catch (caught) {
@@ -235,7 +244,7 @@ export function ExecutorManager({
       </div>
       <ToastFeedback id="executor-manager-success" message={message} />
       <ToastFeedback id="executor-manager-error" message={actionError} tone="error" />
-      {refreshError && <div className="notice error" role="alert">{refreshError}</div>}
+      {(refreshError || xhsReadError) && <div className="notice error" role="alert">{refreshError || xhsReadError?.message}</div>}
       {nodes.length === 0
         ? <div className="executor-empty">当前还没有执行机注册到中心服务。</div>
         : <div className="table-wrap executor-table-wrap mobile-cards"><table>

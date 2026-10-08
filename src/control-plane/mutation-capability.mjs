@@ -1,8 +1,11 @@
 import { ApiError } from '../admin/http.mjs';
+import { invalidateControlPlaneCapabilities, readControlPlaneCapabilities } from './capability-cache.mjs';
 
 const REQUIRED_MUTATION_CAPABILITIES = Object.freeze([
  Object.freeze({capability: 'copyQaBatchVersion', minimumVersion: 1,
    matches: (path, method) => method === 'POST' && /^\/v2\/copy-qa\/(?:batches|items\/[^/]+\/decision)$/u.test(path)}),
+ Object.freeze({capability: 'secondaryAssignmentBatchVersion', minimumVersion: 1,
+   matches: (path, method) => method === 'POST' && path === '/v1/admin/reassignment-cases/batch'}),
  Object.freeze({capability: 'secondaryAssignmentVersion', minimumVersion: 1,
  matches: (path, method) => method === 'POST' && (/^\/v1\/copy-qa\/items\/[^/]+\/escalate$/u.test(path)
  || /^\/v1\/admin\/reassignment-cases\//u.test(path))}),
@@ -185,25 +188,10 @@ export async function assertMutationCapability({
   const requirement = requiredMutationCapability(routePath, method, body);
   if (!requirement) return;
 
-  let response;
-  try {
-    response = await fetchImpl(`${root}/health`, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-      cache: 'no-store',
-      signal: AbortSignal.timeout(5_000),
-    });
-  } catch {
-    throw new ApiError(503, 'CONTROL_PLANE_UNAVAILABLE', '无法确认中心服务版本，本次操作未执行');
-  }
-
-  if (!response.ok) {
-    if ([404, 405].includes(response.status)) throw upgradeRequired();
-    throw new ApiError(503, 'CONTROL_PLANE_UNAVAILABLE', '中心服务暂时不可用，本次操作未执行');
-  }
-  const health = await response.json().catch(() => null);
-  const availableVersion = Number(health?.data?.capabilities?.[requirement.capability]);
+  const capabilities = await readControlPlaneCapabilities(root, { fetchImpl });
+  const availableVersion = Number(capabilities?.[requirement.capability]);
   if (!Number.isInteger(availableVersion) || availableVersion < requirement.minimumVersion) {
+    invalidateControlPlaneCapabilities(root, { fetchImpl });
     throw upgradeRequired();
   }
 }

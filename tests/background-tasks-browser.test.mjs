@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import test from 'node:test';
 import { DEFAULT_HUMAN_QUALITY_SETTINGS } from '../src/human-quality-settings.mjs';
 
@@ -45,23 +45,30 @@ test('background tasks browser: close, reload, recover planning draft and receiv
       if (req.url?.includes('/assets/')) { res.setHeader('content-type', 'image/svg+xml'); res.end('<svg xmlns="http://www.w3.org/2000/svg" width="1086" height="1448"><rect width="1086" height="1448" fill="#eee"/></svg>'); return; }
       if (req.url?.startsWith('/api/')) {
         requests.push([req.method, req.url]);
+        const url = new URL(req.url, 'http://fixture'), pathname = url.pathname;
         let body = ''; for await (const chunk of req) body += chunk;
         const data = body ? JSON.parse(body) : null;
         let response;
-        if (req.url === '/api/human-quality-settings') response = DEFAULT_HUMAN_QUALITY_SETTINGS;
-        else if (req.url.endsWith('/tasks/10')) response = { id: 10, query: '桌面收纳', state: 'COPY_REVIEW_PENDING', assignedToUserId: 'worker', assignedToAccountId: 22, aiDisclosureEnabled: false,
+        if (pathname === '/api/human-quality-settings') response = DEFAULT_HUMAN_QUALITY_SETTINGS;
+        else if (pathname.endsWith('/tasks/10')) response = { id: 10, query: '桌面收纳', state: 'COPY_REVIEW_PENDING', assignedToUserId: 'worker', assignedToAccountId: 22, aiDisclosureEnabled: false,
           currentCopyRevisionId: 1, currentImageRunId: null, createdAt: new Date().toISOString(), copyRevisions: [{ id: 1, revision: 1, content: { copy, imagePlan }, approvedAt: null }], imageRuns: [], assets: [], humanQualityAssessments: [] };
-        else if (req.url.endsWith('/copy-review-drafts')) {
+        else if (pathname.endsWith('/copy-review-drafts')) {
           if (req.method === 'POST') { res.statusCode = 405; response = null; }
           else response = { baseCopyRevisionId: 1, drafts: [] };
-        } else if (req.url.endsWith('/regenerate-image-plan')) {
+        } else if (pathname.endsWith('/regenerate-image-plan')) {
           job = { id: planId, status: 'QUEUED', requestedByUsername: 'worker', requestedByAccountId: 22, copyRevisionId: 1, copy: { body: data.copy.body, tags: data.copy.tags, title: data.copy.title }, result: null };
           response = { created: true, job };
-        } else if (req.url.endsWith(`/regenerate-image-plan/${planId}`)) response = job;
-        else if (req.url.endsWith('/tasks/11/image-edits')) {
+        } else if (pathname.endsWith(`/regenerate-image-plan/${planId}`)) response = url.searchParams.get('metadata') === 'true' ? {
+          id:job.id,status:job.status,error:job.error,requestedByUsername:job.requestedByUsername,requestedByAccountId:job.requestedByAccountId,
+        } : job;
+        else if (pathname.endsWith('/tasks/11/image-edits/state')) {
+          const items = edits.map(({id,target_page,status,version,error,created_by,created_by_account_id}) => ({id,task_id:11,target_page,status,version,error,created_by,created_by_account_id}));
+          response = {status:items[0]?.status??'UPLOADED',signature:JSON.stringify(items.map(item=>[item.id,item.version,item.status,item.error??null])),items};
+        }
+        else if (pathname.endsWith('/tasks/11/image-edits')) {
           if (req.method === 'POST') { const edit = { id: editId, target_page: 1, status: 'QUEUED', created_by: 'worker', created_by_account_id: 22, version: 1, operation: 'SVG_DISCLOSURE', config: data, error: null }; edits = [edit]; response = edit; }
           else response = edits;
-        } else if (req.url.endsWith(`/image-edits/${editId}`)) response = edits[0];
+        } else if (pathname.endsWith(`/image-edits/${editId}`)) response = edits[0];
         else { res.statusCode = 404; response = null; }
         res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ data: response })); return;
       }
@@ -110,17 +117,26 @@ test('background tasks browser: close, reload, recover planning draft and receiv
     await notifications.click();
     await page.getByRole('dialog').getByText('图片修复已完成，请打开“修改图片”检查并采用预览。', { exact: true }).waitFor();
     assert.equal(await page.getByRole('dialog').getByRole('button', { name: '查看任务' }).count(), 1);
+    const beforeRead = await page.evaluate(() => JSON.parse(localStorage.getItem('xhs:background-tasks:v1:browser-fixture')));
+    await page.getByRole('dialog').getByRole('button', { name: '标为已读', exact: true }).click();
+    const afterRead = await page.evaluate(() => JSON.parse(localStorage.getItem('xhs:background-tasks:v1:browser-fixture')));
+    const unreadTask = beforeRead.find(task => !task.read && task.kind === 'IMAGE_EDIT');
+    assert.ok(unreadTask); assert.equal(afterRead.find(task => task.id === unreadTask.id).read, true);
+    assert.deepEqual(afterRead.filter(task => task.id !== unreadTask.id), beforeRead.filter(task => task.id !== unreadTask.id), 'single read action leaves the other background records unchanged');
     await page.getByText('已处理记录 · 1', { exact: true }).click();
     assert.equal(await page.getByRole('dialog').getByRole('button', { name: '查看任务' }).count(), 2);
     await page.setViewportSize({ width: 390, height: 844 });
     const box = await page.getByRole('dialog').boundingBox();
     assert.ok(box.x >= 0 && box.x + box.width <= 390);
     assert.deepEqual(errors, []);
-    assert.ok(requests.some(([, url]) => url.endsWith(`/image-edits/${editId}`)));
+    assert.ok(requests.some(([, url]) => url.includes('/tasks/11/image-edits/state?ids=') && url.includes(editId)));
+    assert.ok(requests.some(([, url]) => url.endsWith(`/regenerate-image-plan/${planId}?metadata=true`)));
+    assert.ok(requests.some(([, url]) => url.endsWith(`/regenerate-image-plan/${planId}`)), 'completed plan is fetched in full before publishing its draft');
     assert.equal(requests.filter(([method, url]) => method === 'POST' && url.endsWith('/regenerate-image-plan')).length, 1);
   } finally {
     await browser?.close();
     if (server) await new Promise(resolve => server.close(resolve));
+    assert.ok(resolve(root).startsWith(`${resolve(tmpdir())}${sep}`), 'only remove the verified temporary test directory');
     await rm(root, { recursive: true, force: true });
   }
 });

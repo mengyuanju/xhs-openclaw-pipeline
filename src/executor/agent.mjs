@@ -7,6 +7,7 @@ import { basename, join, relative, resolve } from 'node:path';
 
 import { createCopyGenerationClient } from '../copy-generation-client.mjs';
 import { effectiveModelApiConfig } from '../model-api-config.mjs';
+import { DEFAULT_WEB_SEARCH_RESULT_LIMIT } from '../web-search-config.mjs';
 import { codexErrorCode } from '../codex-protocol.mjs';
 import { codexConcurrencyConfig, codexRuntimePath, createCodexRuntime } from '../codex-runtime.mjs';
 import { generateCopy, toCopyGenerationResponse } from '../copy-generation.mjs';
@@ -17,6 +18,7 @@ import { generateStandaloneImages, normalizeStandaloneImageSource, retryStandalo
 import { plannedForStandaloneRecovery } from '../standalone-image-recovery.mjs';
 import { findImageRecoveryRun, imageRecoveryRunIds, loadUploadedImages, readCheckpoint, saveCheckpoint } from './image-checkpoints.mjs';
 import { executorConcurrency } from './config.mjs';
+import { createExecutorSettingsReader } from './settings-cache.mjs';
 import { reprocessStandaloneImages } from '../standalone-image-generation.mjs';
 import { IMAGE_ARTIFACT_FILE } from '../image-artifacts.mjs';
 import { guardExecutionCalls, runWithExecutionSignal } from './execution-signal.mjs';
@@ -89,6 +91,18 @@ function copySource(revision) {
     ...(content.imageSettings ? { imageSettings: content.imageSettings } : {}) };
 }
 
+function assertSearchKeysReady(modelConfig, environment) {
+  // Explicit routing requires each enabled API credential on every executor.
+  // The legacy single-provider path keeps its existing lazy credential check.
+  for (const provider of modelConfig.webSearchProviderOrder ?? []) {
+    const keyName = provider === 'DOUBAO' ? 'DOUBAO_SEARCH_API_KEY'
+      : provider === 'DEEPSEEK' ? 'DEEPSEEK_API_KEY' : null;
+    if (keyName && !String(environment[keyName] ?? '').trim()) {
+      throw new Error(`执行机缺少已启用搜索服务的 ${keyName}，请先配置后再领取任务`);
+    }
+  }
+}
+
 export async function checkExecutorReady({
   controlPlane,
   workRoot,
@@ -101,9 +115,11 @@ export async function checkExecutorReady({
   await access(workRoot, constants.R_OK | constants.W_OK);
   const records = await controlPlane.listSettings?.();
   const modelApi = records?.find((record) => record.key === 'production')?.value?.modelApi ?? {};
-  if (effectiveModelApiConfig(modelApi, environment).agentProvider === 'CODEX' && !health.capabilities?.executionRetryControl) {
+  const modelConfig = effectiveModelApiConfig(modelApi, environment);
+  if (modelConfig.agentProvider === 'CODEX' && !health.capabilities?.executionRetryControl) {
     throw new Error('使用 Codex 前请更新并重启中心服务：缺少 executionRetryControl，无法保证失败后不重复生成');
   }
+  assertSearchKeysReady(modelConfig, environment);
   (modelClient ?? createAgentClient({ modelApi, environment })).checkReady();
   return { health, workRoot };
 }
@@ -127,6 +143,9 @@ export async function executeCopyClaim({ claim, controlPlane, environment = proc
   const { execution } = claim;
   const snapshot = execution.snapshot;
   const settings = productionSettings(snapshot);
+  // The claim snapshot carries the actual saved routing settings; the center's
+  // anonymous readiness response intentionally exposes only a provider subset.
+  assertSearchKeysReady(effectiveModelApiConfig(settings.modelApi ?? {}, environment), environment);
   const modelClient = client ?? createCopyGenerationClient({ modelApi: settings.modelApi ?? {}, environment });
   const generated = await generateCopy({
     client: signal ? guardExecutionCalls(modelClient, signal, { model: true }) : modelClient,
@@ -135,6 +154,7 @@ export async function executeCopyClaim({ claim, controlPlane, environment = proc
     systemPrompt: publishedPrompt(snapshot, 'TEXT_SYSTEM'),
     promptRuntime: promptRuntimeFromSnapshot(snapshot),
     imageCount: snapshot.task.requestedImageCount,
+    webSearchResultLimit: settings.modelApi?.webSearchResultLimit ?? DEFAULT_WEB_SEARCH_RESULT_LIMIT,
     autoReviseOnReject: false,
     textReviewEnabled: false,
     onStageChange: async (stage, details = {}) => controlPlane.updateProgress(execution.id, {
@@ -196,6 +216,14 @@ export async function executeImageClaim({
   const taskRoot = safeTaskWorkRoot(workRoot, task.id);
   const source = copySource(snapshot.copyRevision);
   if (!source.query) source.query = snapshot.task.query;
+  // Validate approved copy before selecting a local recovery run. Source
+  // contract failures occur before image generation creates any checkpoint.
+  try {
+    normalizeStandaloneImageSource(source);
+  } catch (error) {
+    if (!(error instanceof TypeError || error instanceof RangeError)) throw error;
+    throw Object.assign(new Error(error.message, { cause: error }), { code: 'IMAGE_SOURCE_INVALID' });
+  }
   const recoveryRunIds = imageRecoveryRunIds(execution, taskRoot);
   let sourceRunId = null;
   const restorePlan = storedPlan => plannedForStandaloneRecovery({
@@ -359,6 +387,7 @@ export function createExecutorAgent({
   availabilityCheck = checkModelAvailability,
   environment = process.env,
   now = Date.now,
+  settingsCacheMs = 15_000,
 }) {
   if (!controlPlane) throw new TypeError('controlPlane client is required');
   if (typeof imageWorkerEnabled !== 'boolean') throw new TypeError('imageWorkerEnabled must be a boolean');
@@ -369,6 +398,14 @@ export function createExecutorAgent({
   if (codexImageConcurrency > codexTotalConcurrency) {
     throw new RangeError('codexImageConcurrency cannot exceed codexTotalConcurrency');
   }
+  const readSettings = createExecutorSettingsReader(() => controlPlane.listSettings?.(), { ttlMs: settingsCacheMs, now });
+  const readinessControlPlane = new Proxy(controlPlane, {
+    get(target, key) {
+      if (key === 'listSettings') return readSettings;
+      const value = Reflect.get(target, key, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
   const registration = () => ({ nodeId, name: nodeName, imageWorkerEnabled,
     copyConcurrency, imageConcurrency, codexPoolId, codexTotalConcurrency, codexImageConcurrency,
     imageEditExecutorVersion: imageWorkerEnabled ? 13 : 0,
@@ -416,8 +453,9 @@ export function createExecutorAgent({
       const code = codexCode ?? (error?.code?.startsWith('EXECUTION_') || error?.code === 'STALE_EXECUTION'
         ? error.code : null);
       const retryableModelAvailability = ['CODEX_MODEL_AT_CAPACITY', 'CODEX_RATE_LIMITED'].includes(codexCode);
+      const invalidImageSource = error?.code === 'IMAGE_SOURCE_INVALID';
       await controlPlane.failExecution(claim.execution.id, error,
-        code ? { autoRetry: retryableModelAvailability } : {});
+        code || invalidImageSource ? { autoRetry: retryableModelAvailability } : {});
     } catch (reportError) {
       if (reportError?.code !== 'STALE_EXECUTION'
           && !(claim.imageEdit && ['IMAGE_EDIT_CONFLICT', 'NOT_FOUND'].includes(reportError?.code))) {
@@ -440,9 +478,14 @@ export function createExecutorAgent({
 
   async function availability(kind) {
     if (!ready) throw new Error('executor is not ready; call prepare before claiming work');
-    try { await availabilityCheck({ environment, controlPlane, kind }); }
+    try { await availabilityCheck({ environment, controlPlane: readinessControlPlane, kind }); }
     catch (error) {
-      if (!codexErrorCode(error)) throw error;
+      if (!codexErrorCode(error)) {
+        // A failed preflight has not sent a claim. It must refresh settings on
+        // retry instead of being treated as a possibly committed receipt.
+        throw Object.assign(new Error(error instanceof Error ? error.message : String(error), { cause: error }),
+          { code: error?.code, claimRequestNotSent: true });
+      }
       return { kind, status: 'PAUSED', code: codexErrorCode(error), retryAt: error.retryAt ?? null };
     }
     return null;
@@ -516,7 +559,7 @@ export function createExecutorAgent({
   return {
     async prepare() {
       const result = await readinessCheck({
-        controlPlane,
+        controlPlane: readinessControlPlane,
         nodeId,
         nodeName,
         imageWorkerEnabled,
@@ -567,6 +610,11 @@ export function createExecutorAgent({
         ? controlPlane.claimCopyBatch({ nodeId, limit, requestId })
         : controlPlane.claimImageBatch({ nodeId, limit, requestId });
     },
+    waitForWorkNotifications(cursor, { signal } = {}) {
+      if (!ready) throw new Error('executor is not ready; call prepare before waiting for work');
+      return controlPlane.waitForWorkNotifications({ nodeId, ...cursor }, { signal });
+    },
+    invalidateSettings() { readSettings.invalidate(); },
     executeClaim,
 
     runCopyOnce: () => claimAndExecute('COPY'),

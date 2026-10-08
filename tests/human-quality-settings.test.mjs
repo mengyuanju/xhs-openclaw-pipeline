@@ -1,3 +1,5 @@
+import { readTaskReviewSource } from './helpers/task-review-source.mjs';
+import { readControlPlaneHttpSource } from './control-plane-http-source.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
@@ -151,9 +153,9 @@ test('production settings and review clients expose the dedicated editable scori
     readFile(projectFile('app/settings/human-quality-settings-panel.tsx'), 'utf8'),
     readFile(projectFile('app/api/human-quality-settings/route.ts'), 'utf8'),
     readFile(projectFile('app/workbench/human-quality-settings.ts'), 'utf8'),
-    readFile(projectFile('app/workbench/task-review-dialog.tsx'), 'utf8'),
+    readTaskReviewSource(),
     readFile(projectFile('app/components/central-data-workbench.tsx'), 'utf8'),
-    readFile(projectFile('server/src/http-server.mjs'), 'utf8'),
+    readControlPlaneHttpSource(),
     readFile(projectFile('src/control-plane/proxy-access.mjs'), 'utf8'),
   ]);
   assert.match(page, /ProductionSettingsForm/u);
@@ -185,7 +187,10 @@ test('production settings and review clients expose the dedicated editable scori
   assert.match(route, /sessionActorHeaders/u);
   assert.match(hook, /loadHumanQualitySettings/u);
   assert.match(hook, /settings, loading, error, refresh/u);
-  assert.match(reviewDialog, /useHumanQualitySettings\(taskId\)/u);
+  assert.match(reviewDialog, /useHumanQualitySettings\(taskId, taskId !== null\)/u);
+  assert.match(hook, /createSessionReadCache<HumanQualitySettings>/u);
+  assert.match(hook, /scope: browserSessionGeneration/u);
+  assert.match(panel, /invalidateHumanQualitySettings\(\)/u);
   assert.match(reviewDialog, /reasonOptions=\{copyReasonOptions\}/u);
   assert.match(reviewDialog, /reasonOptions=\{imageReasonOptions\}/u);
   assert.match(reviewDialog, /scoreDefinitions=\{scoreDefinitions\}/u);

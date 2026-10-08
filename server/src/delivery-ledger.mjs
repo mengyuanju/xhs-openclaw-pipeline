@@ -1,6 +1,7 @@
 import { ControlPlaneAuthorizationError, ControlPlaneConflictError, ControlPlaneNotFoundError, normalizeTaskId, normalizeUuid } from './domain.mjs';
 import { normalizeListPagination } from './list-pagination.mjs';
 import { assertTasksReadyForDelivery } from './final-delivery.mjs';
+import { readCachedReportAggregate, readReportFactVersion, DELIVERY_REPORT_SOURCES } from './report-query-cache.mjs';
 
 export function deliveryActor(raw) {
   if (!raw || !['ADMIN', 'USER'].includes(raw.role) || !Number.isSafeInteger(raw.userId) || raw.userId < 1
@@ -47,7 +48,7 @@ const CURRENT = `task.state='REVIEWED' AND delivery.status='READY'
   AND (task.image_qc_legacy_accepted OR task.image_qc_released_approval_event_id IS NOT NULL)`;
 
 // Both views use the same version identity, state, permissions and filter SQL.
-export function deliveryLedgerQuery(input, rawActor, { itemIds, ignoreState = false } = {}) {
+export function deliveryLedgerQuery(input, rawActor, { itemIds, ignoreState = false, includeBatchSummary = true } = {}) {
   const actor = deliveryActor(rawActor), filter = normalizeDeliveryFilters(input);
   const values = [actor.userId, actor.username];
   const bind = value => { values.push(value); return `$${values.length}`; };
@@ -100,7 +101,8 @@ export function deliveryLedgerQuery(input, rawActor, { itemIds, ignoreState = fa
       batch.id AS batch_id,batch.public_id AS batch_public_id,batch.code AS batch_code,
       batch.created_at AS packed_at,batch.created_by_username AS packed_by,batch.created_by_account_id AS packed_by_id,
       batch.archive_sha256 AS source_sha256,batch.archive_byte_size AS source_byte_size,
-      batch_summary.visible_count AS batch_visible_count,batch_summary.delivered_count AS batch_delivered_count,
+      ${includeBatchSummary ? 'batch_summary.visible_count' : '0::integer'} AS batch_visible_count,
+      ${includeBatchSummary ? 'batch_summary.delivered_count' : '0::integer'} AS batch_delivered_count,
       confirmation.confirmed_at AS delivered_at,confirmation.actor_username AS delivered_by,
       confirmation.actor_account_id AS delivered_by_id,
       CASE WHEN confirmation.item_id IS NOT NULL THEN 'DELIVERED' WHEN item.id IS NOT NULL THEN 'PACKED' ELSE 'UNPACKED' END AS delivery_state,
@@ -118,13 +120,13 @@ export function deliveryLedgerQuery(input, rawActor, { itemIds, ignoreState = fa
     LEFT JOIN delivery_batches batch ON batch.id=item.delivery_batch_id
     LEFT JOIN delivery_item_owners owner ON owner.item_id=item.id
     LEFT JOIN delivery_item_confirmations confirmation ON confirmation.item_id=item.id
-    LEFT JOIN LATERAL (SELECT count(*)::integer AS visible_count,
+    ${includeBatchSummary ? `LEFT JOIN LATERAL (SELECT count(*)::integer AS visible_count,
       count(*) FILTER (WHERE mc.item_id IS NOT NULL)::integer AS delivered_count
       FROM delivery_batch_items mi LEFT JOIN delivery_item_confirmations mc ON mc.item_id=mi.id
       LEFT JOIN delivery_item_owners mo ON mo.item_id=mi.id LEFT JOIN tasks mt ON mt.id=mi.task_id
       LEFT JOIN app_users ma ON ma.username=mt.assigned_to_user_id AND ma.created_at<mt.assigned_at
       WHERE mi.delivery_batch_id=batch.id AND ${actor.role === 'ADMIN' ? 'true' : '(mo.account_id=$1 OR ma.id=$1 OR batch.created_by_account_id=$1 OR mc.actor_account_id=$1)'}
-    ) batch_summary ON batch.id IS NOT NULL
+    ) batch_summary ON batch.id IS NOT NULL` : ''}
     WHERE ${clauses.join(' AND ')}
   ) SELECT * FROM records ${derived.length ? `WHERE ${derived.join(' AND ')}` : ''}` };
 }
@@ -162,16 +164,39 @@ export async function inDeliveryTransaction(pool, operation, { readOnly = false 
 export async function listDeliveryItems(pool, input, rawActor) {
   const actor = deliveryActor(rawActor), { limit, offset } = normalizeListPagination(input.limit ?? 50, input.offset ?? 0);
   return inDeliveryTransaction(pool, async client => {
-    const query = deliveryLedgerQuery(input, actor), summaryQuery = deliveryLedgerQuery(input, actor, { ignoreState: true });
+    await client.query("SET LOCAL statement_timeout='20s'");
+    const snapshot = (await client.query('SELECT clock_timestamp() AS at')).rows[0];
+    snapshot.snapshot_version=await readReportFactVersion(client,DELIVERY_REPORT_SOURCES);
+    const query = deliveryLedgerQuery(input, actor, { includeBatchSummary: false });
+    const summaryQuery = deliveryLedgerQuery(input, actor, { ignoreState: true, includeBatchSummary: false });
     const rows = await client.query(`${query.sql} ORDER BY updated_at DESC,task_id DESC,item_id DESC NULLS LAST
       LIMIT $${query.values.length+1} OFFSET $${query.values.length+2}`, [...query.values, limit, offset]);
+    // Only the batches represented by the current page need member counts.
+    const batchIds = [...new Set(rows.rows.map(row => row.batch_id).filter(id => id != null))];
+    const batchRows = batchIds.length ? (await client.query(`SELECT mi.delivery_batch_id,
+      count(*)::integer AS visible_count,count(*) FILTER(WHERE mc.item_id IS NOT NULL)::integer AS delivered_count
+      FROM delivery_batch_items mi JOIN delivery_batches batch ON batch.id=mi.delivery_batch_id
+      LEFT JOIN delivery_item_confirmations mc ON mc.item_id=mi.id
+      LEFT JOIN delivery_item_owners mo ON mo.item_id=mi.id LEFT JOIN tasks mt ON mt.id=mi.task_id
+      LEFT JOIN app_users ma ON ma.username=mt.assigned_to_user_id AND ma.created_at<mt.assigned_at
+      WHERE mi.delivery_batch_id=ANY($1::bigint[]) AND ${actor.role === 'ADMIN' ? 'true' : '(mo.account_id=$2 OR ma.id=$2 OR batch.created_by_account_id=$2 OR mc.actor_account_id=$2)'}
+      GROUP BY mi.delivery_batch_id`, actor.role==='ADMIN' ? [batchIds] : [batchIds, actor.userId])).rows : [];
+    const batchCounts = new Map(batchRows.map(row => [String(row.delivery_batch_id), row]));
+    const aggregate = await readCachedReportAggregate(pool, 'delivery-ledger', actor, normalizeDeliveryFilters(input),
+      snapshot.snapshot_version, async () => {
     const total = (await client.query(`SELECT count(*)::integer AS total FROM (${query.sql}) q`,query.values)).rows[0].total;
     const summary = (await client.query(`SELECT count(*)::integer AS total,
       count(*) FILTER (WHERE delivery_state='UNPACKED')::integer AS unpacked,
       count(*) FILTER (WHERE delivery_state='PACKED')::integer AS packed,
       count(*) FILTER (WHERE delivery_state='DELIVERED')::integer AS delivered,
       count(*) FILTER (WHERE version_updated)::integer AS updated FROM (${summaryQuery.sql}) q`,summaryQuery.values)).rows[0];
-    return { items: rows.rows.map(row=>deliveryItemFrom(row,actor)), total, summary, updatedAt:new Date().toISOString() };
+    return { total, summary, updatedAt:iso(snapshot.at) };
+    });
+    return { items: rows.rows.map(row => {
+      const counts = batchCounts.get(String(row.batch_id));
+      return deliveryItemFrom({ ...row, batch_visible_count:counts?.visible_count ?? 0,
+        batch_delivered_count:counts?.delivered_count ?? 0 },actor);
+    }), ...aggregate };
   }, { readOnly:true });
 }
 

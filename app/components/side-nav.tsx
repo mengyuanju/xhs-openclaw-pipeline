@@ -24,6 +24,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { workflowNavigationHrefs } from '../../src/admin/workflow-access.mjs';
+import { fetchWithSessionCoordination } from './session-client';
 import { WORKBENCH_VIEWS } from '../workbench/views';
 
 type NavigationItem = { href: string; label: string; icon: LucideIcon; children?: NavigationItem[]; adminOnly?: boolean };
@@ -121,9 +122,9 @@ export function SideNav({ session }: { session: NavigationSession }) {
     setIsSigningOut(true);
     setSignOutError('');
     try {
-      const response = await fetch('/api/auth/logout', { method: 'POST' });
+      const response = await fetchWithSessionCoordination('/api/auth/logout', { method: 'POST' });
       if (!response.ok && response.status !== 401) throw new Error('退出请求失败');
-      router.replace('/login');
+      router.replace('/login?reauth=1');
       router.refresh();
     } catch {
       setSignOutError('退出失败，请重试');

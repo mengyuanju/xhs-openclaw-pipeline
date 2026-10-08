@@ -50,7 +50,11 @@ test('production settings route and page expose validated repair and disclosure 
   assert.match(central, /图片模型融合方式只调用一次图片编辑模型/u);
   assert.match(central, /imageEditRepairMaxAttempts/u);
   assert.match(central, /!production \?[^]*编辑器已停用/u);
-  assert.match(central, /value\.modelApi\s*=\s*\{\s*\.\.\.value\.modelApi,\s*\.\.\.normalizeWebSearchSettings\(latestProduction\.modelApi \?\? \{\}\),?\s*\}/u);
+  assert.match(central, /normalizeWebSearchSettings\(latestProduction\.modelApi \?\? \{\}\)/u);
+  assert.match(central, /delete draftModelApi\.webSearchProviderOrder/u);
+  assert.match(central, /delete draftModelApi\.doubaoSearchMode/u);
+  assert.match(central, /delete draftModelApi\.doubaoIcpHostOnly/u);
+  assert.match(central, /\.\.\.draftModelApi,\s*\.\.\.currentSearchSettings/u);
   assert.doesNotMatch(central, /key=\{`(?:layout-presets|production-settings)-\$\{production/u);
   assert.match(overview, /production-v2/u);
   assert.match(overview, /人工审核评分/u);

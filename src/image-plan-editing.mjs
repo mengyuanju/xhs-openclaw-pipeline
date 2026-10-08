@@ -1,4 +1,4 @@
-import { visibleCharacterCount } from './visible-text.mjs';
+import { imagePlanBulletCount } from './visible-text.mjs';
 
 export const MIN_IMAGE_PLAN_PAGES = 3;
 export const IMAGE_PLAN_BULLET_HARD_MAX = 200;
@@ -13,7 +13,7 @@ export function imagePlanBulletLengthWarnings(imagePlan) {
     const recommendedMax = recommendedImagePlanBulletMax(page?.kind);
     return (Array.isArray(page?.bullets) ? page.bullets : []).flatMap((bullet, bulletIndex) => {
       if (typeof bullet !== 'string') return [];
-      const length = visibleCharacterCount(bullet.replace(/\r\n?/gu, '\n').trim());
+      const length = imagePlanBulletCount(bullet.replace(/\r\n?/gu, '\n').trim());
       return length > recommendedMax
         ? [{ pageIndex, bulletIndex, length, recommendedMax }]
         : [];

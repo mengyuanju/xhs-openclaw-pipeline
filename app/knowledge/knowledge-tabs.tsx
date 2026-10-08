@@ -11,12 +11,15 @@ import {
   type CopyKnowledgeItem,
   type CopyKnowledgePagination,
 } from './copy-knowledge-workbench';
-import { KnowledgeWorkbench } from './knowledge-workbench';
+import dynamic from 'next/dynamic';
+import { SHOW_KNOWLEDGE_TYPE_SWITCHER } from './knowledge-views';
 import { apiRequest } from '../components/api-client';
 
 type KnowledgeView = 'VISUAL' | 'COPY';
 type LabelSummary = { name: string; itemCount: number };
-const SHOW_KNOWLEDGE_TYPE_SWITCHER = false;
+const KnowledgeWorkbench = dynamic(() => import('./knowledge-workbench').then(module => module.KnowledgeWorkbench), {
+  loading: () => <p role="status">正在加载视觉知识库…</p>,
+});
 
 export function KnowledgeTabs({
   visualItems,
@@ -108,7 +111,7 @@ export function KnowledgeTabs({
       >文案</Button>
     </div>}
 
-    <section
+    {SHOW_KNOWLEDGE_TYPE_SWITCHER && <section
       className="knowledge-tab-panel"
       id="knowledge-panel-visual"
       role="tabpanel"
@@ -116,8 +119,8 @@ export function KnowledgeTabs({
       hidden={activeView !== 'VISUAL'}
     >
       {SHOW_KNOWLEDGE_TYPE_SWITCHER && <div className="notice">视觉分析会调用真实模型并可能产生费用。配方必须由管理员确认发布，草稿不会进入生产任务。</div>}
-      <KnowledgeWorkbench items={visualItems} />
-    </section>
+      {activeView === 'VISUAL' && <KnowledgeWorkbench items={visualItems} />}
+    </section>}
 
     <section
       className="knowledge-tab-panel"

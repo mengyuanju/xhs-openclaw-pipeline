@@ -1,3 +1,4 @@
+import { readRepositorySource } from './helpers/repository-source.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
@@ -491,7 +492,7 @@ test('search-node retirement is reversible registration metadata and never delet
   const [migration, service, repository] = await Promise.all([
     readFile(new URL('../migrations/0043_xhs_search_node_retirement.sql', import.meta.url), 'utf8'),
     readFile(new URL('../src/xhs-query-search.mjs', import.meta.url), 'utf8'),
-    readFile(new URL('../src/postgres-repository.mjs', import.meta.url), 'utf8'),
+    readRepositorySource(),
   ]);
   assert.match(migration, /ADD COLUMN retired_at timestamptz/u);
   assert.doesNotMatch(migration, /DELETE FROM|DROP TABLE|TRUNCATE/u);

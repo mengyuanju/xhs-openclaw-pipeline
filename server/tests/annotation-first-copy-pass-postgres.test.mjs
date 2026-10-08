@@ -7,6 +7,9 @@ import { readAnnotationAssignmentReport } from '../src/annotation-assignment-rep
 import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 import { recordQualityReviewCoverage } from '../src/quality-review-coverage.mjs';
 import { startTemporaryPostgres18 } from './helpers/personal-postgres.mjs';
+import { readSqlAnnotationJobReport } from '../src/annotation-job-report-query.mjs';
+import { readOperatorPerformanceOracle } from '../src/operator-performance.mjs';
+import { normalizePerformanceFilters } from '../../src/operator-performance.mjs';
 
 const DAY = '2026-09-20';
 const at = (day, clock = '09:00:00') => new Date(day + 'T' + clock + '+08:00').toISOString();
@@ -262,6 +265,14 @@ test('first COPY pass includes completed unsampled releases for the exact first 
       assert.equal(actual.person.copyReview, 2);
       assert.equal(actual.person.copyFirstUnjudged, 1);
     });
+    const input={period:'custom',from:DAY,to:DAY,activity:'PRODUCTION'};
+    const oracle=await readOperatorPerformanceOracle({connect:()=>db.connect()},{...admin,role:'ADMIN'},input,{kind:'annotationJobReport'});
+    const sql=await readSqlAnnotationJobReport(db,normalizePerformanceFilters(input),oracle.asOf);
+    assert.deepEqual({...sql,asOf:''},{...oracle,asOf:''},
+      'full SQL cohort aggregates preserve overlapping releases, wrong approvals, direct bypasses and batch returns');
+    const earlier=await readSqlAnnotationJobReport(db,normalizePerformanceFilters(input),AS_OF);
+    assert.equal(earlier.people[0].copyFirstPassed,sql.people[0].copyFirstPassed-1,
+      'the completed release after asOf is excluded from SQL cohorts as well');
   } finally {
     await repository.close();
     await database.stop();

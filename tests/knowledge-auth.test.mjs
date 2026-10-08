@@ -33,7 +33,9 @@ test('knowledge reads and writes keep each concurrent administrator identity and
     assert.equal(headers.has('cookie'), false);
     calls.push({ username: user.username, path: new URL(url).pathname, ...init });
     if (init.method === 'GET') {
-      const data = url.endsWith('/capabilities') ? { workbenchVersion: 1 }
+      const data = new URL(url).pathname === '/v1/copy-knowledge'
+        ? { data: [], pagination: {page:1,pageSize:100,totalItems:0,totalPages:1}, labels: [] }
+        : url.endsWith('/capabilities') ? { workbenchVersion: 1 }
         : url.endsWith('/settings') ? [{ key: 'production', value: { modelApi: { visionModel: 'fake-vision' } } }]
           : url.endsWith('/copy-analysis-prompts') ? [{ id: 1, content: '分析结构' }] : [];
       return Response.json({ data });
@@ -112,7 +114,7 @@ test('knowledge pages and APIs are available only to administrators', () => {
 test('the generic control-plane proxy recognizes every knowledge management route', () => {
   for (const path of [
     '/v1/knowledge', '/v1/knowledge/labels/import', '/v1/knowledge-versions/1/asset',
-    '/v1/copy-analysis-prompts', '/v1/copy-knowledge/analyze', '/v1/visual-knowledge/analyze',
+    '/v1/copy-analysis-prompts', '/v1/copy-knowledge', '/v1/copy-knowledge/analyze', '/v1/visual-knowledge/analyze',
   ]) assert.equal(isKnowledgeControlPlaneRoute(path), true, path);
   for (const path of ['/v1/knowledgeable', '/v1/copy-qa/items', '/v1/tasks']) {
     assert.equal(isKnowledgeControlPlaneRoute(path), false, path);

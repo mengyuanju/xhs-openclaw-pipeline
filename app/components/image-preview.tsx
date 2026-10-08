@@ -307,6 +307,7 @@ export function ImagePreview({
           <div className={`image-preview-viewport preview-background-${activeBackdrop}${viewMode === 'fit' ? ' is-fit' : ''}`} aria-busy={imagePending && !imageFailed}>
             <div className={`image-preview-stage${viewMode === 'fit' ? ' is-fit' : ''}`}>
               <img
+                key={retry}
                 className={`image-preview-full${viewMode === 'fit' ? ' is-fit' : ''}${isQuarterTurn ? ' is-quarter-turn' : ''}`}
                 src={loadedImage?.src ?? previewSrc}
                 alt={imagePending && loadedImage ? '上一张预览，正在加载所选图片' : alt}

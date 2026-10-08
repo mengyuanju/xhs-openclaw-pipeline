@@ -5,10 +5,12 @@ import {
   createSessionToken,
   readSessionConfig,
   serializeAdminSessionCookie,
+  verifySessionToken,
 } from '../../../../src/admin/auth.mjs';
 import { ApiError } from '../../../../src/admin/http.mjs';
 import { loginRateLimitStore } from '../../../../src/admin/login-rate-limits.mjs';
 import { controlPlaneUrl } from '../../../../src/control-plane/next-runtime.mjs';
+import { getSessionMetadata } from '../../../../src/admin/session-renewal.mjs';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -18,7 +20,7 @@ const loginSchema = z.object({
   password: z.string().min(1).max(1_024),
 }).strict();
 export async function POST(request: Request) {
-  return apiHandler(request, { mutation: true, auth: false }, async () => {
+  const response = await apiHandler(request, { mutation: true, auth: false }, async () => {
     const { username, password } = await parseJson(request, loginSchema);
     const rateLimit = loginRateLimitStore.check(username);
     if (!rateLimit.allowed) {
@@ -38,12 +40,18 @@ export async function POST(request: Request) {
     }).catch(() => null);
     if (!userResponse) throw new ApiError(503, 'CONTROL_PLANE_UNAVAILABLE', '无法连接中心服务');
     if (!userResponse.ok) {
+      if (userResponse.status >= 500) {
+        throw new ApiError(503, 'CONTROL_PLANE_UNAVAILABLE', '中心服务暂时不可用，请稍后重试');
+      }
       loginRateLimitStore.recordFailure(username);
       throw new ApiError(401, 'INVALID_CREDENTIALS', '登录失败');
     }
-    const user = (await userResponse.json()).data;
-    loginRateLimitStore.resetAccount(username);
+    const user = (await userResponse.json().catch(() => null))?.data;
+    if (!user) throw new ApiError(503, 'CONTROL_PLANE_UNAVAILABLE', '中心服务返回的登录信息无效');
+    const issuedAt = Math.floor(Date.now() / 1_000);
     const token = createSessionToken(config.sessionSecret, {
+      nowSeconds: issuedAt,
+      renewal: {},
       actor: {
         userId: user.id,
         username: user.username,
@@ -56,10 +64,15 @@ export async function POST(request: Request) {
         imageQcEnabled: user.imageQcEnabled,
       },
     });
+    const metadata = getSessionMetadata(verifySessionToken(token, config.sessionSecret, { nowSeconds: issuedAt }));
+    if (!metadata) throw new ApiError(503, 'AUTH_NOT_CONFIGURED', '无法建立登录会话');
+    const maxAge = metadata.expiresAt - Math.floor(Date.now() / 1_000);
+    loginRateLimitStore.resetAccount(username);
 
     const response = Response.json({
       data: {
         authenticated: true,
+        session: metadata,
         homePath: user.mustChangePassword ? '/profile' : '/workbench/personal',
         role: user.role,
         mustChangePassword: user.mustChangePassword,
@@ -71,9 +84,11 @@ export async function POST(request: Request) {
     response.headers.set('cache-control', 'no-store');
     response.headers.set('set-cookie', serializeAdminSessionCookie(
       token,
-      { secure: new URL(request.url).protocol === 'https:' },
+      { secure: new URL(request.url).protocol === 'https:', maxAge },
     ));
-    response.headers.set('x-session-expires-in', String(8 * 60 * 60));
+    response.headers.set('x-session-expires-in', String(maxAge));
     return response;
   });
+  response.headers.set('cache-control', 'no-store');
+  return response;
 }

@@ -18,9 +18,28 @@ import { normalizeListPagination } from './list-pagination.mjs';
 import { lockWorkflowQualitySettings, readWorkflowQualitySettings } from './workflow-quality-settings.mjs';
 import { normalizeHumanQualitySettings } from '../../src/human-quality-settings.mjs';
 import { recordQualityReviewCoverage } from './quality-review-coverage.mjs';
+import { createImageQualityTailDrain } from './image-quality-tail-flush.mjs';
+import { imageQaSummaryPageSql } from './image-qa-read.mjs';
 
 export const IMAGE_SAMPLING_ALGORITHM_VERSION = 'account-bps-remainder-v1';
 const IMAGE_BATCH_TAIL_MS = 30 * 60 * 1000;
+const tailDrains = new WeakMap();
+function imageQualityTailDrain(pool) {
+  if (!tailDrains.has(pool)) tailDrains.set(pool, createImageQualityTailDrain({
+    pool, readSettings: () => readWorkflowQualitySettings(pool),
+    freeze: (row, now) => transaction(pool, client => attemptAutomaticImageSamplingFreeze(client, {
+      productionBatchId: row.production_batch_id, submitterAccountId: row.submitted_by_account_id,
+      actor: { userId: null, username: 'system' }, force: true, now,
+    })),
+    onError: error => console.error('failed to freeze expired image QA tails', error),
+  }));
+  return tailDrains.get(pool);
+}
+
+export async function disposeImageQualityTailDrain(pool) {
+  await tailDrains.get(pool)?.dispose();
+  tailDrains.delete(pool);
+}
 const CURRENT_IMAGE_APPROVAL_SQL = `item.approval_event_id = (
   SELECT current_approval.id FROM image_approval_events current_approval
   WHERE current_approval.task_id = item.task_id AND current_approval.image_run_id = item.image_run_id
@@ -409,9 +428,9 @@ export async function attemptAutomaticImageSamplingFreeze(client, {
     `image-batch:${productionBatchId}`,
     `image-submitter:${submitterAccountId}`,
   ]);
-  const allPending = await pendingApprovalRows(client, productionBatchId, submitterAccountId);
-  if (allPending.length < 1) return null;
   const fullChunkSize = chunkSize(settings.imageSampling.rateBps);
+  const allPending = await pendingApprovalRows(client, productionBatchId, submitterAccountId, fullChunkSize);
+  if (allPending.length < 1) return null;
   const oldestMs = new Date(allPending[0].submitted_at).valueOf();
   const tailExpired = Number.isFinite(oldestMs) && now.valueOf() - oldestMs >= IMAGE_BATCH_TAIL_MS;
   if (!force && allPending.length < fullChunkSize && !tailExpired) return null;
@@ -694,6 +713,9 @@ async function qaActor(pool, rawActor) {
 
 export async function listImageQaItems(pool, options = {}, rawActor) {
   const actor = await qaActor(pool, rawActor);
+  if (options.includeSummary !== undefined && typeof options.includeSummary !== 'boolean') {
+    throw new TypeError('includeSummary must be a boolean');
+  }
   const { limit, offset } = normalizeListPagination(options.limit ?? 50, options.offset ?? 0);
   const status = String(options.status ?? 'PENDING').trim().toUpperCase();
   if (!['PENDING', 'PASSED', 'RETURNED', 'BATCH_RETURNED', 'DISCARDED', 'ADMIN_ESCALATED', 'ALL'].includes(status)) {
@@ -703,11 +725,12 @@ export async function listImageQaItems(pool, options = {}, rawActor) {
   if (personName !== null && actor.role !== 'ADMIN') {
     throw new ControlPlaneAuthorizationError('只有管理员可以按人员姓名筛选图片质检项');
   }
-  await flushExpiredImageQualityBatches(pool);
+  await imageQualityTailDrain(pool).flushForPage({ actor, status, personName,
+    limit, offset, actionableOnly: Boolean(options.actionableOnly), itemPublicId: options.itemPublicId });
   const values = [actor.userId, status, limit, offset, personName];
   const itemPublicId = options.itemPublicId == null ? null : normalizeUuid(options.itemPublicId, 'itemPublicId');
   const itemParameter = 8;
-  const result = await pool.query(`
+  const selectSql = `
     SELECT item.*, sampling_freeze.public_id AS freeze_public_id, sampling_freeze.blind_review_enabled,
       task.query, task.priority_paused, task.state AS task_state, task.source_query_package_name AS query_package_name,
       sampling_freeze.production_batch_id, settings.image_reviewer_batch_return_enabled,
@@ -720,14 +743,16 @@ export async function listImageQaItems(pool, options = {}, rawActor) {
       COALESCE(jsonb_agg(jsonb_build_object(
         'id', asset.id, 'media_type', asset.media_type, 'sha256', asset.sha256,
         'original_name', asset.original_name, 'page_index', page.page_index
-      ) ORDER BY page.page_index) FILTER (WHERE asset.id IS NOT NULL), '[]'::jsonb) AS assets
+      ) ORDER BY page.page_index) FILTER (WHERE asset.id IS NOT NULL), '[]'::jsonb) AS assets`;
+  const baseJoins = `
     FROM image_sampling_items AS item
     JOIN image_sampling_freezes AS sampling_freeze ON sampling_freeze.id = item.freeze_id
     JOIN image_approval_events AS approval ON approval.id = item.approval_event_id
     JOIN tasks AS task ON task.id = item.task_id
     JOIN image_runs AS image_run
       ON image_run.id = item.image_run_id AND image_run.task_id = item.task_id
-    CROSS JOIN workflow_quality_settings AS settings
+    CROSS JOIN workflow_quality_settings AS settings`;
+  const detailJoins = `${baseJoins}
     LEFT JOIN LATERAL (
       SELECT jsonb_build_object(
         'reasonCodes', parent.reason_codes,
@@ -774,8 +799,8 @@ export async function listImageQaItems(pool, options = {}, rawActor) {
       WITH ORDINALITY AS page(image, page_index) ON true
     LEFT JOIN image_run_asset_view AS asset
       ON asset.task_id = item.task_id AND asset.image_run_id = item.image_run_id
-      AND asset.id::text = COALESCE(page.image->>'deliveryAssetId', page.image->>'assetId')
-    WHERE item.selected
+      AND asset.id::text = COALESCE(page.image->>'deliveryAssetId', page.image->>'assetId')`;
+  const filterSql = `item.selected
       ${itemPublicId === null ? '' : `AND item.public_id = $${itemParameter}::uuid`}
       ${options.actionableOnly ? `AND item.status = 'PENDING' AND task.priority_paused = false AND ${CURRENT_IMAGE_APPROVAL_SQL}` : ''}
       AND ($2 = 'ALL' OR item.status = $2)
@@ -787,11 +812,19 @@ export async function listImageQaItems(pool, options = {}, rawActor) {
           WHERE person_filter.id = item.submitter_account_id
             AND strpos(lower(person_filter.display_name), lower($5)) > 0
         )
-      ))
-    GROUP BY item.id, sampling_freeze.id, approval.id, task.id, settings.singleton, previous_return.payload
+      ))`;
+  const groupSql = `GROUP BY item.id, sampling_freeze.id, approval.id, task.id, settings.singleton, previous_return.payload`;
+  const parameters = [...values, PENDING_IMAGE_EDIT_STATUSES, actor.role, ...(itemPublicId === null ? [] : [itemPublicId])];
+  if (options.includeSummary) {
+    const result = await pool.query(imageQaSummaryPageSql({ selectSql, baseJoins, detailJoins, filterSql, groupSql }), parameters);
+    const row = result.rows[0];
+    return { items: row.items.map(item => imageQaItemFrom(item, actor)), limit, offset: Number(row.effective_offset),
+      summary: { total: Number(row.total), mandatoryCount: Number(row.mandatory_count), assetCount: Number(row.asset_count) } };
+  }
+  const result = await pool.query(`${selectSql} ${detailJoins} WHERE ${filterSql} ${groupSql}
     ORDER BY task.priority_sort_at, item.id
     LIMIT $3 OFFSET $4
-  `, [...values, PENDING_IMAGE_EDIT_STATUSES, actor.role, ...(itemPublicId === null ? [] : [itemPublicId])]);
+  `, parameters);
   return { items: result.rows.map((row) => imageQaItemFrom(row, actor)), limit, offset };
 }
 
@@ -1279,32 +1312,6 @@ export async function closeImageSamplingTail(pool, input, rawActor) {
   });
 }
 
-export async function flushExpiredImageQualityBatches(pool, { now = new Date() } = {}) {
-  const settings = await readWorkflowQualitySettings(pool);
-  if (!settings.imageSampling.enabled || settings.imageSampling.rateBps === 0) return [];
-  const candidates = await pool.query(`
-    SELECT task.production_batch_id, approval.submitted_by_account_id
-    FROM image_approval_events AS approval
-    JOIN tasks AS task ON task.id = approval.task_id AND task.state = 'IMAGE_QC_PENDING'
-      AND task.current_copy_revision_id = approval.copy_revision_id
-      AND task.current_image_run_id = approval.image_run_id
-    WHERE approval.submitted_at <= $1
-      AND NOT EXISTS (SELECT 1 FROM image_sampling_items item WHERE item.approval_event_id = approval.id)
-      AND NOT EXISTS (
-        SELECT 1 FROM image_approval_events newer
-        WHERE newer.task_id = approval.task_id AND newer.image_run_id = approval.image_run_id
-          AND (newer.submitted_at, newer.id) > (approval.submitted_at, approval.id)
-      )
-    GROUP BY task.production_batch_id, approval.submitted_by_account_id
-  `, [new Date(now.valueOf() - IMAGE_BATCH_TAIL_MS)]);
-  const frozen = [];
-  for (const row of candidates.rows) {
-    const result = await transaction(pool, (client) => attemptAutomaticImageSamplingFreeze(client, {
-      productionBatchId: row.production_batch_id,
-      submitterAccountId: row.submitted_by_account_id,
-      actor: { userId: null, username: 'system' }, force: true, now,
-    }));
-    if (result) frozen.push(result);
-  }
-  return frozen;
+export function flushExpiredImageQualityBatches(pool, options = {}) {
+  return imageQualityTailDrain(pool).flush(options);
 }

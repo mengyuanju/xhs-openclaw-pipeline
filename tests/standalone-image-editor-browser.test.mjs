@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp,readFile,rm } from 'node:fs/promises';
+import { mkdir,mkdtemp,readFile,rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join,resolve } from 'node:path';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
+import { decodeReference } from '../src/image-edit-pixels.mjs';
 
 test('independent image editor browser: list, inline upload dialog, save-to-queue, status, download and mobile',
  {skip:process.env.RUN_IMAGE_EDIT_BROWSER!=='1',timeout:90000},async()=>{
@@ -14,7 +15,7 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
   const png=await sharp({create:{width:1086,height:1448,channels:4,background:'#e6f0ec'}}).png().toBuffer();
   const workspace={id:501,title:'独立上传图片',runId:randomUUID(),copyRevisionId:91,
     assets:[{id:601,sha256:'a'.repeat(64),url:'/v1/image-editor/assets/601'}],runs:[]};
-  let server,browser,uploaded=false,edits=[],submitted,submissionCount=0,failSubmission=false,extraRows=[],batchSubmissions=0,batchPayload,acceptedBatchPayload,individualAcceptCalls=0;
+  let server,browser,uploaded=false,uploadDelay=0,releaseUpload=null,edits=[],submitted,submissionCount=0,failSubmission=false,extraRows=[],batchSubmissions=0,batchPayload,acceptedBatchPayload,individualAcceptCalls=0;
   const deleted=new Set(),deletions=[];
   try {
     await build({stdin:{contents:`import './app/globals.css';import React from 'react';import{createRoot}from'react-dom/client';import{ConfirmDialogProvider}from'./components/ui/confirm-dialog';import{ImageEditorWorkbench}from'./app/image-editor/workbench';import{BackgroundTasksProvider,BackgroundTaskNotifications}from'./app/components/background-tasks';import{Toaster}from'./components/ui/sonner';createRoot(document.getElementById('root')).render(<ConfirmDialogProvider><BackgroundTasksProvider accountKey="browser-test" accountUsername="本人" accountId={8}><ImageEditorWorkbench/><BackgroundTaskNotifications/><Toaster/></BackgroundTasksProvider></ConfirmDialogProvider>);`,resolveDir:process.cwd(),loader:'tsx'},bundle:true,outfile:join(root,'bundle.js'),jsx:'automatic',platform:'browser',conditions:['style'],alias:{'@':process.cwd()},define:{'process.env.NODE_ENV':'"test"','process.env':'{}'}});
@@ -30,7 +31,7 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
         if(path.startsWith('/v1/image-editor/assets/')){res.setHeader('content-type','image/png');if(req.url.includes('download=true'))res.setHeader('content-disposition','attachment; filename="edited.png"');res.end(png);return;}
         let result;
         if(path==='/v1/image-editor/workspaces/delete'){deletions.push(data.workspaceIds);for(const id of data.workspaceIds)deleted.add(id);result={deletedIds:data.workspaceIds};}
-        else if(path==='/v1/image-editor/workspaces'&&req.method==='POST'){uploaded=true;deleted.delete(workspace.id);assert.equal(data.images.length,workspace.assets.length);result={...workspace,status:'UPLOADED'};}
+        else if(path==='/v1/image-editor/workspaces'&&req.method==='POST'){if(uploadDelay)await new Promise(done=>{releaseUpload=done;});uploaded=true;deleted.delete(workspace.id);assert.equal(data.images.length,workspace.assets.length);result={...workspace,status:'UPLOADED'};}
         else if(path==='/v1/image-editor/workspaces'){assert.equal(new URL(req.url,'http://localhost').searchParams.get('queue'),'true');const items=[...(edits.length?[{id:501,title:workspace.title,owner:'本人',status:edits[0].status,operation:edits[0].operation,nodeId:null,error:edits[0].error}]:[]),...extraRows].filter(item=>!deleted.has(item.id));result={total:items.length,items};}
         else if(path.startsWith('/v1/image-editor/edits/')) {
           const edit=edits.find(item=>path.endsWith(item.id)||path.endsWith(`${item.id}/accept`));
@@ -75,7 +76,18 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
     await page.getByLabel('上传待编辑图片',{exact:true}).setInputFiles({name:'invalid.txt',mimeType:'text/plain',buffer:Buffer.from('not an image')});
     await page.getByRole('alert').filter({hasText:'PNG/JPEG/WebP'}).waitFor();
     assert.equal(uploaded,false,'invalid files never reach the API');
-    await page.getByLabel('上传待编辑图片',{exact:true}).setInputFiles({name:'source.png',mimeType:'image/png',buffer:png});
+    await page.getByLabel('上传待编辑图片',{exact:true}).setInputFiles({name:'oversized-source.png',mimeType:'image/png',buffer:Buffer.alloc(5_680_000)});
+    const oversizedSourceError=page.getByRole('alert').filter({hasText:'5.42 MiB'});
+    await oversizedSourceError.waitFor();
+    assert.match(await oversizedSourceError.innerText(),/oversized-source\.png/u);
+    assert.match(await oversizedSourceError.innerText(),/5[，,\s]?242[，,\s]?880\s*字节/u);
+    assert.equal(uploaded,false,'oversized originals never create a workspace');
+    uploadDelay=1200;await page.getByLabel('上传待编辑图片',{exact:true}).setInputFiles({name:'source.png',mimeType:'image/png',buffer:png});
+    await page.waitForFunction(()=>document.querySelector('input[aria-label="上传待编辑图片"]')?.disabled===true);
+    while(!releaseUpload)await page.waitForTimeout(10);
+    await page.keyboard.press('Escape');assert.equal(await page.getByRole('dialog').count(),1,'busy upload rejects Escape instead of silently losing the request');
+    assert.equal(await page.getByRole('button',{name:'关闭弹窗',exact:true}).count(),0,'busy upload hides the close icon');
+    uploadDelay=0;releaseUpload();releaseUpload=null;
     await page.getByRole('region',{name:'图片编辑组件'}).waitFor();
     assert.equal(await page.getByRole('dialog').count(),1,'editor appears inline, not as a second modal');
     assert.equal(await page.getByRole('button',{name:'修改图片',exact:true}).count(),0);
@@ -85,13 +97,17 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
     assert.equal(await page.getByRole('combobox',{name:'程序标识样式',exact:true}).count(),0);
     await page.getByRole('button',{name:'程序叠加（SVG + Sharp）',exact:true}).click();
     const badgeStyle=page.getByRole('combobox',{name:'程序标识样式',exact:true});
-    assert.equal(await badgeStyle.textContent(),'描边徽章');
-    assert.equal(await page.getByRole('radio',{name:'自动配色',exact:true}).isChecked(),true);
+    assert.equal(await badgeStyle.textContent(),'实心徽章');
+    assert.equal(await page.getByRole('radio',{name:'自定义颜色',exact:true}).isChecked(),true);
+    assert.equal(await page.locator('[data-disclosure-preview] rect').getAttribute('fill'),'#111827');
+    assert.equal(await page.locator('[data-disclosure-preview] text').getAttribute('fill'),'#FFFFFF');
     for(const radio of await page.getByRole('radiogroup',{name:'程序标识配色',exact:true}).getByRole('radio').all()) {
       const bounds=await radio.boundingBox();assert.ok(bounds.width<=20&&bounds.height<=20,'standalone color modes retain compact radio controls');
     }
     await page.getByRole('radio',{name:'自定义颜色',exact:true}).check();
     const badgeColorInput=page.getByLabel('程序标识颜色值',{exact:true});
+    assert.equal(await badgeColorInput.inputValue(),'#111827');
+    await badgeStyle.click();await page.getByRole('option',{name:'描边徽章',exact:true}).click();
     assert.equal(await page.getByRole('button',{name:'屏幕取色',exact:true}).count(),0,'unsupported browsers retain native picker and HEX inputs');
     await badgeColorInput.fill('#bad');
     await page.getByRole('alert').filter({hasText:'请输入有效的颜色值'}).waitFor();
@@ -104,6 +120,12 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
     await badgeStyle.click();await page.getByRole('option',{name:'实心徽章',exact:true}).click();
     assert.equal(await page.locator('[data-disclosure-preview] rect').getAttribute('fill'),'#F1E2D3');
     assert.equal(await page.locator('[data-disclosure-preview] text').getAttribute('fill'),'#000000');
+    await badgeColorInput.fill('#111827');
+    const disclosureTextInput=page.getByLabel('人工生成标识文字',{exact:true});
+    for(const [value,valid] of [['中文AI_12-',true],['包含 空格',false],['AI@生成',false],['🙂',false]]){
+      await disclosureTextInput.fill(value);
+      assert.equal(await disclosureTextInput.evaluate(input=>input.validity.valid),valid,`native disclosure pattern: ${value}`);
+    }
     await page.getByLabel('人工生成标识文字',{exact:true}).fill('AI生成');
     failSubmission=true;
     await page.getByRole('button',{name:'保存并提交生图',exact:true}).click();
@@ -117,7 +139,7 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
     assert.equal(await list.getByText('中心程序处理',{exact:true}).count(),1);
     assert.equal(submitted.operation,'SVG_DISCLOSURE');assert.equal(submitted.draft,false);
     assert.equal(submitted.overlay.badgeVariant,'solid-pill');
-    assert.equal(submitted.overlay.badgeColor,'#F1E2D3');
+    assert.equal(submitted.overlay.badgeColor,'#111827','new editor explicitly submits the fixed dark solid default');
     assert.equal(submissionCount,2,'one failed attempt and one successful submission');
     edits[0].status='RUNNING';
     await list.getByRole('button',{name:'刷新',exact:true}).click();
@@ -131,7 +153,7 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
     assert.equal(await badgeStyle.textContent(),'实心徽章','saved solid style is restored');
     assert.equal(await badgeStyle.isDisabled(),true);
     assert.equal(await page.getByRole('radio',{name:'自定义颜色',exact:true}).isChecked(),true,'saved custom mode is restored');
-    assert.equal(await badgeColorInput.inputValue(),'#F1E2D3','saved custom color is restored');
+    assert.equal(await badgeColorInput.inputValue(),'#111827','saved custom color is restored');
     assert.equal(await badgeColorInput.isDisabled(),true);
     assert.equal(await page.getByRole('button',{name:'保存并提交生图',exact:true}).isDisabled(),true);
     assert.equal(await page.getByRole('link',{name:/下载/u}).count(),0);
@@ -199,8 +221,9 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
     await page.getByLabel('上传待编辑图片',{exact:true}).setInputFiles([{name:'one.png',mimeType:'image/png',buffer:png},{name:'two.png',mimeType:'image/png',buffer:png},{name:'three.png',mimeType:'image/png',buffer:png}]);
     await page.getByRole('region',{name:'图片编辑组件'}).waitFor();
     await page.getByRole('button',{name:'程序叠加（SVG + Sharp）',exact:true}).click();
-    assert.equal(await badgeStyle.textContent(),'描边徽章','new uploads retain the outline default');
-    assert.equal(await page.getByRole('radio',{name:'自动配色',exact:true}).isChecked(),true,'new uploads retain automatic colors');
+    assert.equal(await badgeStyle.textContent(),'实心徽章','new uploads use the solid default');
+    assert.equal(await page.getByRole('radio',{name:'自定义颜色',exact:true}).isChecked(),true,'new uploads use the fixed dark color');
+    assert.equal(await badgeColorInput.inputValue(),'#111827');
     await page.getByRole('radio',{name:'自定义颜色',exact:true}).check();
     await badgeColorInput.fill('#234567');
     await badgeStyle.click();await page.getByRole('option',{name:'实心徽章',exact:true}).click();
@@ -275,6 +298,83 @@ test('independent image editor browser: list, inline upload dialog, save-to-queu
     await list.getByRole('button',{name:'刷新',exact:true}).click();
     await modelRow.getByText('生图中',{exact:true}).waitFor();
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true);
+    assert.deepEqual(errors,[]);
+  } finally {
+    releaseUpload?.();
+    await browser?.close();if(server)await new Promise(r=>server.close(r));
+    assert.ok(resolve(root).startsWith(resolve(tmpdir())));await rm(root,{recursive:true,force:true});
+  }
+});
+
+test('independent image editor browser: reference upload errors explain size and actual format, and allow corrected files',
+ {skip:process.env.RUN_IMAGE_EDIT_BROWSER!=='1',timeout:45000},async()=>{
+  const {build}=await import('esbuild'),{chromium}=await import('playwright-core');
+  const root=await mkdtemp(join(tmpdir(),'standalone-reference-errors-'));
+  const png=await sharp({create:{width:1086,height:1448,channels:3,background:'#eeeeee'}}).png().toBuffer();
+  const jpeg=await sharp(png).jpeg().toBuffer(),uploadRequests=[];
+  let browser,server,editSubmissions=0;
+  try {
+    await build({stdin:{contents:`import './app/globals.css';import React from 'react';import{createRoot}from'react-dom/client';import{ConfirmDialogProvider}from'./components/ui/confirm-dialog';import{StandaloneImageEditor}from'./app/components/standalone-image-editor';const asset={id:1,sha256:'a'.repeat(64),url:'/v1/image-editor/assets/1'};createRoot(document.getElementById('root')).render(<ConfirmDialogProvider><StandaloneImageEditor taskId={838} runId="${randomUUID()}" copyRevisionId={1} asset={asset} page={1} runs={[]} onChanged={async()=>{}} onSubmitted={()=>{}} onBusyChange={()=>{}} initialStatus="UPLOADED" onRunningChange={()=>{}}/></ConfirmDialogProvider>);`,resolveDir:process.cwd(),loader:'tsx'},bundle:true,outfile:join(root,'bundle.js'),jsx:'automatic',platform:'browser',conditions:['style'],alias:{'@':process.cwd()},define:{'process.env.NODE_ENV':'"test"','process.env':'{}'}});
+    const [js,rawCss]=await Promise.all([readFile(join(root,'bundle.js')),readFile(join(root,'bundle.css'),'utf8')]);
+    const {default:postcss}=await import('postcss'),{default:tailwind}=await import('@tailwindcss/postcss');
+    const {css}=await postcss([tailwind()]).process(rawCss,{from:join(process.cwd(),'app/globals.css')});
+    server=createServer(async(req,res)=>{
+      if(req.url==='/bundle.js'){res.setHeader('content-type','application/javascript');res.end(js);return;}
+      if(req.url==='/bundle.css'){res.setHeader('content-type','text/css');res.end(css);return;}
+      if(req.url?.includes('/assets/')){res.setHeader('content-type','image/png');res.end(png);return;}
+      if(req.url?.startsWith('/api/')){
+        let body='';for await(const chunk of req)body+=chunk;
+        const data=body?JSON.parse(body):null;
+        res.setHeader('content-type','application/json');
+        if(req.method==='POST'&&req.url.endsWith('/image-edit-references')){
+          uploadRequests.push(data);
+          assert.equal(req.url,'/api/control-plane/v1/image-editor/workspaces/838/image-edit-references');
+          assert.deepEqual(Buffer.from(data.base64,'base64'),jpeg);
+          if(data.mediaType==='image/png'){
+            let validationError;
+            try {await decodeReference(Buffer.from(data.base64,'base64'),data.mediaType);}
+            catch(error){validationError=error;}
+            assert.ok(validationError instanceof TypeError);
+            res.statusCode=400;res.end(JSON.stringify({error:{code:'VALIDATION_ERROR',message:validationError.message}}));return;
+          }
+          assert.equal(data.mediaType,'image/jpeg');
+          res.end(JSON.stringify({data:{id:9,sha256:'b'.repeat(64),url:'/v1/image-editor/assets/9'}}));return;
+        }
+        if(req.method==='POST')editSubmissions+=1;
+        res.end(JSON.stringify({data:[]}));return;
+      }
+      res.setHeader('content-type','text/html');res.end('<html><meta charset="utf-8"><link rel="stylesheet" href="/bundle.css"><body><div id="root"></div><script src="/bundle.js"></script></body></html>');
+    });
+    await new Promise(r=>server.listen(0,'127.0.0.1',r));
+    browser=await chromium.launch({headless:true,channel:process.env.IMAGE_EDIT_BROWSER_CHANNEL??'msedge'});
+    const page=await browser.newPage({viewport:{width:1280,height:960}}),errors=[];
+    page.on('pageerror',error=>errors.push(error.message));
+    await page.goto(`http://127.0.0.1:${server.address().port}`);
+    await page.getByRole('tab',{name:'实体替换',exact:true}).click();
+    const input=page.getByLabel('上传真实产品参考图',{exact:true});
+    await page.waitForFunction(()=>document.querySelector('input[aria-label="上传真实产品参考图"]')?.disabled===false);
+    await input.setInputFiles({name:'large.jpg',mimeType:'image/jpeg',buffer:Buffer.alloc(5_680_000)});
+    const sizeError=page.getByRole('alert').filter({hasText:'5.42 MiB'});
+    await sizeError.waitFor();
+    assert.match(await sizeError.innerText(),/5\s*MiB/u);
+    assert.match(await sizeError.innerText(),/5[，,\s]?242[，,\s]?880\s*字节/u);
+    assert.match(await sizeError.innerText(),/5[，,\s]?680[，,\s]?000\s*字节/u);
+    assert.equal(uploadRequests.length,0,'oversized reference files never reach the upload API');
+    assert.equal(await input.inputValue(),'','reselecting the same failed file remains possible');
+    const screenshots=resolve('.codex_artifacts/image-upload-feedback');await mkdir(screenshots,{recursive:true});
+    await page.screenshot({path:join(screenshots,'standalone-size-error.png'),animations:'disabled'});
+    await input.setInputFiles({name:'reference.png',mimeType:'image/png',buffer:jpeg});
+    const formatError=page.getByRole('alert').filter({hasText:'实际为 JPEG'});
+    await formatError.waitFor();
+    assert.match(await formatError.innerText(),/\.jpg/u);assert.match(await formatError.innerText(),/\.jpeg/u);
+    assert.equal(uploadRequests.length,1);
+    assert.equal(await page.getByRole('img',{name:'已上传的真实产品参考图',exact:true}).count(),0);
+    await page.screenshot({path:join(screenshots,'standalone-format-error.png'),animations:'disabled'});
+    await input.setInputFiles({name:'reference.jpg',mimeType:'image/jpeg',buffer:jpeg});
+    await page.getByRole('img',{name:'已上传的真实产品参考图',exact:true}).waitFor();
+    assert.equal(uploadRequests.length,2,'correcting the file type permits another upload');
+    assert.equal(await page.getByRole('alert').count(),0,'successful upload clears the earlier error');
+    assert.equal(editSubmissions,0,'reference uploads never submit a model edit');
     assert.deepEqual(errors,[]);
   } finally {
     await browser?.close();if(server)await new Promise(r=>server.close(r));

@@ -35,6 +35,7 @@ function copyFixture({
     state: 'COPY_REVIEW_PENDING',
     current_stage: currentStage,
     assigned_to_user_id: assignedToUserId,
+    assigned_to_account_id: 1,
     current_copy_revision_id: 12,
     current_image_run_id: null,
     production_batch_id: null,
@@ -46,6 +47,8 @@ function copyFixture({
   const queries = [];
   const assessments = [];
   const approvalEvents = [];
+  const qaBatches = [];
+  const qaMembers = [];
   const submissions = [];
   const revisions = new Map([[12, {
     id: 12, task_id: 41, revision: 1, execution_id: sourceExecutionId, content: sourceEdits,
@@ -65,6 +68,10 @@ function copyFixture({
       const source = String(sql);
       queries.push({ sql: source, values });
       if (/^(BEGIN|COMMIT|ROLLBACK)$/u.test(source)) return { rows: [] };
+      if (source.includes('SELECT * FROM app_users')) return { rows: [{
+        id: values[0], username: values[1], role: values[2], status: 'ACTIVE', credential_version: values[3],
+      }] };
+      if (source.includes('SELECT default_copy_qa_pass FROM app_users')) return { rows: [{ default_copy_qa_pass: false }] };
       if (source.includes('SELECT * FROM tasks WHERE id')) return { rows: [{ ...task }] };
       if (source.includes('INSERT INTO human_quality_review_submissions')) {
         if (submissions.some((row) => row.review_session_id === values[0])) return { rows: [] };
@@ -123,6 +130,15 @@ function copyFixture({
         return { rows: [row] };
       }
       if (source.includes('INSERT INTO production_batches')) return { rows: [{ id: 90 }] };
+      if (source.includes('INSERT INTO copy_qa_batches_v2')) {
+        const row = { id: 91, public_id: '91919191-9191-4919-8919-919191919191' };
+        qaBatches.push({ row, values });
+        return { rows: [row] };
+      }
+      if (source.includes('INSERT INTO copy_qa_batch_members_v2')) {
+        qaMembers.push(values);
+        return { rows: [] };
+      }
       if (source.includes('INSERT INTO copy_sampling_freezes')) return { rows: [{ id: 91 }] };
       if (source.includes('INSERT INTO copy_sampling_items')) return { rows: [{ id: 92, status: 'PENDING' }] };
       if (source.includes('UPDATE production_batches SET')) return { rows: [] };
@@ -137,17 +153,18 @@ function copyFixture({
           .slice(0, 1) };
       }
       if (source.includes('UPDATE tasks SET')) {
-        const routesApprovedCopy = source.includes('state = $2');
-        const routesMandatoryQa = source.includes("state = 'COPY_QC_PENDING'");
+        const compactSource = source.replace(/\s+/gu, '');
+        const routesApprovedCopy = compactSource.includes('state=$2');
+        const routesMandatoryQa = compactSource.includes("state='COPY_QC_PENDING'");
         Object.assign(task, {
           state: routesMandatoryQa ? 'COPY_QC_PENDING' : routesApprovedCopy ? values[1]
-            : source.includes("state = 'IMAGE_QUEUED'") ? 'IMAGE_QUEUED'
-            : source.includes("state = 'CANCELLED'") ? 'CANCELLED' : 'COPY_REVIEW_PENDING',
-          current_copy_revision_id: (routesMandatoryQa ? values[2]
+            : compactSource.includes("state='IMAGE_QUEUED'") ? 'IMAGE_QUEUED'
+            : compactSource.includes("state='CANCELLED'") ? 'CANCELLED' : 'COPY_REVIEW_PENDING',
+          current_copy_revision_id: (routesMandatoryQa ? values[1]
             : routesApprovedCopy ? values[2] : values[1]) ?? task.current_copy_revision_id,
           ...(routesMandatoryQa ? {
-            current_stage: 'QC_MANDATORY_RECHECK',
-            mandatory_copy_qc: true,
+            current_stage: 'COPY_QC_PENDING',
+            mandatory_copy_qc: values[3],
             mandatory_copy_qc_origin: values[4],
           } : {}),
         });
@@ -162,11 +179,16 @@ function copyFixture({
       throw new Error(`Unexpected SQL: ${source}`);
     },
   };
-  return { task, queries, assessments, approvalEvents, revisions,
+  return { task, queries, assessments, approvalEvents, qaBatches, qaMembers, revisions,
     repository: new PostgresControlPlaneRepository({ pool: { connect: async () => client } }) };
 }
 
-test('an exhausted image retry unlocks a previously three-point copy and routes its edit to mandatory QA', async () => {
+for (const scenario of [
+  { name: 'copy edit', edits: validEdits, revisionOrigin: 'COPY_EDIT' },
+  { name: 'plan-only edit', edits: { ...sourceEdits, imagePlan: sourceEdits.imagePlan.map((page, index) =>
+    index === 0 ? { ...page, headline: '耗尽后重新规划封面' } : page) }, revisionOrigin: 'PLAN_EDIT' },
+]) {
+test(`an exhausted image retry routes a ${scenario.name} of a previously three-point copy to mandatory V2 QA`, async () => {
   const fixture = copyFixture({ currentStage: 'IMAGE_RETRY_EXHAUSTED' });
   fixture.assessments.push({
     id: 1,
@@ -190,18 +212,25 @@ test('an exhausted image retry unlocks a previously three-point copy and routes 
     revisionId: 12,
     nodeId: 'node-a',
     decision: 'APPROVE',
-    edits: validEdits,
+    edits: scenario.edits,
     score: 3,
     reviewSessionId,
-  }, { actorRole: 'ADMIN', reviewerUserId: 'reviewer' });
+  }, { actorRole: 'ADMIN', reviewerUserId: 'reviewer', actor: {
+    userId: 1, username: 'reviewer', role: 'ADMIN', credentialVersion: 1,
+  } });
 
   assert.equal(result.state, 'COPY_QC_PENDING');
   assert.equal(result.currentCopyRevisionId, 13);
   assert.equal(result.mandatoryCopyQc, true);
   assert.equal(result.mandatoryCopyQcOrigin, 'IMAGE_RETRY_REVIEW');
-  assert.equal(fixture.revisions.get(13).revision_origin, 'COPY_EDIT');
-  assert.ok(fixture.queries.some(({ sql }) => sql.includes("current_stage = 'QC_MANDATORY_RECHECK'")));
+  assert.equal(fixture.revisions.get(13).revision_origin, scenario.revisionOrigin);
+  assert.equal(fixture.qaBatches.length, 1, 'retry rework must create an immediate V2 inspection batch');
+  assert.deepEqual(fixture.qaBatches[0].values.slice(0, 3), ['PERSONAL_AUTO', 1, true]);
+  assert.deepEqual(fixture.qaBatches[0].values.slice(4, 9), [10000, 5000, 1, 1, 1]);
+  assert.deepEqual(fixture.qaMembers[0].slice(1, 6), [41, 13, 1, 1, undefined]);
+  assert.deepEqual(fixture.qaMembers[0].slice(7), [true, 'PENDING']);
 });
+}
 
 test('edited copy can be saved as an unapproved revision with version-bound original and edited ratings', async () => {
   const fixture = copyFixture();

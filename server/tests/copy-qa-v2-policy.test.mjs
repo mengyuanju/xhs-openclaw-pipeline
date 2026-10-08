@@ -53,18 +53,18 @@ test('account default QA pass bypasses sampling and mandatory recheck without a 
   }
 });
 
-for(const origin of ['SECOND_ASSIGNMENT','FINAL_REWORK']){
+for(const origin of ['SECOND_ASSIGNMENT','FINAL_REWORK','IMAGE_RETRY_REVIEW']){
 for(const enabled of [false,true]){
   test(`${origin} creates a full-inspection batch when ordinary sampling is ${enabled?'on':'off'}`,async()=>{
     const queries=[];
     const client={async query(sql,values=[]){
       const source=String(sql).replace(/\s+/gu,' ').trim();
       queries.push({sql:source,values});
-      if(source.startsWith('SELECT default_copy_qa_pass FROM app_users')) return {rows:[{default_copy_qa_pass:false}]};
       if(source==='SELECT * FROM workflow_quality_settings WHERE singleton = 1'){
         return {rows:[{version:1,copy_sampling_enabled:enabled,copy_sampling_rate_bps:0,
           copy_batch_return_threshold_bps:5000,blind_review_enabled:enabled}]};
       }
+      if(source.startsWith('SELECT default_copy_qa_pass FROM app_users')) return {rows:[{default_copy_qa_pass:false}]};
       if(source.startsWith("UPDATE tasks SET state='COPY_QC_PENDING'")){
         return {rows:[{id:101,state:'COPY_QC_PENDING',mandatory_copy_qc:values[3],
           mandatory_copy_qc_origin:values[4]}]};
@@ -110,11 +110,11 @@ test('V2 quality return remains a mandatory single-item recheck after copy rewor
   const client={async query(sql,values=[]){
     const source=String(sql).replace(/\s+/gu,' ').trim();
     queries.push({sql:source,values});
-    if(source.startsWith('SELECT default_copy_qa_pass FROM app_users')) return {rows:[{default_copy_qa_pass:false}]};
-      if(source==='SELECT * FROM workflow_quality_settings WHERE singleton = 1'){
+    if(source==='SELECT * FROM workflow_quality_settings WHERE singleton = 1'){
       return {rows:[{version:1,copy_sampling_enabled:false,copy_sampling_rate_bps:0,
         copy_batch_return_threshold_bps:5000,blind_review_enabled:true}]};
     }
+    if(source.startsWith('SELECT default_copy_qa_pass FROM app_users')) return {rows:[{default_copy_qa_pass:false}]};
     if(source.startsWith("UPDATE tasks SET state='COPY_QC_PENDING'")){
       return {rows:[{state:'COPY_QC_PENDING',mandatory_copy_qc:values[3],mandatory_copy_qc_origin:values[4]}]};
     }

@@ -40,12 +40,19 @@ test('copy QA detail browser: fixed frame contains a readable full-width page pl
     source: { finalApproverAccountId: 12 },
     capabilities: { canPass: true, canReturnSingle: true, canReturnBatch: false },
   };
+  const batch = { id: item.freezePublicId, displayName: '命令行教程质检批次', mode: 'PERSONAL_AUTO',
+    status: 'INSPECTING', memberCount: 1, sampleCount: 1, pendingCount: 1,
+    passedCount: 0, returnedCount: 0, discardedCount: 0, affectedCount: 0,
+    fullInspection: true, returnTriggerCount: 1, createdAt: item.createdAt };
+  const currentItem = { id: item.id, taskId: item.taskId, query: item.query,
+    content: item.approvedRevision.content, status: item.status, approverUsername: 'reviewer',
+    revisionToken: item.approvedRevision.revisionToken, discardReasonCode: null, dispositionNote: null };
   let browser;
   let server;
   try {
     await build({
       stdin: {
-        contents: "import './app/globals.css';import React from 'react';import{createRoot}from'react-dom/client';import{ConfirmDialogProvider}from'./components/ui/confirm-dialog';import{CopyQaWorkbench}from'./app/copy-qa/copy-qa-workbench';createRoot(document.getElementById('root')).render(<ConfirmDialogProvider><CopyQaWorkbench role=\"REVIEWER\"/></ConfirmDialogProvider>);",
+        contents: "import './app/globals.css';import React from 'react';import{createRoot}from'react-dom/client';import{ConfirmDialogProvider}from'./components/ui/confirm-dialog';import{CopyQaWorkbench}from'./app/copy-qa/copy-qa-workbench';createRoot(document.getElementById('root')).render(<ConfirmDialogProvider><CopyQaWorkbench/></ConfirmDialogProvider>);",
         resolveDir: process.cwd(), loader: 'tsx',
       },
       bundle: true, outfile: bundle, jsx: 'automatic', platform: 'browser', conditions: ['style'],
@@ -60,11 +67,11 @@ test('copy QA detail browser: fixed frame contains a readable full-width page pl
         response.setHeader('content-type', 'text/css'); response.end(css); return;
       }
       response.setHeader('content-type', request.url?.startsWith('/api/') ? 'application/json' : 'text/html');
-      if (request.url?.match(/\/api\/control-plane\/v1\/copy-qa\/items\/[0-9a-f-]+$/u)) {
-        response.end(JSON.stringify({ data: item })); return;
+      if (request.url?.startsWith(`/api/control-plane/v2/copy-qa/batches/${batch.id}?`)) {
+        response.end(JSON.stringify({ data: { batch, items: [currentItem], pagination: { total: 1, limit: 50, offset: 0 } } })); return;
       }
-      if (request.url?.startsWith('/api/control-plane/v1/copy-qa/items')) {
-        response.end(JSON.stringify({ data: [item] })); return;
+      if (request.url?.startsWith('/api/control-plane/v2/copy-qa/batches?')) {
+        response.end(JSON.stringify({ data: { items: [batch], total: 1, limit: 20, offset: 0 } })); return;
       }
       response.end('<html><meta charset="utf-8"><link rel="stylesheet" href="/bundle.css"><style>[data-slot="dialog-content"]{translate:-50% -50%}</style><body><div id="root"></div><script src="/bundle.js"></script></body></html>');
     });
@@ -74,12 +81,13 @@ test('copy QA detail browser: fixed frame contains a readable full-width page pl
     const browserErrors = [];
     page.on('pageerror', (error) => browserErrors.push(error.message));
     await page.goto(`http://127.0.0.1:${server.address().port}`);
-    await page.getByText('QC-AB0D469A297F', { exact: true }).waitFor({ timeout: 5_000 }).catch(async () => {
+    await page.getByText(batch.displayName, { exact: true }).waitFor({ timeout: 5_000 }).catch(async () => {
       assert.fail(JSON.stringify({ browserErrors, body: await page.locator('body').innerText() }));
     });
-    await page.getByRole('button', { name: '查看', exact: true }).click();
+    await page.getByRole('button', { name: '进入批次', exact: true }).click();
+    await page.getByRole('button', { name: '查看并质检', exact: true }).click();
     const dialog = page.getByRole('dialog');
-    await dialog.getByText('QC-AB0D469A297F', { exact: true }).waitFor();
+    await dialog.getByRole('heading', { name: `${batch.displayName} · 最终稿质检`, exact: true }).waitFor();
     if (process.env.COPY_QA_DETAIL_SCREENSHOT) {
       await page.waitForTimeout(250);
       await page.screenshot({ path: process.env.COPY_QA_DETAIL_SCREENSHOT, fullPage: false });

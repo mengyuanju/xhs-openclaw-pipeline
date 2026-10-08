@@ -37,10 +37,23 @@
     ".next-green/types/**/*.ts",
     ".next-green/dev/types/**/*.ts",
     ".next-blue/types/**/*.ts",
-    ".next-blue/dev/types/**/*.ts"
+    ".next-blue/dev/types/**/*.ts",
+    ".next-dev-4311/types/**/*.ts",
+    ".next-dev-4311/dev/types/**/*.ts",
+    ".next-scaling-e2e/types/**/*.ts",
+    ".next-scaling-e2e/dev/types/**/*.ts",
+    ".next-image-editor-e2e/types/**/*.ts",
+    ".next-image-editor-e2e/dev/types/**/*.ts",
+    ".next-speed-optimized/types/**/*.ts",
+    ".next-speed-optimized/dev/types/**/*.ts",
+    ".next-remaining-optimized/types/**/*.ts",
+    ".next-remaining-optimized/dev/types/**/*.ts",
+    ".next-followup-optimized/types/**/*.ts",
+    ".next-followup-optimized/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules",
+    "reports",
     "outputs",
     "preview-service"
   ]

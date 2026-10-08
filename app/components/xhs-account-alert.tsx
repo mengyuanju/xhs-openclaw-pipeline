@@ -11,40 +11,19 @@ import {
 
 import { ShieldAlert } from 'lucide-react';
 import Link from 'next/link';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
-import { apiRequest } from './api-client';
+import { useXhsSearchNodes } from './use-xhs-search-nodes';
 import {
-  type XhsSearchNodeStatus,
   xhsAuthStatusLabel,
   xhsHostKindLabel,
   xhsSearchNeedsAttention,
 } from './xhs-search-status';
 
-const STATUS_POLL_MS = 15_000;
-
-export function XhsAccountAlert({ enabled }: { enabled: boolean }) {
-  const [nodes, setNodes] = useState<XhsSearchNodeStatus[]>([]);
+export function XhsAccountAlert({ enabled, deferInitialRead = false }: { enabled: boolean; deferInitialRead?: boolean }) {
+  const { nodes } = useXhsSearchNodes(enabled, undefined, deferInitialRead);
   const [open, setOpen] = useState(false);
   const [dismissedSignature, setDismissedSignature] = useState('');
-
-  const refresh = useCallback(async () => {
-    if (!enabled) return;
-    try {
-      setNodes(await apiRequest<XhsSearchNodeStatus[]>('/api/control-plane/v1/xhs-search-statuses'));
-    } catch {
-      // A background status reminder must not replace the current page with a
-      // transient connectivity error. The dedicated executor page still
-      // exposes manual refresh errors.
-    }
-  }, [enabled]);
-
-  useEffect(() => {
-    if (!enabled) return undefined;
-    void refresh();
-    const timer = window.setInterval(() => { void refresh(); }, STATUS_POLL_MS);
-    return () => window.clearInterval(timer);
-  }, [enabled, refresh]);
 
   const attention = useMemo(
     () => nodes.filter(xhsSearchNeedsAttention),

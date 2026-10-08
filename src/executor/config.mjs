@@ -41,6 +41,15 @@ export function executorConfig(environment = process.env, args = process.argv.sl
   if (!Number.isInteger(pollMs) || pollMs < 1000 || pollMs > 60000) {
     throw new RangeError('poll interval must be an integer from 1000 to 60000 milliseconds');
   }
+  // The scheduler enables this bound only after a work notification handshake.
+  const idleMaxPollMs = Number(option('idle-max-poll-ms') ?? environment.EXECUTOR_IDLE_MAX_POLL_MS ?? Math.max(pollMs, 20_000));
+  if (!Number.isInteger(idleMaxPollMs) || idleMaxPollMs < pollMs || idleMaxPollMs > 60_000) {
+    throw new RangeError('idle maximum poll interval must be between poll interval and 60000 milliseconds');
+  }
+  const settingsCacheMs = Number(option('settings-cache-ms') ?? environment.EXECUTOR_SETTINGS_CACHE_MS ?? 15_000);
+  if (!Number.isInteger(settingsCacheMs) || settingsCacheMs < 0 || settingsCacheMs > 60_000) {
+    throw new RangeError('settings cache must be between 0 and 60000 milliseconds');
+  }
   if (hasFlag('enable-image-worker') && hasFlag('disable-image-worker')) {
     throw new Error('--enable-image-worker and --disable-image-worker cannot be used together');
   }
@@ -54,7 +63,7 @@ export function executorConfig(environment = process.env, args = process.argv.sl
   }
   const codexCapacity = codexConcurrencyConfig(environment);
   return {
-    serverUrl, nodeId, nodeName, pollMs, imageWorkerEnabled,
+    serverUrl, nodeId, nodeName, pollMs, idleMaxPollMs, settingsCacheMs, imageWorkerEnabled,
     codexPoolId: codexPoolIdentity(environment),
     codexTotalConcurrency: codexCapacity.maxConcurrent,
     codexImageConcurrency: codexCapacity.maxConcurrentImages,

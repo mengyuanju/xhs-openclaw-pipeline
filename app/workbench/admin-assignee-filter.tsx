@@ -9,10 +9,10 @@ export function AdminAssigneeFilter({ value, roleLabels, onChange }: {
 }) {
   return <JobUserPicker
     value={value}
-    label="负责人"
+    label="标注人"
     triggerId="workbench-assignee"
-    emptyLabel="全部负责人"
-    dialogTitle="选择负责人"
+    emptyLabel="全部标注人"
+    dialogTitle="选择标注人"
     dialogDescription="按姓名或账号搜索，选定后只查看分配给该账号的作业，可与创建人、角色、状态和 Query 筛选组合使用。"
     roleLabels={roleLabels}
     onChange={onChange}

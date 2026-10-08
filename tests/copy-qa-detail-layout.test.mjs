@@ -11,7 +11,8 @@ test('copy QA detail keeps its header and actions outside the scrolling content 
     readFile(stylesUrl, 'utf8'),
   ]);
 
-  assert.match(source, /<header className=\{styles\.detailHeader\}>[\s\S]*?<div className=\{styles\.detailBody\}>[\s\S]*?<footer className=\{`\$\{styles\.footer\} \$\{styles\.detailFooter\}`\}>/u);
+  // V2 keeps the shared detail layout under the legacyStyles import.
+  assert.match(source, /<header className=\{legacyStyles\.detailHeader\}>[\s\S]*?<div className=\{legacyStyles\.detailBody\}>[\s\S]*?<footer className=\{`\$\{legacyStyles\.footer\} \$\{legacyStyles\.detailFooter\}`\}>/u);
   assert.match(styles, /\.detailDialog\s*\{[^}]*grid-template-rows:\s*auto minmax\(0, 1fr\) auto;[^}]*overflow:\s*hidden;/su);
   assert.match(styles, /\.detailBody\s*\{[^}]*overflow-y:\s*auto;/su);
   assert.match(styles, /\.detailFooter\s*\{[^}]*border-top:/su);

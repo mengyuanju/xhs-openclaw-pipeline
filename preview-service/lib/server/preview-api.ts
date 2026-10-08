@@ -26,8 +26,8 @@ import {
 
 export async function listPreviewsResponse(request: Request) {
   const url = new URL(request.url);
-  const rawPage = Number(url.searchParams.get('page'));
-  const rawPageSize = Number(url.searchParams.get('pageSize'));
+  const rawPage = Number(url.searchParams.get('page') ?? 1);
+  const rawPageSize = Number(url.searchParams.get('pageSize') ?? 20);
   const searchField = url.searchParams.get('searchField');
   const search = url.searchParams.get('q')?.trim();
   const status = parseStatus(url.searchParams.get('status'));

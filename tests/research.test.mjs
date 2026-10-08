@@ -12,6 +12,74 @@ import { createPromptRuntime, withPromptRuntime } from '../src/prompt-runtime.mj
 const NOW = '2026-08-29T08:00:00.000Z';
 
 describe('web research snapshots', () => {
+  it('honors a configured source limit after deduplication and authority ranking', async () => {
+    const requests = [];
+    const results = Array.from({ length: 9 }, (_, index) => ({
+      title: `普通来源 ${index + 1}`,
+      url: `https://example${index + 1}.com/article`,
+      snippet: `第 ${index + 1} 条可核验资料`,
+    }));
+    results.push({ title: '官方来源', url: 'https://www.gov.cn/guide', snippet: '官方资料' });
+    const client = { async runWebSearch(request) {
+      requests.push(request);
+      return { provider: 'codex', result: { summary: '已完成检索', results } };
+    } };
+    const snapshot = await createResearchSnapshot({ client, query: '收纳资料',
+      providers: ['codex'], limit: 8, now: () => NOW });
+    assert.equal(requests[0].limit, 8);
+    assert.equal(snapshot.sources.length, 8);
+    assert.equal(snapshot.sources[0].url, 'https://www.gov.cn/guide');
+    assert.equal(attachResearchToTask({ query: '收纳资料' }, snapshot).input.webResearch.sources.length, 8);
+    assert.equal(researchSourceUrls(snapshot).length, 8);
+
+    const one = await createResearchSnapshot({ client, query: '收纳资料',
+      providers: ['codex'], limit: 1, now: () => NOW });
+    assert.deepEqual(researchSourceUrls(one), ['https://www.gov.cn/guide']);
+    await assert.rejects(createResearchSnapshot({ client, query: '收纳资料', limit: 11 }),
+      /source limit must be an integer between 1 and 10/u);
+    assert.equal(requests.length, 2, 'invalid limits must fail before any provider call');
+  });
+
+  it('accepts ten saved sources but rejects more than the supported maximum', () => {
+    const value = {
+      schemaVersion: 1, status: 'COMPLETED', query: '资料', searchedAt: NOW,
+      provider: 'codex', summary: '摘要',
+      attempts: [{ provider: 'codex', status: 'COMPLETED', error: null }],
+      sources: Array.from({ length: 10 }, (_, index) => ({
+        title: `资料 ${index + 1}`, url: `https://example${index + 1}.com/guide`,
+        snippet: '可核验', provider: 'codex', retrievedAt: NOW,
+      })),
+    };
+    assert.equal(normalizeResearchSnapshot(value).sources.length, 10);
+    assert.throws(() => normalizeResearchSnapshot({ ...value,
+      sources: [...value.sources, { ...value.sources[0], url: 'https://example11.com/guide' }],
+    }), /research sources are invalid/u);
+  });
+
+  it('bounds untrusted source candidates while considering official sources near the bound', async () => {
+    const results = Array.from({ length: 99 }, (_, index) => ({
+      title: `普通资料 ${index + 1}`, url: `https://example${index + 1}.com/guide`, snippet: '资料',
+    }));
+    results.push({ title: '官方资料', url: 'https://www.gov.cn/guide', snippet: '官方资料' });
+    results.push({ title: '候选上限后的来源', url: 'https://www.nist.gov/guide', snippet: '其他资料' });
+    const snapshot = await createResearchSnapshot({
+      client: { async runWebSearch() { return { provider: 'codex', result: { summary: '摘要', results } }; } },
+      query: '收纳资料', limit: 2, now: () => NOW,
+    });
+    assert.deepEqual(researchSourceUrls(snapshot), [
+      'https://www.gov.cn/guide', 'https://example1.com/guide',
+    ]);
+
+    const summaryFallback = await createResearchSnapshot({
+      client: { async runWebSearch() { return { provider: 'codex', result: {
+        summary: '可核验资料 https://www.gov.cn/from-summary',
+        results: Array.from({ length: 100 }, () => ({ title: '无效来源', url: 'javascript:alert(1)' })),
+      } }; } },
+      query: '收纳资料', limit: 1, now: () => NOW,
+    });
+    assert.deepEqual(researchSourceUrls(summaryFallback), ['https://www.gov.cn/from-summary']);
+  });
+
   it('uses an intent-aware fallback query independently of prompt runtime configuration', async () => {
     const query = '机械键盘轴体体验比较';
     const calls = [];
@@ -64,6 +132,208 @@ describe('web research snapshots', () => {
 
     assert.equal(snapshot.status, 'FAILED');
     assert.deepEqual(calls.map(({ provider }) => provider), ['codex', 'codex']);
+  });
+
+  it('stops after sufficient Doubao evidence without charging a backup search', async () => {
+    const calls = [];
+    const client = {
+      webSearchProviders: ['doubao', 'deepseek'],
+      async runWebSearch(request) {
+        calls.push(request);
+        assert.equal(request.provider, 'doubao');
+        return { provider: 'doubao', result: {
+          summary: '两条资料共同说明使用方法。',
+          results: [
+            { title: '豆包资料一', url: 'https://example.com/one', snippet: '第一条资料' },
+            { title: '豆包资料二', url: 'https://example.org/two', snippet: '第二条资料' },
+          ],
+        } };
+      },
+    };
+    const snapshot = await createResearchSnapshot({ client, query: '如何使用产品', now: () => NOW });
+    assert.equal(snapshot.status, 'COMPLETED');
+    assert.equal(snapshot.provider, 'doubao');
+    assert.deepEqual(snapshot.attempts, [{ provider: 'doubao', status: 'COMPLETED', error: null }]);
+    assert.deepEqual(calls.map(({ provider }) => provider), ['doubao']);
+  });
+
+  it('uses the requested source count when deciding if one complete API source is sufficient', async () => {
+    const calls = [];
+    const snapshot = await createResearchSnapshot({
+      client: {
+        webSearchProviders: ['doubao', 'deepseek'],
+        async runWebSearch(request) {
+          calls.push(request);
+          return { provider: 'doubao', result: { summary: '资料摘要', results: [
+            { title: '完整资料', url: 'https://example.com/one', snippet: '可核验摘录' },
+          ] } };
+        },
+      },
+      query: '使用说明', limit: 1, now: () => NOW,
+    });
+    assert.equal(snapshot.provider, 'doubao');
+    assert.equal(snapshot.sources.length, 1);
+    assert.deepEqual(calls.map(({ provider }) => provider), ['doubao']);
+  });
+
+  it('tries providers in order after errors or insufficient grounded evidence', async () => {
+    const calls = [];
+    const snapshot = await createResearchSnapshot({
+      client: {
+        webSearchProviders: ['doubao', 'deepseek', 'codex'],
+        async runWebSearch(request) {
+          calls.push(request);
+          if (request.provider === 'doubao') return { provider: 'doubao', result: {
+            summary: '只有一条可核验资料', results: [
+              { title: '单条资料', url: 'https://example.com/one', snippet: '资料一' },
+            ],
+          } };
+          if (request.provider === 'deepseek') return { provider: 'deepseek', result: {
+            summary: '两条可核验资料', results: [
+              { title: '第二条资料', url: 'https://example.org/two', snippet: '资料二' },
+              { title: '第三条资料', url: 'https://example.net/three', snippet: '资料三' },
+            ],
+          } };
+          assert.fail('sufficient backup evidence must stop before Codex');
+        },
+      },
+      query: '产品使用方法', now: () => NOW,
+    });
+    assert.equal(snapshot.status, 'COMPLETED');
+    assert.equal(snapshot.provider, 'deepseek');
+    assert.deepEqual(calls.map(({ provider }) => provider), ['doubao', 'deepseek']);
+    assert.deepEqual(snapshot.attempts.map(({ provider, status }) => ({ provider, status })), [
+      { provider: 'doubao', status: 'COMPLETED' },
+      { provider: 'deepseek', status: 'COMPLETED' },
+    ]);
+  });
+
+  it('fails over a Codex service error but keeps legacy single-provider error behavior', async () => {
+    const serviceError = Object.assign(new Error('Codex quota exhausted'), { code: 'CODEX_QUOTA_EXHAUSTED' });
+    const calls = [];
+    const client = { webSearchProviders: ['codex', 'doubao'], async runWebSearch(request) {
+      calls.push(request);
+      if (request.provider === 'codex') throw serviceError;
+      return { provider: 'doubao', result: { summary: '可靠资料', results: [
+        { title: '官方资料', url: 'https://example.gov.cn/guide', snippet: '官方说明' },
+      ] } };
+    } };
+    const snapshot = await createResearchSnapshot({ client, query: '使用方法', now: () => NOW });
+    assert.equal(snapshot.provider, 'doubao');
+    assert.deepEqual(calls.map(({ provider }) => provider), ['codex', 'doubao']);
+    assert.equal(snapshot.attempts[0].status, 'FAILED');
+
+    await assert.rejects(createResearchSnapshot({ client, query: '使用方法',
+      providers: ['codex'], now: () => NOW }), (error) => error === serviceError);
+  });
+
+  it('rejects a mismatched provider response and never calls a duplicate provider on one query', async () => {
+    const calls = [];
+    const snapshot = await createResearchSnapshot({
+      client: { webSearchProviders: ['doubao', 'deepseek'], async runWebSearch(request) {
+        calls.push(request);
+        if (request.provider === 'doubao') return { provider: 'deepseek', result: {
+          summary: '错误标记的资料', results: [
+            { title: '错误来源', url: 'https://example.com/one', snippet: '资料' },
+          ],
+        } };
+        return { provider: 'deepseek', result: { summary: '正确资料', results: [
+          { title: '可信来源', url: 'https://example.gov.cn/guide', snippet: '官方说明' },
+        ] } };
+      } },
+      query: '产品说明', providers: ['doubao', 'doubao', 'deepseek'], now: () => NOW,
+    });
+    assert.equal(snapshot.provider, 'deepseek');
+    assert.deepEqual(calls.map(({ provider }) => provider), ['doubao', 'deepseek']);
+    assert.match(snapshot.attempts[0].error, /provider mismatch/u);
+  });
+
+  it('keeps a legacy client that reports its actual backend provider', async () => {
+    const snapshot = await createResearchSnapshot({
+      client: { async runWebSearch() {
+        return { provider: 'duckduckgo', result: { summary: '官方资料', results: [
+          { title: '官方说明', url: 'https://example.gov.cn/guide', snippet: '来源摘录' },
+        ] } };
+      } },
+      query: '产品说明', now: () => NOW,
+    });
+    assert.equal(snapshot.status, 'COMPLETED');
+    assert.equal(snapshot.provider, 'duckduckgo');
+    assert.equal(snapshot.attempts[0].provider, 'codex');
+  });
+
+  it('propagates cancellation without contacting fallback providers', async () => {
+    const calls = [];
+    const aborted = Object.assign(new Error('cancelled'), { name: 'AbortError' });
+    await assert.rejects(createResearchSnapshot({
+      client: { webSearchProviders: ['doubao', 'deepseek'], async runWebSearch(request) {
+        calls.push(request);
+        throw aborted;
+      } },
+      query: '产品说明', now: () => NOW,
+    }), (error) => error === aborted);
+    assert.deepEqual(calls.map(({ provider }) => provider), ['doubao']);
+  });
+
+  it('caps each multi-provider attempt by the remaining overall research time', async () => {
+    let elapsed = 0;
+    const calls = [];
+    const snapshot = await createResearchSnapshot({
+      client: { webSearchProviders: ['doubao', 'deepseek'], webSearchTimeoutMs: 80_000,
+        async runWebSearch(request) {
+          calls.push(request);
+          assert.equal(request.signal.aborted, false);
+          if (request.provider === 'doubao') {
+            elapsed = 270_000;
+            return { provider: 'doubao', result: { results: [] } };
+          }
+          return { provider: 'deepseek', result: { summary: '官方资料', results: [
+            { title: '官方说明', url: 'https://example.gov.cn/guide', snippet: '可核验资料' },
+          ] } };
+        } },
+      query: '产品说明', monotonicNow: () => elapsed, now: () => NOW,
+    });
+    assert.equal(snapshot.provider, 'deepseek');
+    assert.deepEqual(calls.map(({ provider, timeoutMs }) => ({ provider, timeoutMs })), [
+      { provider: 'doubao', timeoutMs: 80_000 },
+      { provider: 'deepseek', timeoutMs: 30_000 },
+    ]);
+  });
+
+  it('records a budget failure and stops before an unusably short backup attempt', async () => {
+    let elapsed = 0;
+    const calls = [];
+    const snapshot = await createResearchSnapshot({
+      client: { webSearchProviders: ['doubao', 'deepseek'], webSearchTimeoutMs: 80_000,
+        async runWebSearch(request) {
+          calls.push(request);
+          elapsed = 299_999;
+          return { provider: 'doubao', result: { results: [] } };
+        } },
+      query: '产品说明', monotonicNow: () => elapsed, now: () => NOW,
+    });
+    assert.equal(snapshot.status, 'FAILED');
+    assert.deepEqual(calls.map(({ provider }) => provider), ['doubao']);
+    assert.deepEqual(snapshot.attempts.map(({ provider, status }) => ({ provider, status })), [
+      { provider: 'doubao', status: 'FAILED' },
+      { provider: 'deepseek', status: 'FAILED' },
+    ]);
+    assert.match(snapshot.attempts[1].error, /time budget exhausted/u);
+  });
+
+  it('keeps legacy single-provider calls free of the multi-provider deadline', async () => {
+    const calls = [];
+    await createResearchSnapshot({
+      client: { webSearchProviders: ['deepseek'], webSearchTimeoutMs: 5_000,
+        async runWebSearch(request) {
+          calls.push(request);
+          return { provider: 'deepseek', result: { summary: '资料', results: [
+            { title: '官方说明', url: 'https://example.gov.cn/guide', snippet: '说明' },
+          ] } };
+        } },
+      query: '产品说明', now: () => NOW,
+    });
+    assert.deepEqual(calls, [{ query: '产品说明', provider: 'deepseek', limit: 5 }]);
   });
 
   it('falls back between providers and keeps only bounded public source evidence', async () => {

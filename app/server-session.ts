@@ -10,8 +10,8 @@ export async function readServerSession(): Promise<any> {
   const config = readSessionConfig();
   if (!config) return null;
   const token = (await cookies()).get(ADMIN_SESSION_COOKIE)?.value;
-  const session = token ? verifySessionToken(token, config.sessionSecret) : null;
+  const session = token ? verifySessionToken(token, config.sessionSecret, { includeMetadata: true }) : null;
   return session?.subject === 'admin'
-    ? { ...session, roles: ['ADMIN'] }
-    : session;
+    ? { ...session, roles: ['ADMIN'], serverTime: Math.floor(Date.now() / 1000) }
+    : session ? { ...session, serverTime: Math.floor(Date.now() / 1000) } : null;
 }

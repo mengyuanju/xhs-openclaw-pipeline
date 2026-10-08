@@ -1,6 +1,6 @@
 // This acceptance test always creates its own local PostgreSQL cluster and HTTP
 // server. It never loads .env, reads DATABASE_URL, contacts a model, or connects
-// to the development services on ports 4310/3001.
+// to the development services on ports 4311/3002.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';

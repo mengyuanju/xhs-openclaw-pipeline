@@ -10,6 +10,7 @@ import { AppTopbar } from './app-topbar';
 import { SideNav } from './side-nav';
 import { XhsAccountAlert } from './xhs-account-alert';
 import { BackgroundTasksProvider } from './background-tasks';
+import { SessionKeeper } from './session-keeper';
 
 type ShellSession = {
   subject: string;
@@ -19,6 +20,10 @@ type ShellSession = {
   copyReviewEnabled?: boolean;
   copyQcEnabled?: boolean;
   imageQcEnabled?: boolean;
+  sessionId?: string;
+  expiresAt?: number;
+  absoluteExpiresAt?: number;
+  serverTime?: number;
 } | null;
 
 export function AppFrame({ children, session }: { children: React.ReactNode; session: ShellSession }) {
@@ -30,9 +35,14 @@ export function AppFrame({ children, session }: { children: React.ReactNode; ses
   return (
     <ConfirmDialogProvider>
       <TextInputDialogProvider>
+        {session?.sessionId && session.expiresAt && session.absoluteExpiresAt && <SessionKeeper session={{
+          sessionId: session.sessionId, userId: session.userId ?? null, expiresAt: session.expiresAt,
+          absoluteExpiresAt: session.absoluteExpiresAt, renewable: session.subject === 'user',
+          serverTime: session.serverTime,
+        }} />}
         <BackgroundTasksProvider key={`${session?.subject}:${session?.userId}:${session?.username}`} accountKey={`${session?.subject}:${session?.userId}:${session?.username}`}
           accountUsername={session?.username ?? (session?.subject === 'admin' ? 'admin' : '')} accountId={session?.userId ?? 0}>
-          <XhsAccountAlert enabled={session?.roles?.includes('ADMIN') === true} />
+          <XhsAccountAlert enabled={session?.roles?.includes('ADMIN') === true} deferInitialRead={pathname === '/executors'} />
           <div className="app-shell" data-work-mode={pathname === '/work-mode' || undefined}>
             <a className="skip-link" href="#main-content" onClick={() => {
               window.requestAnimationFrame(() => mainRef.current?.focus());

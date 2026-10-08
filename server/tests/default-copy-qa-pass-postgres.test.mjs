@@ -56,6 +56,9 @@ test('PostgreSQL: per-user system QA pass skips sampling and enters image queue'
       assert.equal(Number(result.copy_qa_auto_passed_revision_id), Number(revision.id));
       assert.equal(result.mandatory_copy_qc, false);
       assert.equal(result.image_eligible, true);
+      const listed = await repository.listTasks({ taskIds: [Number(task.id)] });
+      assert.equal(listed.length, 1);
+      assert.equal(listed[0].copyQaAutoPassed, true);
       const report = await readTaskDataReportTask(repository.pool, { role: 'ADMIN', userId: 1 }, task.id);
       assert.equal(report.item.copyStatus, 'QA_RELEASED');
       assert.equal(report.item.copyQaStatus, 'SYSTEM_PASSED');

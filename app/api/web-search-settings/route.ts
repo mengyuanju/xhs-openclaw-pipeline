@@ -13,10 +13,16 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const patchSchema = z.object({
-  webSearchProvider: z.enum(['CODEX', 'DEEPSEEK']).nullable().optional(),
+  webSearchProvider: z.enum(['CODEX', 'DEEPSEEK', 'DOUBAO']).nullable().optional(),
+  webSearchProviderOrder: z.array(z.enum(['DOUBAO', 'DEEPSEEK', 'CODEX']))
+    .min(1).max(3).refine((providers) => new Set(providers).size === providers.length,
+      '搜索服务不能重复').nullable().optional(),
   deepseekSearchModel: z.string().trim().min(1).max(128)
     .regex(DEEPSEEK_MODEL_ID_PATTERN, 'DeepSeek 模型 ID 格式无效').nullable().optional(),
   webSearchTimeoutMs: z.number().int().min(5_000).max(120_000).nullable().optional(),
+  webSearchResultLimit: z.number().int().min(1).max(10).nullable().optional(),
+  doubaoSearchMode: z.enum(['GLOBAL', 'CUSTOM']).nullable().optional(),
+  doubaoIcpHostOnly: z.boolean().nullable().optional(),
 }).strict().refine((value) => Object.keys(value).length > 0, '至少修改一项搜索配置');
 
 type SearchPatch = z.infer<typeof patchSchema>;

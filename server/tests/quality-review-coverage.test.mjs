@@ -206,6 +206,10 @@ test('image release coverage records successful new releases including passed me
     if(q.startsWith('SELECT * FROM image_sampling_freezes'))return {rows:[{id:freezeId}]};
     if(q.startsWith('SELECT count(*)::integer AS count'))return {rows:[{count:0}]};
     if(q.startsWith('SELECT approval.*, item.id'))return {rows:approvals};
+    if(q.startsWith('SELECT id FROM image_approval_events'))return {
+      rows:approvals.filter(row=>row.task_id===values[0]&&row.image_run_id===values[1])
+        .map(row=>({id:row.id})),
+    };
     if(q.startsWith('SELECT * FROM tasks')){
       const approval=approvals.find(row=>row.task_id===values[0]);
       return {rows:[{id:approval.task_id,state:approval.task_id===103?'REVIEWED':'IMAGE_QC_PENDING',

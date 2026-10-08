@@ -490,10 +490,11 @@ describe('content pipeline', () => {
     let researchCalls = 0;
     let imageIndex = 0;
     const agentClient = {
-      runWebSearch({ query, provider }) {
+      runWebSearch({ query, provider, limit }) {
         researchCalls += 1;
         assert.equal(query, task.query);
         assert.equal(provider, 'codex');
+        assert.equal(limit, 8);
         return {
           provider: 'codex',
           result: {
@@ -535,7 +536,8 @@ describe('content pipeline', () => {
       outputRoot: join(directory, 'output'),
       mock: false,
       agentClient,
-      configProvider: () => ({ imageCount: 3, imageCountMode: 'fixed' }),
+      configProvider: () => ({ imageCount: 3, imageCountMode: 'fixed',
+        productionSettings: { modelApi: { webSearchResultLimit: 8 } } }),
     });
 
     assert.equal(result.status, 'completed', result.error);
@@ -1497,7 +1499,7 @@ describe('content pipeline', () => {
             return { rawText: JSON.stringify({ imagePlan: invalidPlan }), model: 'fake-count-planner' };
           }
           assert.match(prompt, /上一次图片分页规划输出未通过结构校验/u);
-          assert.match(prompt, /cannot exceed 30 characters/u);
+          assert.match(prompt, /cannot exceed 30 image-plan characters/u);
           return { rawText: JSON.stringify({ imagePlan: replannedPost.imagePlan }), model: 'fake-count-planner' };
         }
         return {

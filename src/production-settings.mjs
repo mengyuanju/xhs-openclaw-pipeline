@@ -2,6 +2,7 @@ import {
   DEFAULT_MODEL_API_SETTINGS,
   normalizeModelApiSettings,
 } from './model-api-config.mjs';
+import { DEFAULT_DOUBAO_SEARCH_MODE } from './web-search-config.mjs';
 import { normalizeLayoutPresets } from '../server/src/layout-library.mjs';
 import { normalizeLayoutCatalog } from '../server/src/layout-catalog.mjs';
 import {
@@ -18,7 +19,7 @@ export const DEFAULT_PRODUCTION_SETTINGS = Object.freeze({
   imageEditRepairMaxAttempts: 2,
   aiDisclosureEnabled: true,
   aiDisclosureText: 'AI生成',
-  modelApi: DEFAULT_MODEL_API_SETTINGS,
+  modelApi: Object.freeze({ ...DEFAULT_MODEL_API_SETTINGS, doubaoSearchMode: DEFAULT_DOUBAO_SEARCH_MODE }),
   layoutPresets: Object.freeze([]),
   humanQualityReasons: DEFAULT_HUMAN_QUALITY_SETTINGS,
 });
@@ -110,7 +111,7 @@ export function normalizeProductionSettings(input = {}) {
       'aiDisclosureText',
       12,
     ),
-    modelApi: normalizeModelApiSettings(input.modelApi ?? DEFAULT_MODEL_API_SETTINGS),
+    modelApi: normalizeModelApiSettings(input.modelApi ?? DEFAULT_PRODUCTION_SETTINGS.modelApi),
     layoutPresets: normalizeLayoutPresets(input.layoutPresets),
     humanQualityReasons: normalizeHumanQualitySettings(input.humanQualityReasons),
     ...(input.layoutCatalog !== undefined ? { layoutCatalog: normalizeLayoutCatalog(input.layoutCatalog) } : {}),

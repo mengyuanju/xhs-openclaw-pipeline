@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect,useRef,useState } from 'react';
+import { useCallback,useEffect,useRef,useState } from 'react';
 import { Dialog,DialogContent,DialogDescription,DialogTitle } from '@/components/ui/dialog';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 import { apiRequest } from '../components/api-client';
@@ -14,17 +14,33 @@ import { COPY_QA_DISCARD_REASONS, copyQaDiscardReasonLabel } from '../../src/cop
 
 type Batch = {id:string;displayName:string;mode:string;status:string;memberCount:number;sampleCount:number;pendingCount:number;passedCount:number;returnedCount:number;discardedCount:number;affectedCount:number;fullInspection:boolean;returnTriggerCount:number;createdAt:string};
 type Item = {id:string;taskId:number|null;query:string|null;content:unknown;status:string;approverUsername:string|null;revisionToken:string;discardReasonCode:string|null;dispositionNote:string|null};
-type Detail = {batch:Batch;items:Item[]};
+type Pagination = {total:number;limit:number;offset:number};
+type Detail = {batch:Batch;items:Item[];pagination:Pagination};
 type View = 'PENDING'|'FINISHED';
 const modeName:Record<string,string>={PERSONAL_AUTO:'个人自动',PERSONAL_MANUAL:'个人手动',MIXED_MANUAL:'混合手动',SYSTEM_MIGRATION:'系统迁移'};
 const statusName:Record<string,string>={PENDING:'待质检',PASSED:'已通过',RETURNED:'已驳回',BATCH_AFFECTED:'批次驳回',RELEASED:'已放行',DISCARDED:'已废弃',COMPLETED:'已完成',AUTO_RETURNED:'整批驳回'};
 const localTime=(value:string)=>new Date(value).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+
+function QaPagination({pagination,busy,onPage,label}:{pagination:Pagination;busy:boolean;onPage:(offset:number)=>void;label:string}){
+  const {total,limit,offset}=pagination;
+  return <nav className="pagination-bar" aria-label={label}>
+    <span>共 {total} 条 · 第 {Math.floor(offset/limit)+1} / {Math.max(1,Math.ceil(total/limit))} 页</span>
+    <button className="button small" disabled={busy||offset===0} onClick={()=>onPage(Math.max(0,offset-limit))}>上一页</button>
+    <button className="button small" disabled={busy||offset+limit>=total} onClick={()=>onPage(offset+limit)}>下一页</button>
+  </nav>;
+}
 
 export function CopyQaWorkbench(){
   const confirm=useConfirmDialog();
   const discardMutation=useRef<{fingerprint:string;requestId:string}|null>(null);
   const [view,setView]=useState<View>('PENDING');
   const [batches,setBatches]=useState<Batch[]>([]);
+  const [batchOffset,setBatchOffset]=useState(0);
+  const [batchPagination,setBatchPagination]=useState<Pagination>({total:0,limit:20,offset:0});
+  const [listLoading,setListLoading]=useState(false);
+  const [detailLoading,setDetailLoading]=useState(false);
+  const listRequest=useRef<AbortController|null>(null);
+  const detailRequest=useRef<AbortController|null>(null);
   const [detail,setDetail]=useState<Detail|null>(null);
   const [selectedItemId,setSelectedItemId]=useState<string|null>(null);
   const [note,setNote]=useState('');
@@ -38,15 +54,31 @@ export function CopyQaWorkbench(){
   const selectedItem=detail?.items.find(item=>item.id===selectedItemId)??null;
   const copy=selectedItem?copyRevisionView(selectedItem.content):null;
 
-  async function refresh(target:View=view){
-    try{setBatches(await apiRequest<Batch[]>(`/api/control-plane/v2/copy-qa/batches?view=${target}`));setError('');}
-    catch(e){setError(e instanceof Error?e.message:'加载批次失败');}
-  }
-  useEffect(()=>{void refresh(view);},[view]);
-  function switchView(next:View){setView(next);setDetail(null);setSelectedItemId(null);setError('');}
-  async function open(id:string){
-    try{setDetail(await apiRequest<Detail>(`/api/control-plane/v2/copy-qa/batches/${id}`));setError('');}
-    catch(e){setError(e instanceof Error?e.message:'加载批次失败');}
+  const refresh=useCallback(async()=>{
+    listRequest.current?.abort();
+    const controller=new AbortController();listRequest.current=controller;setListLoading(true);
+    try{
+      const result=await apiRequest<(Pagination&{items:Batch[]})|Batch[]>(`/api/control-plane/v2/copy-qa/batches?view=${view}&limit=20&offset=${batchOffset}`,{signal:controller.signal});
+      if(controller.signal.aborted)return;
+      setBatches(Array.isArray(result)?result:result.items);
+      setBatchPagination(Array.isArray(result)?{total:result.length,limit:result.length||20,offset:0}:result);
+      if(!Array.isArray(result)&&result.offset!==batchOffset)setBatchOffset(result.offset);
+      setError('');
+    }catch(e){if(!controller.signal.aborted)setError(e instanceof Error?e.message:'加载批次失败');}
+    finally{if(listRequest.current===controller){listRequest.current=null;setListLoading(false);}}
+  },[view,batchOffset]);
+  useEffect(()=>{void refresh();return()=>listRequest.current?.abort();},[refresh]);
+  useEffect(()=>()=>{detailRequest.current?.abort();},[]);
+  function switchView(next:View){detailRequest.current?.abort();setView(next);setBatchOffset(0);setDetail(null);setSelectedItemId(null);setError('');}
+  async function open(id:string,offset=0){
+    detailRequest.current?.abort();
+    const controller=new AbortController();detailRequest.current=controller;setDetailLoading(true);
+    try{
+      const result=await apiRequest<Detail>(`/api/control-plane/v2/copy-qa/batches/${id}?limit=50&offset=${offset}`,{signal:controller.signal});
+      if(controller.signal.aborted)return;
+      setDetail({...result,pagination:result.pagination??{total:result.items.length,limit:result.items.length||50,offset:0}});setError('');
+    }catch(e){if(!controller.signal.aborted)setError(e instanceof Error?e.message:'加载批次失败');}
+    finally{if(detailRequest.current===controller){detailRequest.current=null;setDetailLoading(false);}}
   }
   function viewItem(id:string){setSelectedItemId(id);setReasonCodes([]);setNote('');setError('');}
   function openReturn(item:Item){setSelectedItemId(null);setReturnItem(item);setReasonCodes([]);setNote('');setError('');}
@@ -77,8 +109,7 @@ export function CopyQaWorkbench(){
       });
       discardMutation.current=null;
       setSelectedItemId(null);setReturnItem(null);setDiscardItem(null);setReasonCodes([]);setNote('');setDiscardReasonCode('');setDiscardNote('');
-      await refresh();
-      if(detail)await open(detail.batch.id);
+      if(detail)await open(detail.batch.id,detail.pagination.offset);
     }catch(e){setError(e instanceof Error?e.message:'质检操作失败');}
     finally{setBusy(false);}
   }
@@ -91,35 +122,39 @@ export function CopyQaWorkbench(){
           <button type="button" role="tab" aria-selected={view==='PENDING'} className={`${styles.tab} ${view==='PENDING'?styles.active:''}`} onClick={()=>switchView('PENDING')}>待质检批次</button>
           <button type="button" role="tab" aria-selected={view==='FINISHED'} className={`${styles.tab} ${view==='FINISHED'?styles.active:''}`} onClick={()=>switchView('FINISHED')}>已完成批次</button>
         </div>
-        <button className="button" type="button" onClick={()=>void refresh()}>刷新</button>
+        <button className="button" type="button" disabled={listLoading||detailLoading} onClick={()=>void refresh()}>刷新</button>
       </div>
-      <div className={styles.heading}><h2>{view==='PENDING'?'待质检批次':'已完成批次'}</h2><span>{batches.length} 个批次</span></div>
+      <div className={styles.heading}><h2>{view==='PENDING'?'待质检批次':'已完成批次'}</h2><span>{batchPagination.total} 个批次</span></div>
       <div className="table-wrap"><table className={styles.table}><thead><tr><th>批次名称</th><th>任务数量</th><th>质检项</th><th>{view==='PENDING'?'待质检':'结果'}</th><th>模式</th><th>创建时间</th><th>操作</th></tr></thead><tbody>
         {batches.map(batch=><tr key={batch.id}><td><strong>{batch.displayName}</strong></td><td>{batch.memberCount}</td><td>{batch.sampleCount}</td>
           <td>{view==='PENDING'?`${batch.pendingCount} 条待检`:<span className={`pill ${batch.status==='COMPLETED'?'pill-completed':'pill-rejected'}`}>{statusName[batch.status]??batch.status}</span>}</td>
           <td>{modeName[batch.mode]??batch.mode}{batch.fullInspection?' · 全量质检':''}</td><td>{localTime(batch.createdAt)}</td>
-          <td><button className="button small" type="button" onClick={()=>void open(batch.id)}>进入批次</button></td></tr>)}
-        {!batches.length&&<tr><td colSpan={7} className={styles.empty}>暂无{view==='PENDING'?'待质检':'已完成'}批次</td></tr>}
+          <td><button className="button small" type="button" disabled={detailLoading} onClick={()=>void open(batch.id)}>进入批次</button></td></tr>)}
+        {!batches.length&&<tr><td colSpan={7} className={styles.empty}>{listLoading?'正在读取批次…':`暂无${view==='PENDING'?'待质检':'已完成'}批次`}</td></tr>}
       </tbody></table></div>
+      <QaPagination pagination={batchPagination} busy={listLoading||detailLoading} onPage={setBatchOffset} label="质检批次分页"/>
     </section>
     :<section className={`panel ${styles.panel}`}>
       <div className={styles.detailHead}>
-        <div><button className={styles.back} type="button" onClick={()=>{setDetail(null);setSelectedItemId(null);void refresh();}}>← 返回批次列表</button>
+        <div><button className={styles.back} type="button" disabled={busy} onClick={()=>{detailRequest.current?.abort();setDetail(null);setSelectedItemId(null);void refresh();}}>← 返回批次列表</button>
           <h2>{detail.batch.displayName}</h2><p>{modeName[detail.batch.mode]??detail.batch.mode} · {statusName[detail.batch.status]??detail.batch.status}</p></div>
-        <div className={styles.metrics}><span>任务数量 <strong>{detail.batch.memberCount}</strong></span><span>质检项 <strong>{detail.batch.sampleCount}</strong></span><span>已废弃 <strong>{detail.items.filter(item=>item.status==='DISCARDED').length}</strong></span><span>待质检 <strong>{detail.items.filter(item=>item.status==='PENDING').length}</strong></span></div>
+        <div className={styles.metrics}><span>任务数量 <strong>{detail.batch.memberCount}</strong></span><span>质检项 <strong>{detail.batch.sampleCount}</strong></span><span>已废弃 <strong>{detail.batch.discardedCount??detail.items.filter(item=>item.status==='DISCARDED').length}</strong></span><span>待质检 <strong>{detail.batch.pendingCount??detail.items.filter(item=>item.status==='PENDING').length}</strong></span></div>
       </div>
+      <button className="button small" type="button" disabled={busy||detailLoading} onClick={()=>void open(detail.batch.id,detail.pagination.offset)}>刷新本页</button>
       <p className={styles.policy}>{detail.batch.fullInspection?'本批所有质检项需逐条完成质检。':`质检项驳回达到 ${detail.batch.returnTriggerCount} 条后，系统自动处理剩余成员。`}</p>
       <div className="table-wrap"><table className={styles.table}><thead><tr><th>序号</th><th>任务</th><th>文案标题</th><th>审核人</th><th>状态</th><th>操作</th></tr></thead><tbody>
         {detail.items.map((item,index)=>{
           const preview=copyRevisionView(item.content);
-          return <tr key={item.id}><td>{index+1}</td><td className={styles.taskCell}>{item.taskId==null?`盲评项 ${index+1}`:`#${item.taskId}${item.query?` · ${item.query}`:''}`}</td>
+          const itemNumber=detail.pagination.offset+index+1;
+          return <tr key={item.id}><td>{itemNumber}</td><td className={styles.taskCell}>{item.taskId==null?`盲评项 ${itemNumber}`:`#${item.taskId}${item.query?` · ${item.query}`:''}`}</td>
             <td className={styles.titleCell}>{preview.title||preview.body.replace(/\s+/gu,' ').slice(0,60)||'未填写标题'}</td>
             <td>{item.approverUsername??'—'}</td><td><span className={`pill ${item.status==='PASSED'?'pill-completed':item.status==='PENDING'?'pill-waiting_review':'pill-rejected'}`}>{statusName[item.status]??item.status}</span></td>
-            <td><button className="button small" type="button" onClick={()=>viewItem(item.id)}>{item.status==='PENDING'&&detail.batch.status==='INSPECTING'?'查看并质检':'查看文案'}</button></td>
+            <td><button className="button small" type="button" disabled={busy||detailLoading} onClick={()=>viewItem(item.id)}>{item.status==='PENDING'&&detail.batch.status==='INSPECTING'?'查看并质检':'查看文案'}</button></td>
           </tr>;
         })}
         {!detail.items.length&&<tr><td colSpan={6} className={styles.empty}>这个批次没有可查看的质检项</td></tr>}
       </tbody></table></div>
+      <QaPagination pagination={detail.pagination} busy={busy||detailLoading} onPage={offset=>{setSelectedItemId(null);void open(detail.batch.id,offset);}} label="质检明细分页"/>
     </section>}
     <Dialog open={selectedItem!==null} onOpenChange={open=>{if(!open&&!busy){setSelectedItemId(null);setError('');}}}>
       <DialogContent className={`${legacyStyles.dialog} ${legacyStyles.detailDialog}`}>

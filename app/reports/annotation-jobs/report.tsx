@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { apiRequest } from '../../components/api-client';
+import { AnnotationTrendPanel, type AnnotationJobTrend } from './trend-panel';
 import styles from './report.module.css';
 
 type Person = {
@@ -18,6 +19,7 @@ type Person = {
 type Report = {
   range:{from:string;to:string};asOf:string;
   summary:{workers:number;totalJobs:number;returned:number};people:Person[];
+  trend:AnnotationJobTrend;
   dataQuality:{unknownIdentity:number;unattributedAnnotationBatchReturns:number;unattributedAnnotationBatchScopes:number};
 };
 type Account = {id:number;username:string;displayName?:string;status?:string};
@@ -33,17 +35,19 @@ export function AnnotationJobReport({initialFilters}:{initialFilters?:{from:stri
   const [dateError,setDateError] = useState('');
   const [busy,setBusy] = useState(true);
   const [revision,setRevision] = useState(0);
+  const forceNext=useRef(false);
   const [showQualityOnly,setShowQualityOnly] = useState(false);
   const query = new URLSearchParams({period:'custom',from:filters.from,to:filters.to,
     ...(filters.accountId?{accountId:filters.accountId}:{})}).toString();
 
   useEffect(() => {
     const controller=new AbortController();
+    const forceRefresh=forceNext.current;forceNext.current=false;
     setShowQualityOnly(false);
     setBusy(true);setError('');setReport(null);
-    void apiRequest<Report>(`/api/control-plane/v1/admin/annotation-job-report?${query}`,
+    void apiRequest<Report>(`/api/control-plane/v1/admin/annotation-job-report?${query}${forceRefresh?'&refresh=true':''}`,
       {signal:controller.signal,cache:'no-store'})
-      .then(value=>setReport(value))
+      .then(value=>{if(!controller.signal.aborted)setReport(value);})
       .catch(caught=>{if(!controller.signal.aborted)setError(caught instanceof Error?caught.message:'报表读取失败');})
       .finally(()=>{if(!controller.signal.aborted)setBusy(false);});
     return ()=>controller.abort();
@@ -75,7 +79,7 @@ export function AnnotationJobReport({initialFilters}:{initialFilters?:{from:stri
   return <div className={styles.page}>
     <header className={styles.header}><div><span className={styles.kicker}>报表统计</span>
       <h1>标注作业统计报表</h1><p>按标注人汇总作业与质检打回，日期采用北京时间。</p></div>
-      <Button variant="outline" size="sm" type="button" disabled={busy} onClick={()=>setRevision(value=>value+1)}><RefreshCw size={15}/>{busy?'读取中…':'刷新'}</Button>
+      <Button variant="outline" size="sm" type="button" disabled={busy} onClick={()=>{forceNext.current=true;setRevision(value=>value+1);}}><RefreshCw size={15}/>{busy?'读取中…':'刷新'}</Button>
     </header>
     <form className={`panel ${styles.filters}`} onSubmit={apply} aria-label="报表查询条件">
       <label>开始日期<input type="date" required value={draft.from} onChange={event=>setDraft(previous=>({...previous,from:event.target.value}))}/></label>
@@ -106,5 +110,7 @@ export function AnnotationJobReport({initialFilters}:{initialFilters?:{from:stri
         <p>文案一次通过率按所选日期内首次文案作业对应的个人接手轮次统计，追踪该轮首次提交截至报表时点的首个有效结果：首次通过轮次 / 有有效首检结论的轮次。人工质检通过、未被抽中但已随批次放行均计为通过，同时计入分子和分母；打回、整批打回影响及质检废弃计为未通过，只计入分母。每轮只计一次，本轮返修后的重复质检、其他标注人或本人此前接手轮次的结果不计入本轮。待质检、尚未批次放行、管理员直接放行，以及本人直接废弃但未提交质检的轮次，不进入分母。本期首次废弃后恢复并提交的轮次，即使首次提交发生在所选日期之后，也追踪截至报表时点的首检结论或无首检记录。没有有效首检结论时显示“—”。</p>
       </details>
     </section>
+    <AnnotationTrendPanel key={`${filters.from}:${filters.to}:${filters.accountId}`}
+      trend={report?.trend??null} people={report?.people??[]} busy={busy} />
   </div>;
 }

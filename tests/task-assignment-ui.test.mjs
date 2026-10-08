@@ -1,3 +1,4 @@
+import { readRepositorySource } from '../server/tests/helpers/repository-source.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
@@ -91,7 +92,7 @@ test('administrators can assign one task or the current selection through protec
     source('app/workbench/creation-workbench.tsx'),
     source('app/workbench/task-assignment-dialog.tsx'),
     source('app/api/control-plane/[...path]/route.ts'),
-    source('server/src/postgres-repository.mjs'),
+    readRepositorySource(),
   ]);
   assert.match(dialog, /`\/api\/control-plane\/v1\/tasks\/\$\{tasks\[0\]\.id\}\/assignee`/u);
   assert.match(dialog, /method: 'PATCH'/u);

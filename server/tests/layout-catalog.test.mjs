@@ -49,7 +49,7 @@ test('catalog completion requires validated planning and retry snapshots retain 
     if (sql.includes('SELECT e.*')) return { rows: [execution] };
     if (sql.startsWith('SELECT result FROM image_runs')) return { rows: [{ result: stored }] };
     if (sql.startsWith('SELECT * FROM tasks')) return { rows: [{ id: 1, state: 'IMAGE_FAILED', current_execution_id: null }] };
-    if (sql.includes('SELECT id, node_id, snapshot FROM task_executions')) return { rows: [execution] };
+    if (sql.includes('FROM task_executions') && sql.includes('WHERE task_id = $1 AND kind = $2')) return { rows: [execution] };
     if (sql.includes('UPDATE')) writes.push({ sql, values });
     return { rows: [] };
   } };
