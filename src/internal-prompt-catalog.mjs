@@ -292,15 +292,20 @@ export const INTERNAL_PROMPT_CATALOG = Object.freeze([
     "kind": "INTERNAL_BODY_REPAIR_OUTPUT",
     "label": "正文修复输出协议",
     "group": "输出与校验协议",
-    "description": "正文长度或完整性校验失败时，只允许返回完整 body。",
-    "usage": "正文长度或完整性校验失败时，只允许返回完整 body。",
+    "description": "正文长度或完整性校验失败时，只允许返回完整 body；传递程序实测字数、压缩预算和自动继续压缩轮次。",
+    "usage": "正文长度或完整性校验失败时，只允许返回完整 body；传递程序实测字数、压缩预算和自动继续压缩轮次。",
     "editable": false,
     "layer": "CONTRACT",
     "defaultPath": "prompts/internal/body_repair_output.md",
     "callSites": [
       "src/copy-generation.mjs#buildPostRepairPrompt"
     ],
-    "variables": []
+    "variables": [
+      {
+        "name": "slot1",
+        "description": "程序实测 lengthBudget 和自动继续压缩轮次；仅含程序计数与已校验整数配置"
+      }
+    ]
   },
   {
     "kind": "INTERNAL_QUALITY_REVISION_OUTPUT",
@@ -1666,7 +1671,7 @@ export const INTERNAL_PROMPT_CATALOG = Object.freeze([
     "kind": "INTERNAL_POST_OUTPUT",
     "label": "文案完整结构协议",
     "group": "输出与校验协议",
-    "description": "文案初稿的完整 JSON 字段、枚举、来源和风险记录要求。",
+    "description": "文案初稿的完整 JSON 字段、枚举、来源、风险记录和正文长度预算。",
     "usage": "每次生成完整文案时，与管理员文案规则及配图规则共同组成请求。",
     "editable": false,
     "layer": "CONTRACT",
@@ -1682,6 +1687,10 @@ export const INTERNAL_PROMPT_CATALOG = Object.freeze([
       {
         "name": "DELIVERY_IMAGE_COUNT_RULE",
         "description": "自动页数范围或用户指定的图片数量"
+      },
+      {
+        "name": "BODY_LENGTH_BUDGET",
+        "description": "正文400～600字符硬性范围、冻结配置中的成稿目标和上限计数余量"
       }
     ]
   },

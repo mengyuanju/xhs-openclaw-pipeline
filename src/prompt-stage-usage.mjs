@@ -7,7 +7,7 @@ export const PROMPT_STAGE_USAGE = Object.freeze({
   IMAGE_EDIT_SYSTEM: { usage: '人工生成标识、产品融合或局部修改时调用；与本次操作对应的图片编辑补充模板组合。', callSites: ['server/src/image-edit-renderer.mjs#governedImageEditPrompt', 'src/admin/image-edit-worker.mjs'] },
   QUERY_REVIEW_SYSTEM: { usage: '启用 Query 筛选后，在生成正文前判断准入；默认关闭。', callSites: ['src/content-stage-review.mjs#buildQueryReviewPrompt'] },
   TEXT_REVIEW_SYSTEM: { usage: '自动文案审核启用时检查正文和证据；当前分布式文案流程跳过自动文案审核。', callSites: ['src/content-stage-review.mjs#buildTextReviewPrompt'] },
-  COPY_LENGTH_REPAIR_SYSTEM: { usage: '正文长度或句子完整性校验失败时调用，只修改正文。', callSites: ['src/copy-generation.mjs#buildPostRepairPrompt'] },
+  COPY_LENGTH_REPAIR_SYSTEM: { usage: '正文长度或句子完整性校验失败时调用，只修改正文；常规修复后仍超长时，复用此规则自动继续压缩最多两次。', callSites: ['src/copy-generation.mjs#buildPostRepairPrompt'] },
   COPY_REPAIR_SYSTEM: { usage: '文案 JSON 字段、格式或其他结构校验失败时调用。', callSites: ['src/copy-generation.mjs#buildPostRepairPrompt'] },
   COPY_REVISION_SYSTEM: { usage: '需要依据质检问题生成修订稿时调用，保留已合格内容。', callSites: ['src/copy-generation.mjs#buildQualityRevisionPrompt'] },
   IMAGE_ALIGNMENT_SYSTEM: { usage: '生图或编辑图片后，核对可见文字、场景、语义和布局；图片编辑也用于原图文字预检。', callSites: ['src/image-alignment.mjs#buildImageAlignmentPrompt'] },

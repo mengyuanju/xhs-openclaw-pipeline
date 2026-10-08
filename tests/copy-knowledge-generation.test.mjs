@@ -22,7 +22,7 @@ function block(prompt, name) {
   return JSON.parse(prompt.match(new RegExp(`<${name}>\\n([\\s\\S]*?)\\n</${name}>`, 'u'))[1]);
 }
 
-function fakeClient(prompts, { score = 90, repair = false, invalidScores = false } = {}) {
+function fakeClient(prompts, { score = 90, repair = false, repairField = 'body', invalidScores = false } = {}) {
   let drafts = 0;
   return {
     async runReview() { return { rawText: JSON.stringify(review), model: 'fake-review' }; },
@@ -37,13 +37,13 @@ function fakeClient(prompts, { score = 90, repair = false, invalidScores = false
       }
       drafts++;
       return { model: 'fake-copy', rawText: JSON.stringify({ ...createMockPost(3),
-        ...(repair && drafts === 1 ? { body: '字数不足' } : {}),
+        ...(repair && drafts === 1 ? repairField === 'title' ? { title: task.query } : { body: '字数不足' } : {}),
       }) };
     },
   };
 }
 
-test('generation scores before drafting and sends only the complete winning analysis, including repair', async () => {
+test('generation uses the complete winning analysis for drafting and keeps body repair focused on the latest copy', async () => {
   const prompts = [];
   const stages = [];
   const result = await generateCopy({ task, systemPrompt, copyKnowledge: knowledge,
@@ -52,10 +52,12 @@ test('generation scores before drafting and sends only the complete winning anal
   });
   assert.equal(prompts.length, 3);
   assert.equal(block(prompts[0], 'untrusted_copy_knowledge_match').candidates.length, 2);
+  assert.equal(block(prompts[1], 'untrusted_copy_knowledge_reference').analysis, knowledge[1].content.analysis);
+  assert.ok(prompts[1].length > 30_000);
+  assert.doesNotMatch(prompts[2], /untrusted_copy_knowledge_reference|完整内容/u);
+  assert.equal(block(prompts[2], 'untrusted_task_data').previousBody, '字数不足');
   for (const prompt of prompts.slice(1)) {
-    assert.equal(block(prompt, 'untrusted_copy_knowledge_reference').analysis, knowledge[1].content.analysis);
     assert.doesNotMatch(prompt, /未选中的案例分析|低分摘要/u);
-    assert.ok(prompt.length > 30_000);
   }
   assert.match(prompts[1], /围绕 租房桌面如何整理 撰写文案/u);
   assert.ok(stages.indexOf('KNOWLEDGE_MATCH') > stages.indexOf('QUERY_REVIEW'));
@@ -65,6 +67,19 @@ test('generation scores before drafting and sends only the complete winning anal
   assert.equal(response.generation.knowledgeMatch.scoredCount, 2);
   assert.ok(response.generation.timing.knowledgeMatchMs >= 0);
   assert.equal(task.input.referenceText, '用户提供的原始参考');
+});
+
+test('non-body field repair still receives the complete selected case reference', async () => {
+  const prompts = [];
+  await generateCopy({ task, systemPrompt, copyKnowledge: knowledge,
+    client: fakeClient(prompts, { repair: true, repairField: 'title' }), textReviewEnabled: false,
+  });
+  assert.equal(prompts.length, 3);
+  for (const prompt of prompts.slice(1)) {
+    assert.equal(block(prompt, 'untrusted_copy_knowledge_reference').analysis, knowledge[1].content.analysis);
+  }
+  assert.match(prompts[2], /<trusted_business_rules kind="COPY_REPAIR_SYSTEM">/u);
+  assert.deepEqual(block(prompts[2], 'untrusted_task_data').allowedFields, ['title']);
 });
 
 test('no qualifying match and empty knowledge still generate without a case reference', async () => {

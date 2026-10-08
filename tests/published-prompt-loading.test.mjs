@@ -49,6 +49,37 @@ test('center configuration loads published rules without a policy record and exc
   assert.ok(!prompt.includes(defaultBusinessPrompt('COPY_IMAGE_PLAN_SYSTEM')));
 });
 
+test('actual first-draft requests give old frozen editorial rules a numeric length budget without replacing their style', async () => {
+  const input = snapshot();
+  const frozenText = '旧发布版本：正文400～600字；采用短自然段，保留命令，不写总分总结构。';
+  input.prompts.TEXT_SYSTEM = version(frozenText, 12, 5);
+  const frozenSnapshot = structuredClone(input);
+  input.prompts.TEXT_SYSTEM = version('后来发布版本：改成另一种文风。', 99, 6);
+  let sent;
+  const result = await executeCopyClaim({
+    claim: { execution: { id: randomUUID(), snapshot: frozenSnapshot } },
+    client: {
+      async runText({ prompt }) {
+        sent = prompt;
+        return { model: 'fake', rawText: JSON.stringify(createMockPost(3)) };
+      },
+      runReview() { assert.fail('a length budget must not activate managed model review'); },
+    },
+    controlPlane: { updateProgress: async () => {}, completeCopy: async (_id, value) => value },
+  });
+  assert.ok(result.copy);
+  assert.ok(sent.includes(frozenText));
+  assert.ok(!sent.includes('后来发布版本'));
+  assert.ok(!sent.includes(defaultBusinessPrompt('TEXT_SYSTEM')));
+  assert.ok(sent.includes(PLAN_RULE));
+  const contract = sent.match(/<program_contract>\s*([\s\S]+?)\s*<\/program_contract>/u)[1];
+  const budget = JSON.parse(contract.match(/正文长度预算（程序校验口径）：([^\n]+)/u)[1]);
+  assert.deepEqual(budget, {
+    minLength: 400, maxLength: 600, targetMin: 480, targetMax: 520,
+    targetLength: 500, upperSafetyMargin: 80,
+  });
+});
+
 test('published-only snapshots survive replay without enabling managed policy checks', () => {
   const input = snapshot();
   const runtime = promptRuntimeFromSnapshot(input);
@@ -107,8 +138,8 @@ for (const repairKind of ['imagePlan', 'body']) {
     } }, controlPlane => executeCopyClaim({ claim: { execution }, controlPlane, client }));
     assert.equal(prompts.length, 2);
     assert.equal(result.copy.body, valid.body);
-    for (const prompt of prompts) {
-      assert.ok(prompt.includes(PLAN_RULE));
+    for (const [index, prompt] of prompts.entries()) {
+      assert.equal(prompt.includes(PLAN_RULE), index === 0 || repairKind !== 'body');
       assert.match(prompt, /已发布文案规则/u);
       assert.ok(!prompt.includes(defaultBusinessPrompt('COPY_IMAGE_PLAN_SYSTEM')));
     }
@@ -117,9 +148,14 @@ for (const repairKind of ['imagePlan', 'body']) {
       const provenance = JSON.parse(record.request).provenance;
       assert.equal(provenance.runtime.settings, null);
       const plan = provenance.versions.find(item => item.kind === 'COPY_IMAGE_PLAN_SYSTEM');
-      assert.equal(plan.versionId, 15);
-      assert.equal(plan.version, 3);
-      assert.equal(plan.source, 'EXECUTION_SNAPSHOT');
+      if (record.stage === 'COPY_LENGTH_REPAIR') {
+        assert.equal(plan, undefined);
+      } else {
+        assert.equal(plan.versionId, 15);
+        assert.equal(plan.version, 3);
+        assert.equal(plan.source, 'EXECUTION_SNAPSHOT');
+      }
+      assert.equal(provenance.versions.find(item => item.kind === 'TEXT_SYSTEM').versionId, 12);
     }
     const fallback = JSON.parse(records.at(-1).request).provenance.versions
       .find(item => item.kind === (repairKind === 'body' ? 'COPY_LENGTH_REPAIR_SYSTEM' : 'COPY_REPAIR_SYSTEM'));
@@ -127,6 +163,44 @@ for (const repairKind of ['imagePlan', 'body']) {
     assert.equal(fallback.versionId, null);
   });
 }
+
+test('copy execution automatically continues compression with the existing frozen repair template', async () => {
+  const input = snapshot();
+  input.prompts.COPY_LENGTH_REPAIR_SYSTEM = version('已有正文修复规则：仅修订正文，保留事实。', 27, 4);
+  const original = { ...createMockPost(3), body: `${'文'.repeat(709)}。` };
+  const prompts = [];
+  const progress = [];
+  let completed = 0;
+  const result = await executeCopyClaim({
+    claim: { execution: { id: randomUUID(), snapshot: input } },
+    client: {
+      async runText({ prompt }) {
+        prompts.push(prompt);
+        const lengths = [710, 680, 650, 500];
+        return { rawText: JSON.stringify(prompts.length === 1 ? original
+          : { body: `${'文'.repeat(lengths[prompts.length - 1] - 1)}。` }), model: 'fake' };
+      },
+      runReview() { assert.fail('automatic compression must not enable model review'); },
+    },
+    controlPlane: {
+      updateProgress: async (_id, value) => { progress.push(value); },
+      completeCopy: async (_id, value) => { completed += 1; return value; },
+    },
+  });
+  assert.equal(prompts.length, 4);
+  assert.equal(completed, 1);
+  assert.equal(result.copy.body.length, 500);
+  assert.equal(result.copy.title, original.title);
+  assert.deepEqual(result.imagePlan, original.imagePlan);
+  assert.match(prompts[3], /已有正文修复规则/u);
+  assert.match(prompts[3], /已发布文案规则/u);
+  assert.ok(!prompts[3].includes(PLAN_RULE));
+  assert.match(prompts[3], /"currentLength":650/u);
+  assert.match(prompts[3], /"requiredReduction":130/u);
+  assert.match(prompts[3], /"continuedCompression":\{"attempt":1,"maxAttempts":2\}/u);
+  assert.equal(progress.at(-1).stage, 'COPY_LENGTH_REPAIR');
+  assert.equal(progress.at(-1).details.continuedCompression, true);
+});
 
 test('image-plan regeneration receives the frozen published template without a policy record', async () => {
   const executionId = randomUUID();

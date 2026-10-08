@@ -29,6 +29,7 @@ import {
 import { DEFAULT_WEB_SEARCH_RESULT_LIMIT } from './web-search-config.mjs';
 
 const POST_MAX_ATTEMPTS = 3;
+const BODY_COMPRESSION_MAX_ATTEMPTS = 2;
 const QUALITY_REVISION_MAX_ATTEMPTS = 2;
 const TRANSIENT_MODEL_FAILURE = /\b(?:ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|UND_ERR_SOCKET|429)\b|fetch failed|connection error|other side closed|socket hang up|timed? out|terminated|no text output returned|temporar(?:y|ily) unavailable|rate limit/iu;
 const MODEL_NOT_ALLOWED_FAILURE = /model override\b.{0,300}\bis not allowed for agent\b/iu;
@@ -130,6 +131,12 @@ function isBodyRepairFailure(error) {
   return BODY_REPAIR_FAILURE.test(String(error?.message ?? error));
 }
 
+function isOverlongBodyFailure(error) {
+  const match = String(error?.message ?? error)
+    .match(/^body must contain between 400 and 600 characters; received (\d+)$/u);
+  return Boolean(match && Number(match[1]) > 600);
+}
+
 function bodyRepairLengthBudget(body) {
   if (typeof body !== 'string') return null;
   const currentLength = visibleCharacterCount(normalizeProseLineBreaks(body).trim());
@@ -143,16 +150,28 @@ function buildPostRepairPrompt(task, error, previousOutput, options = {}) {
   const validationError = error instanceof Error ? error.message : String(error);
   const bodyRepair = isBodyRepairFailure(error);
   const receivedLength = validationError.match(/received ([0-9]+)/)?.[1];
+  const lengthBudget = bodyRepair ? bodyRepairLengthBudget(options.previousCandidate?.body) : null;
+  const inheritedRules = bodyRepair ? ['TEXT_SYSTEM'] : ['TEXT_SYSTEM', 'COPY_IMAGE_PLAN_SYSTEM'];
+  const repairOutput = bodyRepair ? internalPrompt('INTERNAL_BODY_REPAIR_OUTPUT', {
+    slot1: JSON.stringify({ lengthBudget, continuedCompression: options.continuedCompression ?? null }),
+  }) : internalPrompt('INTERNAL_COPY_REPAIR_OUTPUT');
   return businessPrompt(bodyRepair ? 'COPY_LENGTH_REPAIR_SYSTEM' : 'COPY_REPAIR_SYSTEM', {
     variables: { query: task.query,
       category: task.input?.category ?? '', targetAudience: task.input?.targetAudience ?? '', imageCount: options.imageCount ?? '' },
-    inherits: promptRuntimeSnapshot() ? ['TEXT_SYSTEM', 'COPY_IMAGE_PLAN_SYSTEM']
-      : ['TEXT_SYSTEM', 'COPY_IMAGE_PLAN_SYSTEM'].filter(hasPublishedPrompt),
-    contract: `沿用本次编辑要求：\n${promptRuntimeSnapshot() || hasPublishedPrompt('TEXT_SYSTEM') ? '' : options.systemPrompt ?? ''}\n${bodyRepair ? internalPrompt('INTERNAL_BODY_REPAIR_OUTPUT') : internalPrompt('INTERNAL_COPY_REPAIR_OUTPUT')}`,
-    data: { query: task.query, validationError, previousOutput, receivedLength: receivedLength ? Number(receivedLength) : null,
-      ...(bodyRepair ? { lengthBudget: bodyRepairLengthBudget(options.previousCandidate?.body),
-        repairHistory: options.repairHistory ?? [] } : {}),
-      countingRule: '正文、标题等字段的英文字母、数字、标点、空格和换行均逐个计数；仅 imagePlan.bullets 的连续英文字母算1字，数字、标点、空格和换行仍逐个计数',
+    inherits: promptRuntimeSnapshot() ? inheritedRules : inheritedRules.filter(hasPublishedPrompt),
+    contract: `沿用本次编辑要求：\n${promptRuntimeSnapshot() || hasPublishedPrompt('TEXT_SYSTEM') ? '' : options.systemPrompt ?? ''}\n${repairOutput}`,
+    data: { query: task.query, validationError,
+      previousOutput: bodyRepair
+        ? JSON.stringify({ body: options.previousCandidate?.body }) : previousOutput,
+      receivedLength: receivedLength ? Number(receivedLength) : null,
+      ...(bodyRepair ? { lengthBudget, previousBody: options.previousCandidate?.body,
+        title: options.previousCandidate?.title,
+        bodyStructure: options.previousCandidate?.platform?.bodyStructure,
+        repairHistory: options.repairHistory ?? [],
+        continuedCompression: options.continuedCompression ?? null } : {}),
+      countingRule: bodyRepair
+        ? '正文的英文字母、数字、标点、空格和换行均逐个计数，英文单词或整行命令不能按一个字计算'
+        : '正文、标题等字段的英文字母、数字、标点、空格和换行均逐个计数；仅 imagePlan.bullets 的连续英文字母算1字，数字、标点、空格和换行仍逐个计数',
       completionRule: internalPrompt('INTERNAL_BODY_REPAIR_COMPLETENESS'),
       protectedNumericFacts: bodyRepair
         ? protectedNumericFacts(options.previousCandidate?.body)
@@ -332,7 +351,12 @@ async function createPostFromPrompt(client, task, basePrompt, options) {
   let previousOutput = '';
   let previousCandidate = null;
   const repairHistory = [];
-  for (let attempt = 0; attempt < POST_MAX_ATTEMPTS; attempt += 1) {
+  for (let attempt = 0; attempt < POST_MAX_ATTEMPTS + BODY_COMPRESSION_MAX_ATTEMPTS; attempt += 1) {
+    const continuedCompression = attempt >= POST_MAX_ATTEMPTS ? {
+      attempt: attempt - POST_MAX_ATTEMPTS + 1, maxAttempts: BODY_COMPRESSION_MAX_ATTEMPTS,
+    } : null;
+    // Extra calls only continue an oversized body; other failures keep the original limit.
+    if (continuedCompression && !isOverlongBodyFailure(lastError)) break;
     const bodyRepair = attempt > 0 && isBodyRepairFailure(lastError);
     if (attempt > 0) {
       const validationError = String(lastError?.message ?? lastError);
@@ -341,17 +365,19 @@ async function createPostFromPrompt(client, task, basePrompt, options) {
         attempt: attempt + 1,
         validationError,
         ...(receivedLength ? { receivedLength: Number(receivedLength) } : {}),
+        ...(continuedCompression ? { continuedCompression: true,
+          continuationAttempt: continuedCompression.attempt,
+          continuationMaxAttempts: continuedCompression.maxAttempts } : {}),
         preservedFields: bodyRepair ? ['标题', '标签', '配图策划', '来源', '其他已通过字段'] : [],
       });
     }
+    const prompt = attempt === 0 ? basePrompt : buildPostRepairPrompt(task, lastError, previousOutput, {
+      ...options, previousCandidate, repairHistory, continuedCompression,
+    });
+    const knowledgePrompt = attempt > 0 && !bodyRepair
+      ? buildCopyKnowledgeReferencePrompt(options.knowledgeReference) : '';
     const generated = await client.runText({
-      prompt: attempt === 0
-        ? basePrompt
-        : `${buildPostRepairPrompt(task, lastError, previousOutput, {
-          ...options,
-          previousCandidate,
-          repairHistory,
-        })}\n\n${buildCopyKnowledgeReferencePrompt(options.knowledgeReference)}`,
+      prompt: knowledgePrompt ? `${prompt}\n\n${knowledgePrompt}` : prompt,
       thinking: options.thinking,
       outputSchema: bodyRepair ? bodyRepairOutputSchema() : postOutputSchema(options.imageCount),
     });
