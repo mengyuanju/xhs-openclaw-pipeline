@@ -28,6 +28,27 @@ const task = {
   currentCopyRevisionId: 12, currentImageRunId: null, aiDisclosureEnabled: false,
   copyRevisions: [revision], imageRuns: [], assets: [], humanQualityAssessments: [],
 };
+const draftContent = {
+  version: 1, draft: revision.content, aiDisclosureEnabled: false,
+  copyOriginalScore: null, copyOriginalReasons: [], copyOriginalNote: '',
+};
+const drafts = Array.from({ length: 9 }, (_, index) => ({
+  id: index + 1, taskId: 41, baseCopyRevisionId: 12, reviewerAccountId: 7,
+  version: index + 1, content: {
+    ...draftContent, draft: { ...revision.content, copy: {
+      ...copy, title: index === 8 ? copy.title : `合成草稿 ${index + 1}`,
+    } },
+  },
+  createdAt: new Date(Date.now() - (9 - index) * 60_000).toISOString(),
+}));
+const modelCalls = ['RESEARCH', 'TEXT_GENERATION', 'COPY_LENGTH_REPAIR'].map((stage, index) => ({
+  id: `fixture-call-${index + 1}`, executionId: 'fixture-execution', sequence: index + 1,
+  stage, kind: 'COPY', nodeId: 'fixture', provider: 'fixture', operation: 'TEXT',
+  model: 'synthetic-layout', status: 'SUCCEEDED', truncated: false,
+  startedAt: '2026-10-02T08:00:00Z', executionStartedAt: '2026-10-02T08:00:00Z', durationMs: 1000,
+}));
+const modelPrompt = '合成长提示词用于验证通栏详情，所有内容都来自隔离 fixture。\n'.repeat(60);
+const modelResponse = '# 合成返回内容\n\n' + '这是一段布局测试数据，没有请求任何模型。\n\n'.repeat(45);
 
 async function bundleFixture(directory) {
   const { build } = await import('esbuild');
@@ -72,7 +93,13 @@ function serveFixture({ js, css }, requests) {
     if (path === '/api/human-quality-settings') { reply(DEFAULT_HUMAN_QUALITY_SETTINGS); return; }
     if (path === '/api/control-plane/health') { reply({ capabilities: { imageResume: true } }); return; }
     if (path.endsWith('/tasks/41')) { reply(task); return; }
-    if (path.endsWith('/copy-review-drafts')) { reply({ baseCopyRevisionId: 12, drafts: [] }); return; }
+    if (path.endsWith('/copy-review-drafts')) { reply({ baseCopyRevisionId: 12, drafts }); return; }
+    if (path.endsWith('/model-calls')) { reply({ items: modelCalls, total: modelCalls.length }); return; }
+    if (path.includes('/model-calls/')) {
+      const item = modelCalls.find(call => path.endsWith(`/${call.id}`));
+      reply(item ? { ...item, request: '{}', prompt: modelPrompt, response: modelResponse } : 'Unknown synthetic call', item ? 200 : 404);
+      return;
+    }
     if (path.includes('/history/')) {
       const kind = path.split('/history/')[1].split('/')[0];
       if (path.endsWith('/copyRevisions/12')) reply({ item: revision, assets: [] });
@@ -100,8 +127,13 @@ async function measureLayout(page) {
       }));
     const sectionTitles = [...scroll.querySelectorAll('[data-review-pane] .workbench-review-section-title')]
       .filter(element => element.getBoundingClientRect().width > 0).map(bounds);
+    const support = scroll.querySelector(':scope > .workbench-review-support');
     return { scroll: { ...bounds(scroll), scrollTop: scroll.scrollTop, scrollHeight: scroll.scrollHeight, clientHeight: scroll.clientHeight },
-      history: bounds(history), trigger: bounds(trigger), panes, sectionTitles, footer: bounds(document.querySelector('.workbench-review-footer')) };
+      history: bounds(history), trigger: bounds(trigger), panes, sectionTitles,
+      support: support ? bounds(support) : null,
+      header: bounds(document.querySelector('.workbench-review-heading')),
+      footer: bounds(document.querySelector('.workbench-review-footer')),
+      viewport: { width: innerWidth, height: innerHeight, scrollY, documentWidth: document.documentElement.scrollWidth } };
   });
 }
 
@@ -117,21 +149,13 @@ async function assertCompactCopyLayout(page, label) {
     assert.equal(await editor.evaluate(element => element.scrollHeight > element.clientHeight + 1), false,
       `${label}: the complete body and every bullet line remain visible`);
   }
+  assert.equal(await page.locator('.workbench-copy-original-rating label[data-score]').count(), 4,
+    `${label}: all four score choices remain available`);
   if (!(await body.isVisible())) return;
-  await page.waitForFunction(() => {
-    const editor = document.querySelector('#review-copy-body');
-    const scroll = document.querySelector('.workbench-review-scroll');
-    const columns = getComputedStyle(scroll).gridTemplateColumns.trim().split(/\s+/u).length;
-    const plan = document.querySelector('.workbench-image-plan-section').getBoundingClientRect();
-    const bodyField = editor.closest('.field').getBoundingClientRect();
-    return editor.scrollHeight <= editor.clientHeight + 2
-      && (columns < 2 || Math.abs(plan.top - bodyField.top) <= 2);
-  });
   const layout = await page.evaluate(() => {
     const copyPane = document.querySelector('#review-copy-pane');
     const planPane = document.querySelector('#review-plan-pane');
     const body = document.querySelector('#review-copy-body');
-    const bodyField = body.closest('.field');
     const plan = planPane.querySelector('.workbench-image-plan-section');
     const score = planPane.querySelector('.workbench-copy-original-rating');
     const bounds = element => {
@@ -139,15 +163,15 @@ async function assertCompactCopyLayout(page, label) {
       return { top: rect.top, bottom: rect.bottom, width: rect.width };
     };
     return { copy: bounds(copyPane), planPane: bounds(planPane), body: bounds(body),
-      bodyField: bounds(bodyField), plan: bounds(plan), score: bounds(score),
+      plan: bounds(plan), score: bounds(score),
       overflow: getComputedStyle(copyPane).overflowY,
       columns: getComputedStyle(document.querySelector('.workbench-review-scroll')).gridTemplateColumns.trim().split(/\s+/u).length };
   });
   assert.equal(layout.overflow, 'visible', `${label}: copy pane has no independent scrollbar`);
   if (layout.columns < 2) return;
   assert.ok(layout.copy.width > layout.planPane.width * 1.5, `${label}: desktop copy column has the wider share`);
-  assert.ok(Math.abs(layout.plan.top - layout.bodyField.top) <= 2, `${label}: image planning starts beside the body label`);
-  assert.ok(layout.score.bottom <= layout.plan.top + 1, `${label}: score and explanation stay above planning`);
+  assert.ok(layout.plan.top >= layout.score.bottom - 1 && layout.plan.top - layout.score.bottom <= 12,
+    `${label}: planning follows the score with at most 12px gap, independent of the body position`);
 }
 
 function assertHistoryFollowsPanes(layout, label) {
@@ -162,9 +186,55 @@ function assertHistoryFollowsPanes(layout, label) {
   const right = Math.max(...layout.panes.map(pane => pane.right));
   assert.ok(layout.history.left <= left + 1 && layout.history.right >= right - 1,
     `${label}: history must span the active review columns`);
+  assert.ok(layout.support, `${label}: secondary review details have a separate support section`);
+  assert.ok(layout.support.left <= left + 1 && layout.support.right >= right - 1,
+    `${label}: secondary details span the active review columns`);
+  assert.ok(layout.support.top >= Math.max(...layout.panes.map(pane => pane.bottom)) - 1,
+    `${label}: secondary details follow both review panes`);
+  assert.ok(layout.history.top >= layout.support.bottom - 1, `${label}: history follows secondary details`);
 }
 
-test('task review history stays below copy and image-plan content when collapsed or expanded, including mobile pane switches', {
+async function measurePrimaryContent(page) {
+  return page.evaluate(() => {
+    const scroll = document.querySelector('.workbench-review-scroll');
+    const contentBounds = selector => {
+      const rect = document.querySelector(selector).getBoundingClientRect();
+      return { top: rect.top + scroll.scrollTop, bottom: rect.bottom + scroll.scrollTop, height: rect.height };
+    };
+    return { copy: contentBounds('.workbench-copy-review-section'),
+      score: contentBounds('.workbench-copy-original-rating'), plan: contentBounds('.workbench-image-plan-section') };
+  });
+}
+
+async function settleLayout(page) {
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+}
+
+function assertStableBounds(before, after, label) {
+  for (const key of ['top', 'bottom', 'height']) {
+    assert.ok(Math.abs(before[key] - after[key]) <= 1, `${label}: ${key} stays stable`);
+  }
+}
+
+async function assertFixedFooter(page, label) {
+  const scroll = page.locator('.workbench-review-scroll');
+  await scroll.evaluate(element => { element.scrollTop = 0; });
+  await settleLayout(page);
+  const before = await measureLayout(page);
+  await scroll.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await settleLayout(page);
+  const after = await measureLayout(page);
+  assertStableBounds(before.header, after.header, `${label} header`);
+  assertStableBounds(before.footer, after.footer, `${label} footer`);
+  assert.ok(after.footer.top >= 0 && after.footer.bottom <= after.viewport.height + 1,
+    `${label}: every footer action remains inside the viewport`);
+  assert.ok(after.scroll.bottom <= after.footer.top + 1, `${label}: the footer does not cover review content`);
+  assert.equal(after.viewport.scrollY, 0, `${label}: the document does not scroll with review content`);
+  assert.ok(after.viewport.documentWidth <= after.viewport.width + 1, `${label}: no horizontal overflow`);
+  assert.ok(after.history.bottom <= after.scroll.bottom + 1, `${label}: the final history section is reachable above the footer`);
+}
+
+test('task review separates the editing columns from expandable support details and keeps fixed actions accessible', {
   skip: process.env.RUN_TASK_REVIEW_HISTORY_LAYOUT_BROWSER !== '1', timeout: 180_000,
 }, async () => {
   const { chromium } = await import('playwright-core');
@@ -181,7 +251,7 @@ test('task review history stays below copy and image-plan content when collapsed
     page.setDefaultTimeout(8_000);
     page.on('pageerror', error => errors.push(error.message));
     const origin = `http://127.0.0.1:${server.address().port}`;
-    for (const width of [1348, 1024, 320, 768]) {
+    for (const width of [320, 390, 768, 1023, 1024, 1440]) {
       await page.setViewportSize({ width, height: 883 });
       await page.goto(origin);
       await page.locator('#review-copy-title').waitFor();
@@ -212,6 +282,7 @@ test('task review history stays below copy and image-plan content when collapsed
           assert.ok(visible.trigger.top >= visible.scroll.top - 1 && visible.trigger.bottom <= visible.footer.top + 1,
             `${label}: history control must be accessible above the fixed action footer`);
           assertHistoryFollowsPanes(visible, `${label} scrolled`);
+          await assertFixedFooter(page, label);
           if (expanded) {
             await page.getByRole('button', { name: '人工评分', exact: true }).click();
             await page.getByRole('button', { name: /人工评分 · #801/ }).click();
@@ -221,7 +292,51 @@ test('task review history stays below copy and image-plan content when collapsed
         }
       }
     }
-    await page.setViewportSize({ width: 1348, height: 883 });
+    await page.setViewportSize({ width: 1440, height: 883 });
+    await page.goto(origin);
+    await page.locator('#review-copy-title').waitFor();
+    await assertCompactCopyLayout(page, 'desktop before draft expansion');
+    const beforeDrafts = await measurePrimaryContent(page);
+    await page.getByRole('button', { name: /审核草稿/ }).click();
+    await page.waitForFunction(() => document.querySelectorAll('.workbench-review-draft-history li').length === 9);
+    await settleLayout(page);
+    const afterDrafts = await measurePrimaryContent(page);
+    assertStableBounds(beforeDrafts.score, afterDrafts.score, 'opening nine local drafts preserves the score position');
+    assertStableBounds(beforeDrafts.plan, afterDrafts.plan, 'opening nine local drafts preserves the planning position');
+    await assertCompactCopyLayout(page, 'nine local drafts expanded');
+    await page.locator('.workbench-review-scroll').evaluate(element => { element.scrollTop = 0; });
+    await page.screenshot({ path: join(directory, '1440-nine-local-drafts-expanded.png') });
+    layouts.push({ label: '1440px nine local drafts expanded', ...await measureLayout(page) });
+
+    const beforeCalls = await measurePrimaryContent(page);
+    const trace = page.locator('.workbench-review-support .model-call-trace');
+    await trace.getByRole('button', { name: /模型调用链路/ }).click();
+    await trace.getByText('共 3 次调用', { exact: true }).waitFor();
+    assert.equal(await trace.locator('.model-call-card').count(), 3);
+    const firstCall = trace.locator('.model-call-card').first();
+    await firstCall.getByRole('button', { name: /第 1 步/ }).click();
+    await firstCall.getByRole('button', { name: '完整提示词原文（已脱敏）', exact: true }).waitFor();
+    await firstCall.getByRole('button', { name: '完整提示词原文（已脱敏）', exact: true }).click();
+    await firstCall.locator('.model-call-request pre').waitFor();
+    assert.equal(await firstCall.locator('.model-call-request pre').textContent(), modelPrompt);
+    await firstCall.getByRole('heading', { name: '合成返回内容', exact: true }).waitFor();
+    await settleLayout(page);
+    const afterCalls = await measurePrimaryContent(page);
+    assertStableBounds(beforeCalls.copy, afterCalls.copy, 'long model details do not stretch the copy card');
+    assertStableBounds(beforeCalls.score, afterCalls.score, 'long model details preserve the score position');
+    assertStableBounds(beforeCalls.plan, afterCalls.plan, 'long model details preserve the planning position');
+    const callsLayout = await measureLayout(page);
+    assertHistoryFollowsPanes(callsLayout, 'expanded model support');
+    layouts.push({ label: '1440px expanded model details', ...callsLayout });
+    await page.screenshot({ path: join(directory, '1440-model-details-expanded.png') });
+    for (const viewport of [{ width: 1440, height: 600 }, { width: 1024, height: 720 }, { width: 390, height: 600 }, { width: 320, height: 600 }]) {
+      await page.setViewportSize(viewport);
+      await assertCompactCopyLayout(page, `${viewport.width}x${viewport.height} expanded support`);
+      await assertFixedFooter(page, `${viewport.width}x${viewport.height} expanded support`);
+      await page.screenshot({ path: join(directory, `${viewport.width}-${viewport.height}-fixed-footer.png`) });
+    }
+
+    await page.setViewportSize({ width: 1440, height: 883 });
     await page.goto(origin);
     await page.locator('#copy-original-41-note').waitFor();
     await page.locator('.workbench-copy-original-rating label[data-score="3"]').click();
@@ -262,11 +377,7 @@ test('task review history stays below copy and image-plan content when collapsed
       'the caret remains at the end of the text');
     await assertCompactCopyLayout(page, 'continuous bullet typing');
     await page.locator('#copy-original-41-note').evaluate(element => { element.style.height = '150px'; });
-    await page.waitForFunction(() => {
-      const bodyField = document.querySelector('#review-copy-body').closest('.field').getBoundingClientRect();
-      const plan = document.querySelector('.workbench-image-plan-section').getBoundingClientRect();
-      return Math.abs(bodyField.top - plan.top) <= 2;
-    });
+    await settleLayout(page);
     await assertCompactCopyLayout(page, 'expanded explanation');
     await page.screenshot({ path: join(directory, 'compact-score-with-explanation.png') });
     assert.deepEqual(errors, []);

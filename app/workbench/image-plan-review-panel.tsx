@@ -13,9 +13,9 @@ import { imagePlanBlankBulletLines, imagePlanBulletLengthWarnings, imagePlanPage
 import { type ImagePlanItem, type ReviewDraft, type TaskDetail, IMAGE_KINDS, IMAGE_KIND_LABELS, AutosizeTextarea, ReviewReferences } from './task-review-model';
 import type { TaskReviewViewContext } from './task-review-dialog';
 
-export function ImagePlanReviewPanel({ context, detail, draft, ratingPanel }: {
+export function ImagePlanReviewPanel({ context, detail, draft, ratingPanel, showSupportingContent = true }: {
   context: Pick<TaskReviewViewContext, 'assets' | 'canEditApprovedImagePlan' | 'editable' | 'loading' | 'submitting' | 'regeneratingImagePlan' | 'regenerateImagePlan' | 'imagePlanComparison' | 'imagePlanChanged' | 'imagePlanGenerationNotice' | 'backgroundPlan' | 'completedPlan' | 'canLoadCompletedPlan' | 'appliedPlanIdRef' | 'draftSaveStatus' | 'confirm' | 'loadCompletedPlan' | 'activePlanIndex' | 'setActivePlanIndex' | 'planEditBlockMessage' | 'copyEditPointerAtRef' | 'revealCopyEditNotice' | 'deleteImagePlanPage' | 'planKindDisabled' | 'updateImagePlan' | 'planFieldsReadOnly' | 'expandedPrompts' | 'setExpandedPrompts' | 'research' | 'xiaohongshuLinks' | 'isAdmin' | 'imageSettingsPanel' | 'role' | 'revision'>;
-  detail: TaskDetail; draft: ReviewDraft; ratingPanel?: ReactNode;
+  detail: TaskDetail; draft: ReviewDraft; ratingPanel?: ReactNode; showSupportingContent?: boolean;
 }) {
   const { assets, canEditApprovedImagePlan, editable, loading, submitting, regeneratingImagePlan, regenerateImagePlan, imagePlanComparison, imagePlanChanged, imagePlanGenerationNotice, backgroundPlan, completedPlan, canLoadCompletedPlan, appliedPlanIdRef, draftSaveStatus, confirm, loadCompletedPlan, activePlanIndex, setActivePlanIndex, planEditBlockMessage, copyEditPointerAtRef, revealCopyEditNotice, deleteImagePlanPage, planKindDisabled, updateImagePlan, planFieldsReadOnly, expandedPrompts, setExpandedPrompts, research, xiaohongshuLinks, isAdmin, imageSettingsPanel, role, revision } = context;
   return <div id="review-plan-pane" className="workbench-review-pane" data-review-pane="plan">
@@ -141,9 +141,11 @@ export function ImagePlanReviewPanel({ context, detail, draft, ratingPanel }: {
                   </article>})}
                 </div>
               </section>
+              {showSupportingContent && <>
               {editable && <ReviewReferences detail={detail} research={research} xiaohongshuLinks={xiaohongshuLinks} isAdmin={isAdmin} />}
               {imageSettingsPanel}
               {role === 'ADMIN' && <TaskReviewModelHistory detail={detail} research={research} revision={revision} />}
+              </>}
               </div>
             </div>;
 }

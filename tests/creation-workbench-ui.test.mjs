@@ -453,7 +453,7 @@ test('creation dialog accepts a single batch textarea and creates one remote bat
   assert.doesNotMatch(reviewDialog, /workbench-image-plan-head/u);
   assert.match(reviewDialog, /function AutosizeTextarea/u);
   assert.match(reviewDialog, /function ReviewScrollTextarea/u);
-  assert.match(reviewDialog, /\{!imageWorkMode && !editable && <ReviewReferences detail=\{detail\}/u);
+  assert.match(reviewDialog, /\{!imageWorkMode && !editable && !compactCopyReview && <ReviewReferences detail=\{detail\}/u);
   assert.match(reviewDialog, /\{editable && <ReviewReferences detail=\{detail\}/u);
   assert.match(reviewDialog, /className="textarea workbench-copy-body-editor"/u);
   assert.match(reviewDialog, /className="textarea workbench-plan-bullets-editor"/u);

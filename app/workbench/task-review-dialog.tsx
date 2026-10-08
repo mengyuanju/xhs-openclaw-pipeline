@@ -182,7 +182,7 @@ export function TaskReviewDialog(props: Parameters<typeof useTaskReviewControlle
               {!imageWorkMode && <CopyReviewPanel context={viewContext} detail={detail} compact={compactCopyReview}
                 notices={compactCopyReview ? copyNotices : undefined} />}
               <div className="workbench-review-copy-additional">
-              {!imageWorkMode && !editable && <ReviewReferences detail={detail} research={research} xiaohongshuLinks={xiaohongshuLinks} isAdmin={isAdmin} />}
+              {!imageWorkMode && !editable && !compactCopyReview && <ReviewReferences detail={detail} research={research} xiaohongshuLinks={xiaohongshuLinks} isAdmin={isAdmin} />}
             {!imageWorkMode && <VisualPlanSummary value={currentImageRun?.result?.visualPlan?.value} />}
             {!imageWorkMode && currentImageRun?.result?.visualPlan?.warning?.message && !currentImageRun?.result?.simulation?.enabled
               && <p className="notice warning">{currentImageRun.result.visualPlan.warning.message}</p>}
@@ -193,7 +193,13 @@ export function TaskReviewDialog(props: Parameters<typeof useTaskReviewControlle
             </div>
 
             {draft && !imageWorkMode && <ImagePlanReviewPanel context={viewContext} detail={detail} draft={draft}
+              showSupportingContent={!compactCopyReview}
               ratingPanel={compactCopyReview ? <CopyOriginalRatingPanel context={viewContext} detail={detail} compact /> : undefined} />}
+            {compactCopyReview && <div className="workbench-review-support" aria-label="审核参考与调用记录">
+              <ReviewReferences detail={detail} research={research} xiaohongshuLinks={xiaohongshuLinks} isAdmin={isAdmin} />
+              {imageSettingsPanel}
+              {role === 'ADMIN' && <TaskReviewModelHistory detail={detail} research={research} revision={revision} />}
+            </div>}
             {!draft && role === 'ADMIN' && <TaskReviewModelHistory detail={detail} research={research} revision={revision} />}
             <TaskReviewHistory detail={detail} admin={role === 'ADMIN'} />
           </div>
