@@ -281,10 +281,10 @@ export function draftFromRevision(revision: CopyRevision | undefined): ReviewDra
 
 export function imagePlanBulletOverflowDescription(warnings: ImagePlanBulletLengthWarning[]) {
   const examples = warnings.slice(0, 3).map(warning =>
-    `第 ${warning.pageIndex + 1} 页第 ${warning.bulletIndex + 1} 条为 ${warning.length} 字（建议不超过 ${warning.recommendedMax} 字）`,
+    `第 ${warning.pageIndex + 1} 页画面要点第 ${warning.bulletIndex + 1} 行为 ${warning.length} 字（不能超过 ${warning.recommendedMax} 字）`,
   ).join('；');
-  const remainder = warnings.length > 3 ? `；另有 ${warnings.length - 3} 条超出建议字数` : '';
-  return `${examples}${remainder}。超出建议字数可能导致图片排版拥挤、字号过小或文字截断。是否确认仍按当前内容继续？`;
+  const remainder = warnings.length > 3 ? `；另有 ${warnings.length - 3} 条超出字数限制` : '';
+  return `图片规划文字超出字数限制：${examples}${remainder}。超限可能导致图片排版拥挤、字号过小或文字截断。请缩短超限内容后再操作，当前规划不能保存或提交。`;
 }
 
 export function imagePlanBlankLineDescription(blankLines: ImagePlanBlankBulletLine[]) {

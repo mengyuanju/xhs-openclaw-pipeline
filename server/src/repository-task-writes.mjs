@@ -433,7 +433,11 @@ export class TaskWriteRepository extends TaskReadRepository {
           '当前文案版本缺少可用的图片文案规划',
         );
       }
-      const { copy } = normalizeCopyReviewEdits({ copy: rawCopy, imagePlan: currentImagePlan });
+      // Regeneration repairs an existing plan, so legacy long bullets must not
+      // prevent validating the copy used to request a replacement.
+      const { copy } = normalizeCopyReviewEdits({ copy: rawCopy, imagePlan: currentImagePlan }, {
+        allowImagePlanBulletOverflow: true,
+      });
       const existingRequest = (await client.query(`
         SELECT * FROM copy_image_plan_regeneration_jobs WHERE request_id = $1
       `, [requestId])).rows[0];
@@ -508,9 +512,7 @@ export class TaskWriteRepository extends TaskReadRepository {
     }
     const originalScoreX10 = rawOriginalScore === undefined
       ? null : normalizedHumanQualityScore(rawOriginalScore, 'originalScore');
-    let edits = rawEdits === undefined ? null : normalizeCopyReviewEdits(rawEdits, {
-      allowImagePlanBulletOverflow: rawImagePlanBulletOverflowConfirmed === true,
-    });
+    let edits = rawEdits === undefined ? null : normalizeCopyReviewEdits(rawEdits);
     if (decision === 'DISCARD' && edits) throw new TypeError('discarding copy does not accept edits');
     if (decision === 'SAVE_PLAN' && !edits) throw new TypeError('saving an image plan requires edits');
     if (decision === 'SAVE_PLAN' && [rawOriginalScore, rawScore, rawOriginalReasons, rawOriginalReasonCodes,
@@ -568,6 +570,13 @@ export class TaskWriteRepository extends TaskReadRepository {
         SELECT * FROM copy_revisions WHERE id = $1 AND task_id = $2 FOR UPDATE
       `, [revisionId, taskId]);
       if (!revision.rows[0]) throw new ControlPlaneNotFoundError('copy revision not found');
+      if (!edits && decision !== 'DISCARD') {
+        normalizeCopyReviewImagePlan(
+          revision.rows[0].content.imagePlan
+            ?? revision.rows[0].content.reviewed?.imagePlan
+            ?? revision.rows[0].content.post?.imagePlan,
+        );
+      }
       const imageRetryRework = task.current_stage === 'IMAGE_RETRY_EXHAUSTED';
       const mandatoryRework = imageRetryRework || task.copy_qa_rework_pending === true || (task.mandatory_copy_qc === true
         && !['DISCARD_RESTORE', 'SECOND_ASSIGNMENT'].includes(task.mandatory_copy_qc_origin));
@@ -897,9 +906,7 @@ export class TaskWriteRepository extends TaskReadRepository {
         throw new TypeError('image rework requires at least one problemAssetIds target');
       }
     }
-    const editedImagePlan = rawImagePlan === undefined ? null : normalizeCopyReviewImagePlan(rawImagePlan, {
-      allowBulletOverflow: rawImagePlanBulletOverflowConfirmed === true,
-    });
+    const editedImagePlan = rawImagePlan === undefined ? null : normalizeCopyReviewImagePlan(rawImagePlan);
     if (editedImagePlan && reworkTarget !== 'IMAGE') {
       throw new TypeError('imagePlan edits are only accepted for image-only rework');
     }

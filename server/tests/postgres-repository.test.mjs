@@ -43,6 +43,14 @@ const copyReviewMetadata = Object.freeze({
   reviewSessionId: '77777777-7777-4777-8777-777777777777',
 });
 const copyReviewActor = Object.freeze({ reviewerUserId: 'admin' });
+
+function copyReviewImagePlan() {
+  return ['hero', 'steps', 'summary'].map(kind => ({
+    kind, headline: '页面标题', subtitle: '', bullets: ['第一条信息', '第二条信息'],
+    prompt: '清晰呈现当前页面的全部信息和场景。',
+  }));
+}
+
 const executorManagementActor = Object.freeze({
   userId: 1,
   username: 'admin',
@@ -871,6 +879,7 @@ test('successful image execution moves the task directly to manual archive', asy
 
 test('copy approval submits reviewed copy to the image queue', async () => {
   const queries = [];
+  const content = { imagePlan: copyReviewImagePlan() };
   const client = {
     async query(sql, values) {
       const source = String(sql);
@@ -890,7 +899,7 @@ test('copy approval submits reviewed copy to the image queue', async () => {
           task_id: 41,
           execution_id: null,
           revision: 2,
-          content: {},
+          content,
           approved_at: new Date(),
           approved_by_node_id: 'node-b',
           created_at: new Date(),
@@ -902,7 +911,7 @@ test('copy approval submits reviewed copy to the image queue', async () => {
         task_id: 41,
         execution_id: null,
         revision: 2,
-        content: {},
+        content,
         approved_at: new Date(),
         approved_by_node_id: 'node-b',
       }] };
@@ -939,11 +948,11 @@ test('non-admin approval without edits creates an automatic-layout revision inst
   const queries = [];
   const sourceContent = {
     copy: { title: '标题', body: '正文', tags: ['#标签'] },
-    imagePlan: [
-      { kind: 'hero', layout: { mode: 'TEMPLATE', template: 'HERO_LEFT' } },
-      { kind: 'steps', layout: { mode: 'CUSTOM' } },
-      { kind: 'summary' },
-    ],
+    imagePlan: copyReviewImagePlan().map((page, index) => ({
+      ...page,
+      ...(index === 0 ? { layout: { mode: 'TEMPLATE', template: 'HERO_LEFT' } }
+        : index === 1 ? { layout: { mode: 'CUSTOM' } } : {}),
+    })),
   };
   const client = {
     async query(sql, values) {

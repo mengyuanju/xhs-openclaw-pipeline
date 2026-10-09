@@ -23,7 +23,13 @@ function rejectionFixture({ mandatoryCopyQc, copyContentChangedFromMachine, copy
     revision_origin: mandatoryCopyQc ? 'QA_RETURN' : 'PLAN_EDIT',
     copy_content_changed_from_machine: copyContentChangedFromMachine,
     copy_rework_satisfied: copyReworkSatisfied,
-    content: { copy: { title: '当前标题', body: '当前正文', tags: [] }, imagePlan: [] },
+    content: {
+      copy: { title: '当前标题', body: '当前正文', tags: [] },
+      imagePlan: ['hero', 'steps', 'summary'].map(kind => ({
+        kind, headline: '当前规划', subtitle: '', bullets: ['第一条信息', '第二条信息'],
+        prompt: '清晰呈现当前规划的全部信息和场景。',
+      })),
+    },
   };
   const client = {
     release() {},

@@ -50,6 +50,7 @@ function copyFixture({
   const qaBatches = [];
   const qaMembers = [];
   const submissions = [];
+  const regenerationJobs = [];
   const revisions = new Map([[12, {
     id: 12, task_id: 41, revision: 1, execution_id: sourceExecutionId, content: sourceEdits,
     copy_content_changed_from_machine: false, copy_rework_satisfied: false,
@@ -94,6 +95,16 @@ function copyFixture({
       if (source.includes('SELECT * FROM copy_revisions')) {
         const revision = revisions.get(Number(values[0]));
         return { rows: revision ? [revision] : [] };
+      }
+      if (source.includes('FROM copy_image_plan_regeneration_jobs')) return { rows: [] };
+      if (source.includes('INSERT INTO copy_image_plan_regeneration_jobs')) {
+        const job = {
+          id: values[0], request_id: values[1], task_id: values[2], copy_revision_id: values[3],
+          requested_by_account_id: values[4], requested_by_username: values[5],
+          copy_payload: values[6], status: 'QUEUED',
+        };
+        regenerationJobs.push(job);
+        return { rows: [job] };
       }
       if (source.includes('SELECT id FROM executor_nodes')) return { rows: [{ id: 'node-a' }] };
       if (source.includes('MAX(revision)')) {
@@ -179,7 +190,7 @@ function copyFixture({
       throw new Error(`Unexpected SQL: ${source}`);
     },
   };
-  return { task, queries, assessments, approvalEvents, qaBatches, qaMembers, revisions,
+  return { task, queries, assessments, approvalEvents, qaBatches, qaMembers, revisions, regenerationJobs,
     repository: new PostgresControlPlaneRepository({ pool: { connect: async () => client } }) };
 }
 
@@ -522,29 +533,113 @@ test('an assigned worker can save custom image planning after scoring without ch
   assert.equal(fixture.revisions.get(13).content.imagePlan[0].layout.mode, 'CUSTOM');
 });
 
-test('a plan-only save accepts an overlong bullet only after explicit user confirmation', async () => {
+test('copy review rejects overlong planned bullets even when overflow is confirmed', async () => {
+  for (const [kind, max] of [['steps', 30], ['checklist', 40]]) {
+    for (const decision of ['SAVE_PLAN', 'SAVE', 'APPROVE']) {
+      for (const confirmed of [undefined, false, true]) {
+        const fixture = copyFixture();
+        const edits = structuredClone(sourceEdits);
+        edits.imagePlan[1].kind = kind;
+        edits.imagePlan[1].bullets[0] = '长'.repeat(max + 1);
+        await assert.rejects(fixture.repository.approveCopy(41, {
+          revisionId: 12,
+          nodeId: 'node-a',
+          decision,
+          edits,
+          ...(decision === 'SAVE_PLAN' ? {} : { score: 3, originalScore: 3 }),
+          imagePlanBulletOverflowConfirmed: confirmed,
+          reviewSessionId: '48484848-4848-4848-8848-484848484848',
+        }, { actorRole: 'USER', reviewerUserId: 'reviewer' }), {
+          name: 'RangeError',
+          message: `第 2 页画面要点第 1 行超过 ${max} 字（当前 ${max + 1} 字）`,
+        });
+        assert.equal(fixture.queries.length, 0, 'invalid submitted plans are rejected before any database work');
+        assert.equal(fixture.revisions.size, 1);
+        assert.equal(fixture.assessments.length, 0);
+      }
+    }
+  }
+});
+
+test('saving or approving an unchanged legacy overlong plan is blocked without submitted edits', async () => {
+  for (const location of ['imagePlan', 'reviewed', 'post']) {
+    for (const decision of ['SAVE', 'APPROVE']) {
+      const fixture = copyFixture();
+      const revision = fixture.revisions.get(12);
+      revision.content = structuredClone(sourceEdits);
+      const imagePlan = revision.content.imagePlan;
+      imagePlan[1].bullets[0] = '长'.repeat(31);
+      if (location !== 'imagePlan') {
+        delete revision.content.imagePlan;
+        revision.content[location] = { imagePlan };
+      }
+      await assert.rejects(fixture.repository.approveCopy(41, {
+        revisionId: 12,
+        nodeId: 'node-a',
+        decision,
+        score: 3,
+        imagePlanBulletOverflowConfirmed: true,
+        reviewSessionId: '48484848-4848-4848-8848-484848484848',
+      }, { actorRole: 'USER', reviewerUserId: 'reviewer' }),
+      /第 2 页画面要点第 1 行超过 30 字（当前 31 字）/u);
+      assert.equal(fixture.task.state, 'COPY_REVIEW_PENDING');
+      assert.equal(fixture.revisions.size, 1);
+      assert.equal(fixture.assessments.length, 0);
+      assert.equal(fixture.approvalEvents.length, 0);
+      assert.equal(fixture.queries.some(({ sql }) => sql.includes('UPDATE tasks SET')), false);
+    }
+  }
+});
+
+test('a legacy overlong plan can be corrected and saved within the limit', async () => {
   const fixture = copyFixture();
-  const imagePlan = sourceEdits.imagePlan.map((item, index) => index === 1
-    ? { ...item, bullets: ['长'.repeat(31), item.bullets[1]] }
-    : item);
-  const input = {
+  fixture.revisions.get(12).content = structuredClone(sourceEdits);
+  fixture.revisions.get(12).content.imagePlan[1].bullets[0] = '长'.repeat(31);
+  const saved = await fixture.repository.approveCopy(41, {
     revisionId: 12,
     nodeId: 'node-a',
     decision: 'SAVE_PLAN',
-    edits: { ...sourceEdits, imagePlan },
+    edits: sourceEdits,
     reviewSessionId: '48484848-4848-4848-8848-484848484848',
-  };
-
-  await assert.rejects(fixture.repository.approveCopy(41, input, {
-    actorRole: 'USER', reviewerUserId: 'reviewer',
-  }), /第 2 页画面要点第 1 行超过 30 字（当前 31 字）/u);
-
-  const saved = await fixture.repository.approveCopy(41, {
-    ...input,
-    imagePlanBulletOverflowConfirmed: true,
   }, { actorRole: 'USER', reviewerUserId: 'reviewer' });
   assert.equal(saved.currentCopyRevisionId, 13);
-  assert.equal(fixture.revisions.get(13).content.imagePlan[1].bullets[0], '长'.repeat(31));
+  assert.deepEqual(fixture.revisions.get(13).content.imagePlan, sourceEdits.imagePlan);
+  assert.equal(fixture.revisions.get(12).content.imagePlan[1].bullets[0], '长'.repeat(31));
+});
+
+test('an overlong legacy plan still permits discarding unusable copy', async () => {
+  const fixture = copyFixture();
+  fixture.revisions.get(12).content = structuredClone(sourceEdits);
+  fixture.revisions.get(12).content.imagePlan[1].bullets[0] = '长'.repeat(31);
+  const discarded = await fixture.repository.approveCopy(41, {
+    revisionId: 12,
+    nodeId: 'node-a',
+    decision: 'DISCARD',
+    score: 1,
+    note: '原稿无法使用，废弃当前任务。',
+    reviewSessionId: '48484848-4848-4848-8848-484848484848',
+  }, { actorRole: 'USER', reviewerUserId: 'reviewer' });
+  assert.equal(discarded.state, 'CANCELLED');
+  assert.equal(fixture.revisions.size, 1);
+});
+
+test('image-plan regeneration can repair legacy overlong bullets without saving them as approved content', async () => {
+  const fixture = copyFixture();
+  fixture.revisions.get(12).content = structuredClone(sourceEdits);
+  fixture.revisions.get(12).content.imagePlan[1].bullets[0] = '长'.repeat(31);
+  const result = await fixture.repository.createImagePlanRegeneration(41, {
+    requestId: '48484848-4848-4848-8848-484848484848',
+    copyRevisionId: 12,
+    copy: sourceEdits.copy,
+  }, { actor: { userId: 1, username: 'reviewer', role: 'USER', credentialVersion: 1 } });
+  assert.equal(result.created, true);
+  assert.equal(result.job.status, 'QUEUED');
+  assert.deepEqual(result.job.copy, sourceEdits.copy);
+  assert.equal(fixture.regenerationJobs.length, 1);
+  assert.equal(fixture.task.state, 'COPY_REVIEW_PENDING');
+  assert.equal(fixture.revisions.size, 1);
+  assert.equal(fixture.assessments.length, 0);
+  assert.equal(fixture.revisions.get(12).content.imagePlan[1].bullets[0], '长'.repeat(31));
 });
 
 test('an unchanged plan-only save explains that its content equals the current official version', async () => {

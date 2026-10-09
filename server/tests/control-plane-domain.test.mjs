@@ -92,7 +92,7 @@ test('copy review image-plan validation identifies the page, field and bullet li
   }
 });
 
-test('copy review requires explicit confirmation for overlong bullets and retains a safety cap', () => {
+test('copy review enforces bullet limits while internal legacy normalization retains a safety cap', () => {
   const edits = validReviewEdits();
   edits.imagePlan[1].bullets[0] = '长'.repeat(31);
 

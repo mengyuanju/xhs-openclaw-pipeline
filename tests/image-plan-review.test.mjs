@@ -101,13 +101,45 @@ test('invalid layout identifies its page and setting', () => {
   assert.match(result.validationError.message, /第 3 页主体占比须为 20–90%/u);
 });
 
-test('comparison accepts unchanged legacy long bullets while the strict normalizer rejects them', () => {
+test('comparison preserves unchanged legacy plans while strict validation identifies the line to repair', () => {
   const saved = plan();
   saved[1].bullets[0] = '很'.repeat(50);
-  const result = compareCopyReviewImagePlans(saved, structuredClone(saved));
-  assert.equal(result.changed, false);
-  assert.equal(result.validationError, null);
+  const unchanged = compareCopyReviewImagePlans(saved, structuredClone(saved));
+  assert.equal(unchanged.changed, false);
+  assert.equal(unchanged.validationError, null);
+  const result = compareCopyReviewImagePlans(saved, structuredClone(saved), { allowBulletOverflow: false });
+  assert.equal(result.rawChanged, false);
+  assert.deepEqual(result.validationError, {
+    message: '第 2 页画面要点第 1 行超过 30 字（当前 50 字）',
+    pageIndex: 1, field: 'bullets', bulletIndex: 0,
+  });
   assert.throws(() => normalizeCopyReviewImagePlan(saved), /第 2 页画面要点第 1 行超过 30 字/u);
+
+  const repaired = structuredClone(saved);
+  repaired[1].bullets[0] = '很'.repeat(30);
+  const repairedResult = compareCopyReviewImagePlans(saved, repaired, { allowBulletOverflow: false });
+  assert.equal(repairedResult.changed, true);
+  assert.equal(repairedResult.validationError, null);
+  assert.deepEqual(repairedResult.differences, [{ pageIndex: 1, field: 'bullets', bulletIndex: 0 }]);
+});
+
+test('strict comparison enforces the 30 and 40 unit limits for every page kind', () => {
+  for (const kind of ['hero', 'steps', 'checklist', 'comparison', 'detail', 'summary']) {
+    const saved = plan();
+    const draft = structuredClone(saved);
+    const pageIndex = kind === 'hero' ? 0 : 1;
+    const max = kind === 'checklist' ? 40 : 30;
+    draft[pageIndex].kind = kind;
+    draft[pageIndex].bullets[1] = `${'字'.repeat(max - 1)}ONVIF`;
+    assert.equal(compareCopyReviewImagePlans(saved, draft, { allowBulletOverflow: false }).validationError, null);
+
+    draft[pageIndex].bullets[1] = `${'字'.repeat(max)}ONVIF`;
+    const result = compareCopyReviewImagePlans(saved, draft, { allowBulletOverflow: false });
+    assert.deepEqual(result.validationError, {
+      message: `第 ${pageIndex + 1} 页画面要点第 2 行超过 ${max} 字（当前 ${max + 1} 字）`,
+      pageIndex, field: 'bullets', bulletIndex: 1,
+    });
+  }
 });
 
 test('image plan review uses English run units at the 30-unit recommendation', () => {
@@ -125,7 +157,7 @@ test('image plan review uses English run units at the 30-unit recommendation', (
   );
 });
 
-test('image plan review retains the 200 visible-character safety cap after overflow confirmation', () => {
+test('legacy image plan normalization retains the 200 visible-character safety cap', () => {
   const draft = plan();
   draft[1].bullets[0] = 'A'.repeat(200);
   assert.doesNotThrow(() => normalizeCopyReviewImagePlan(draft, { allowBulletOverflow: true }));

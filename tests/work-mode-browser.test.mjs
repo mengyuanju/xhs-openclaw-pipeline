@@ -770,7 +770,11 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     await page.getByRole('option', { name: '1 分 · 返工', exact: true }).click();
     await page.getByRole('combobox', { name: '返工范围', exact: true }).click();
     await page.getByRole('option', { name: '文案和图片', exact: true }).click();
-    await page.getByRole('group', { name: '需要修改的文案字段', exact: true }).getByLabel('标题', { exact: true }).check();
+    const returnCopyFields = page.getByRole('group', { name: '需要修改的文案字段', exact: true });
+    await returnCopyFields.getByLabel('标题', { exact: true }).check();
+    await returnCopyFields.getByLabel('图文规划', { exact: true }).check();
+    assert.equal(await returnCopyFields.getByLabel('正文', { exact: true }).isChecked(), false);
+    assert.equal(await returnCopyFields.getByLabel('标签', { exact: true }).count(), 0);
     await page.getByLabel('第 1 页有问题', { exact: true }).check();
     if (DEFAULT_HUMAN_QUALITY_SETTINGS.imageReviewDisplay.showDeductionReasons) {
       await page.getByLabel(DEFAULT_HUMAN_QUALITY_SETTINGS.imageReasons[0].label, { exact: true }).check();
@@ -814,7 +818,7 @@ test('work mode browser: embedded review, draft-safe navigation, failure retenti
     assert.equal(imageQaItems[1].status, 'RETURNED');
     assert.deepEqual(requests.find(r => r.path.endsWith(imageQaItems[1].id+'/return')).body.problemAssetIds, [401]);
     const imageReturn = requests.find(r => r.path.endsWith(imageQaItems[1].id+'/return')).body;
-    assert.equal(imageReturn.score, 1);assert.equal(imageReturn.reworkTarget, 'BOTH');assert.deepEqual(imageReturn.copyFields, ['TITLE']);
+    assert.equal(imageReturn.score, 1);assert.equal(imageReturn.reworkTarget, 'BOTH');assert.deepEqual(imageReturn.copyFields, ['TITLE', 'IMAGE_PLAN']);
 
     // Background results stay in work mode, even when the target is beyond page one.
     await page.setViewportSize({ width: 1360, height: 1040 });

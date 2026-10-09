@@ -386,8 +386,8 @@ test('admin image retry saves edited plan as a new approved revision and keeps t
   assert.equal(assessments.length, 1);
 });
 
-test('admin image retry accepts an overlong bullet only with explicit confirmation', async () => {
-  const { repository, revisions } = fixture();
+test('admin image retry rejects overlong bullets even with explicit confirmation', async () => {
+  const { repository, revisions, queries, assessments } = fixture();
   const edited = imagePlan('超长规划');
   edited[1].bullets[0] = '长'.repeat(31);
   const input = {
@@ -398,18 +398,19 @@ test('admin image retry accepts an overlong bullet only with explicit confirmati
     decision: 'RETRY',
     score: 2,
     reasons: ['TEXT_ERROR'],
-    note: '确认保留较长文字并重新生成图片。',
+    note: '修正规划后重新生成图片。',
     reviewSessionId: '67676767-6767-4767-8767-676767676767',
     actor: { userId: 1, username: 'admin', role: 'ADMIN', credentialVersion: 1 },
   };
 
   await assert.rejects(repository.reviewImages(7, input), /第 2 页画面要点第 1 行超过 30 字（当前 31 字）/u);
-  const result = await repository.reviewImages(7, {
+  await assert.rejects(repository.reviewImages(7, {
     ...input,
     imagePlanBulletOverflowConfirmed: true,
-  });
-  assert.equal(result.currentCopyRevisionId, 4);
-  assert.equal(revisions[0].content.imagePlan[1].bullets[0], '长'.repeat(31));
+  }), /第 2 页画面要点第 1 行超过 30 字（当前 31 字）/u);
+  assert.equal(queries.length, 0);
+  assert.equal(revisions.length, 0);
+  assert.equal(assessments.length, 0);
 });
 
 test('approved image-plan edits are admin-only, retry-only and cannot change page structure', async () => {

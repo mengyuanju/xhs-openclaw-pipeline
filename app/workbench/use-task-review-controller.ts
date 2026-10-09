@@ -909,16 +909,16 @@ export function useTaskReviewController({
     return id;
   }
 
-  async function confirmImagePlanBulletOverflow(warnings: ImagePlanBulletLengthWarning[]) {
-    if (warnings.length === 0) return true;
-    setMobilePane('plan');
-    setActivePlanIndex(warnings[0].pageIndex);
-    return confirm({
-      title: '图片规划文字超出建议字数',
-      description: imagePlanBulletOverflowDescription(warnings),
-      confirmLabel: '确认超长并继续',
-      cancelLabel: '返回修改',
+  function rejectImagePlanBulletOverflow(imagePlan: ImagePlanItem[]) {
+    const warnings = imagePlanBulletLengthWarnings(imagePlan) as ImagePlanBulletLengthWarning[];
+    if (warnings.length === 0) return false;
+    setError(imagePlanBulletOverflowDescription(warnings));
+    revealImagePlanLocation({
+      pageIndex: warnings[0].pageIndex,
+      field: 'bullets',
+      bulletIndex: warnings[0].bulletIndex,
     });
+    return true;
   }
 
   function rejectImagePlanBlankLines(imagePlan: ImagePlanItem[]) {
@@ -936,6 +936,7 @@ export function useTaskReviewController({
   async function submitCopyDecision(decision: 'SAVE' | 'APPROVE' | 'DISCARD', form: HTMLFormElement) {
     if (!detail || !revision || !draft || !editable || loading || submitting
         || regeneratingImagePlan || draftSaveStatus === 'saving') return;
+    if (decision !== 'DISCARD' && rejectImagePlanBulletOverflow(draft.imagePlan)) return;
     if (decision !== 'DISCARD' && imagePlanComparison?.validationError) {
       setError(imagePlanComparison.validationError.message);
       revealImagePlanLocation(imagePlanComparison.validationError);
@@ -984,9 +985,6 @@ export function useTaskReviewController({
       return;
     }
     if (decision !== 'DISCARD' && draftChanged && rejectImagePlanBlankLines(draft.imagePlan)) return;
-    const bulletOverflowWarnings = decision === 'DISCARD' || !draftChanged
-      ? [] : imagePlanBulletLengthWarnings(draft.imagePlan);
-    if (!await confirmImagePlanBulletOverflow(bulletOverflowWarnings)) return;
     const submittedScore = isCopyRework || decision === 'APPROVE' && hasEditedCopyVersion ? 3 : copyOriginalScore;
     if ((!embedded || decision === 'DISCARD') && !await confirm({
       title: decision === 'APPROVE'
@@ -1030,7 +1028,6 @@ export function useTaskReviewController({
           originalNote: copyOriginalNote,
           aiDisclosureEnabled,
         }),
-        ...(bulletOverflowWarnings.length ? { imagePlanBulletOverflowConfirmed: true } : {}),
       };
       await apiRequest(apiPath(`/v1/tasks/${detail.id}/approve-copy`), {
         method: 'POST',
@@ -1126,6 +1123,7 @@ export function useTaskReviewController({
   async function saveImagePlan(form: HTMLFormElement) {
     if (!detail || !revision || !draft || !savedDraft || !editable || !imagePlanChanged
         || loading || submitting || regeneratingImagePlan || draftSaveStatus === 'saving') return;
+    if (rejectImagePlanBulletOverflow(draft.imagePlan)) return;
     if (imagePlanComparison?.validationError) {
       setError(imagePlanComparison.validationError.message);
       revealImagePlanLocation(imagePlanComparison.validationError);
@@ -1148,8 +1146,6 @@ export function useTaskReviewController({
       return;
     }
     if (rejectImagePlanBlankLines(draft.imagePlan)) return;
-    const bulletOverflowWarnings = imagePlanBulletLengthWarnings(draft.imagePlan);
-    if (!await confirmImagePlanBulletOverflow(bulletOverflowWarnings)) return;
     const pendingDraft = draft;
     const pendingRating = {
       score: copyOriginalScore,
@@ -1166,7 +1162,6 @@ export function useTaskReviewController({
         imagePlan: draft.imagePlan,
         imageSettings: savedDraft.imageSettings,
       },
-      ...(bulletOverflowWarnings.length ? { imagePlanBulletOverflowConfirmed: true } : {}),
     };
     setSubmitting(true);
     setError('');
@@ -1414,9 +1409,8 @@ export function useTaskReviewController({
     const targetLabel = reworkTarget === 'COPY' ? '文案' : reworkTarget === 'IMAGE' ? '图片' : '文案和图片';
     if (decision === 'REWORK' && reworkTarget !== 'COPY' && imagePlanChanged
         && rejectImagePlanBlankLines(draft!.imagePlan)) return;
-    const bulletOverflowWarnings = decision === 'REWORK' && reworkTarget !== 'COPY' && imagePlanChanged
-      ? imagePlanBulletLengthWarnings(draft!.imagePlan) : [];
-    if (!await confirmImagePlanBulletOverflow(bulletOverflowWarnings)) return;
+    if (decision === 'REWORK' && reworkTarget !== 'COPY' && imagePlanChanged
+        && rejectImagePlanBulletOverflow(draft!.imagePlan)) return;
     const option = decision === 'APPROVE'
       ? { title: '确认图片质检通过？', description: `当前整套图片人工评分为 ${imageScore} 分。通过后任务进入交付池，才可下载完整资源。`, confirmLabel: '通过到交付池' }
       : decision === 'REWORK'
@@ -1440,7 +1434,6 @@ export function useTaskReviewController({
           revisionId: revision!.id,
           nodeId,
           imagePlan: draft!.imagePlan,
-          ...(bulletOverflowWarnings.length ? { imagePlanBulletOverflowConfirmed: true } : {}),
         } : {}),
       };
       await apiRequest(apiPath(`/v1/tasks/${detail.id}/review-images`), {

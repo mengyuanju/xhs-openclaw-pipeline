@@ -481,6 +481,7 @@ export function QueryPackageWorkbench({ role }: { role: QueryPackageRole }) {
       const spreadsheet = /\.xlsx$/iu.test(file.name)
         || file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
       if (spreadsheet) {
+        setPackageName(file.name.replace(/\.xlsx$/iu, '').trim().slice(0, 120));
         setSpreadsheetFile(file);
         const preview = await apiRequest<SpreadsheetImportPreview>(
           apiPath('/v1/query-packages/import-preview'),

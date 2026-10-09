@@ -202,7 +202,7 @@ export function WorkQualityEditor({ item, navigationGuardRef, onSkip, onComplete
           <label>原图评分<Select value={score} onValueChange={setScore} disabled={busy}><SelectTrigger aria-label="原图评分"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="2">2 分 · 返工</SelectItem><SelectItem value="1">1 分 · 返工</SelectItem></SelectContent></Select></label>
           <label>返工范围<Select value={target} onValueChange={setTarget} disabled={busy}><SelectTrigger aria-label="返工范围"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="IMAGE">图片</SelectItem><SelectItem value="COPY">文案</SelectItem><SelectItem value="BOTH">文案和图片</SelectItem></SelectContent></Select></label>
           </div>
-          {target !== 'IMAGE' && <fieldset disabled={busy}><legend>需要修改的文案字段</legend>{[['TITLE', '标题'], ['BODY', '正文'], ['TAGS', '标签']].map(([v, label]) => <label key={v}><Checkbox checked={copyFields.includes(v)} onChange={() => setCopyFields(toggle(copyFields, v))} />{label}</label>)}</fieldset>}
+          {target !== 'IMAGE' && <fieldset disabled={busy}><legend>需要修改的文案字段</legend>{[['TITLE', '标题'], ['BODY', '正文'], ['IMAGE_PLAN', '图文规划']].map(([v, label]) => <label key={v}><Checkbox checked={copyFields.includes(v)} onChange={() => setCopyFields(toggle(copyFields, v))} />{label}</label>)}</fieldset>}
           {target !== 'COPY' && <fieldset className={styles.qualityProblemPages} disabled={busy}><legend>问题图片 · 已选 {problemAssets.length} 页</legend>
             {assets.map((asset, index) => <div key={asset.id} data-selected={problemAssets.includes(asset.id)}>
               <label><Checkbox checked={problemAssets.includes(asset.id)} onChange={() => setProblemAssets(toggle(problemAssets, asset.id))} />第 {pageNumber(index)} 页有问题</label>

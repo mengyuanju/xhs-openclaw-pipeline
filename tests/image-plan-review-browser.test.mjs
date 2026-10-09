@@ -7,7 +7,7 @@ import test from 'node:test';
 import { DEFAULT_HUMAN_QUALITY_SETTINGS } from '../src/human-quality-settings.mjs';
 import { DEFAULT_IMAGE_SETTINGS } from '../server/src/image-options.mjs';
 
-test('browser: image plan comparison allows equivalent formatting and identifies changed or invalid lines', {
+test('browser: image plan comparison identifies changes and blocks over-limit bullets until corrected', {
   skip: process.env.RUN_IMAGE_PLAN_REVIEW_BROWSER !== '1', timeout: 120_000,
 }, async () => {
   const { build } = await import('esbuild');
@@ -80,10 +80,15 @@ test('browser: image plan comparison allows equivalent formatting and identifies
       if (path === '/api/human-quality-settings') { reply(DEFAULT_HUMAN_QUALITY_SETTINGS); return; }
       if (path.endsWith('/tasks/41')) { reply(task); return; }
       if (path.endsWith('/image-capabilities')) { reply({ version: 1, reviewImagePlanEdits: true }); return; }
-      if (path.endsWith('/copy-review-drafts')) { reply({ baseCopyRevisionId: 101, drafts: [] }); return; }
+      if (path.endsWith('/copy-review-drafts')) { reply({ baseCopyRevisionId: task.currentCopyRevisionId, drafts: [] }); return; }
       if (path.endsWith('/approve-copy')) {
         if (body.decision === 'SAVE_PLAN') {
-          task.copyRevisions[0].content.imagePlan = body.edits.imagePlan;
+          const current = task.copyRevisions.find(revision => revision.id === task.currentCopyRevisionId);
+          const saved = structuredClone(current);
+          saved.id += 1; saved.revision += 1;
+          saved.content.imagePlan = body.edits.imagePlan;
+          task.copyRevisions.push(saved);
+          task.currentCopyRevisionId = saved.id;
           reply(task); return;
         }
         if (body.decision !== 'APPROVE' || body.edits) { reply('Only unchanged copy approval is expected', 400); return; }
@@ -213,6 +218,71 @@ test('browser: image plan comparison allows equivalent formatting and identifies
       await page.locator('#review-plan-layout-mode-1').click();
       await page.getByRole('option', { name: '自动匹配版式', exact: true }).click();
       assert.equal(await page.getByLabel('补充布局要求', { exact: true }).count(), 0);
+      await context.close();
+    }
+
+    // Existing over-limit plans cannot be approved, and edits cannot bypass either page-type limit.
+    for (const { kind, limit } of [{ kind: 'steps', limit: 30 }, { kind: 'checklist', limit: 40 }]) {
+      resetTask();
+      const initialOverflow = '字'.repeat(limit + 1);
+      task.copyRevisions[0].content.imagePlan[1].kind = kind;
+      task.copyRevisions[0].content.imagePlan[1].bullets[2] = initialOverflow;
+      const requestCount = requests.filter(request => request.path.endsWith('/approve-copy')).length;
+      const { context, page } = await newPage();
+      const bullets = page.locator('#review-plan-bullets-1');
+      const assertRejected = async (length, selectedText) => {
+        const alert = page.getByRole('alert').filter({ hasText: '第 2 页' }).filter({ hasText: `${length} 字` });
+        await alert.waitFor();
+        const message = await alert.textContent();
+        assert.match(message, /第 3 (?:条|行)/u);
+        assert.ok(message.includes(`${length} 字`), 'the error reports the actual bullet length');
+        assert.ok(message.includes(`${limit} 字`), 'the error reports the applicable page-type limit');
+        await page.getByText('第 2 / 3 页', { exact: true }).waitFor();
+        await page.waitForFunction(() => document.activeElement?.id === 'review-plan-bullets-1');
+        assert.equal(await bullets.getAttribute('aria-invalid'), 'true');
+        assert.equal(await bullets.evaluate(element =>
+          element.value.slice(element.selectionStart, element.selectionEnd)), selectedText);
+        assert.match(await page.locator('#review-plan-bullets-help-1').textContent(), /不能保存或提交/u);
+        assert.equal(await page.getByRole('button', { name: '确认超长并继续', exact: true }).count(), 0);
+        assert.equal(requests.filter(request => request.path.endsWith('/approve-copy')).length, requestCount,
+          'over-limit plans never send an approval or plan-save request');
+      };
+
+      await waitReady(page);
+      await submitButton(page).click();
+      await assertRejected(limit + 1, initialOverflow);
+      assert.equal(task.state, 'COPY_REVIEW_PENDING');
+      assert.equal(await bullets.inputValue(), `分类整理\n留出空间\n${initialOverflow}`,
+        'approval rejects the existing plan before any edits');
+      assert.equal(task.currentCopyRevisionId, 101);
+
+      const editedOverflow = '字'.repeat(limit + 2);
+      await bullets.fill(`分类整理\n留出空间\n${editedOverflow}`);
+      await page.getByRole('button', { name: '上一页', exact: true }).click();
+      await page.getByRole('button', { name: '单独保存图片规划', exact: true }).click();
+      await assertRejected(limit + 2, editedOverflow);
+
+      const correctedBullet = '字'.repeat(limit);
+      await bullets.fill(`分类整理\n留出空间\n${correctedBullet}`);
+      assert.equal(await bullets.getAttribute('aria-invalid'), 'false');
+      assert.doesNotMatch(await page.locator('#review-plan-bullets-help-1').textContent(), /不能保存或提交/u);
+      const savedPlan = page.waitForResponse(response => response.request().method() === 'POST'
+        && response.url().endsWith('/approve-copy'));
+      await page.getByRole('button', { name: '单独保存图片规划', exact: true }).click();
+      assert.equal((await savedPlan).status(), 200);
+      await waitReady(page);
+      assert.equal(task.currentCopyRevisionId, 102);
+      assert.equal(task.copyRevisions.at(-1).content.imagePlan[1].bullets[2], correctedBullet);
+      assert.equal(await page.getByRole('button', { name: '单独保存图片规划', exact: true }).count(), 0);
+      await Promise.all([
+        page.waitForResponse(response => response.request().method() === 'POST' && response.url().endsWith('/approve-copy')),
+        submitButton(page).click(),
+      ]);
+      assert.equal(task.state, 'COPY_QC_PENDING');
+      const newRequests = requests.filter(request => request.path.endsWith('/approve-copy')).slice(requestCount);
+      assert.deepEqual(newRequests.map(request => request.body.decision), ['SAVE_PLAN', 'APPROVE']);
+      assert.equal(newRequests[0].body.imagePlanBulletOverflowConfirmed, undefined);
+      assert.equal(newRequests[1].body.revisionId, 102);
       await context.close();
     }
     assert.deepEqual(errors, []);

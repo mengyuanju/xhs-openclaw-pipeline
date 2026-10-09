@@ -104,9 +104,9 @@ export function ImagePlanReviewPanel({ context, detail, draft, ratingPanel, show
                           onChange={(event) => updateImagePlan(index, { subtitle: event.target.value })} />
                       </div>
                       <div className="field full">
-                        <label htmlFor={`review-plan-bullets-${index}`}>画面要点 <small id={`review-plan-bullets-help-${index}`}>每行一条，2–5 条；{item.kind === 'checklist' ? '建议每条不超过 40 字' : '建议每条不超过 30 字'}，连续英文算 1 字{blankBulletLines.length ? `，有 ${blankBulletLines.length} 个无效空行，请删除` : ''}{bulletLengthWarnings.length ? `，当前有 ${bulletLengthWarnings.length} 条超出，保存时需确认` : ''}</small></label>
+                        <label htmlFor={`review-plan-bullets-${index}`}>画面要点 <small id={`review-plan-bullets-help-${index}`}>每行一条，2–5 条；{item.kind === 'checklist' ? '每条不超过 40 字' : '每条不超过 30 字'}，连续英文算 1 字{blankBulletLines.length ? `，有 ${blankBulletLines.length} 个无效空行，请删除` : ''}{bulletLengthWarnings.length ? `，当前有 ${bulletLengthWarnings.length} 条超出，不能保存或提交` : ''}</small></label>
                         <AutosizeTextarea id={`review-plan-bullets-${index}`} className="textarea workbench-plan-bullets-editor" value={item.bullets.join('\n')} required readOnly={planFieldsReadOnly}
-                          aria-describedby={`review-plan-bullets-help-${index}`} aria-invalid={blankBulletLines.length > 0}
+                          aria-describedby={`review-plan-bullets-help-${index}`} aria-invalid={blankBulletLines.length > 0 || bulletLengthWarnings.length > 0}
                           resizeToken={activePlanIndex === index} onChange={(event) => updateImagePlan(index, { bullets: event.target.value.split(/\r?\n/u) })} />
                       </div>
                       <Disclosure className="field full" open={expandedPrompts.includes(index)} onOpenChange={open => setExpandedPrompts(current => open ? [...current, index] : current.filter(value => value !== index))}>
