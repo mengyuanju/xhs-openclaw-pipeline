@@ -177,8 +177,9 @@ export function TaskReviewDialog(props: Parameters<typeof useTaskReviewControlle
             <Button unstyled type="button" aria-pressed={mobilePane === 'plan'} aria-controls="review-plan-pane" onClick={() => setMobilePane('plan')}>图片文案规划</Button>
           </div>}
           <div className="workbench-review-scroll" data-mobile-pane={mobilePane}>
+            {imageWorkMode && <div className="workbench-image-work-notices">{copyNotices}</div>}
             <div id="review-copy-pane" className="workbench-review-pane" data-review-pane="copy">
-              {!compactCopyReview && copyNotices}
+              {!imageWorkMode && !compactCopyReview && copyNotices}
               {!imageWorkMode && <CopyReviewPanel context={viewContext} detail={detail} compact={compactCopyReview}
                 notices={compactCopyReview ? copyNotices : undefined} />}
               <div className="workbench-review-copy-additional">
