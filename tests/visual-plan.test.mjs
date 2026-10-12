@@ -10,6 +10,7 @@ import { createDirectVisualPlan } from '../src/locked-image-plan.mjs';
 import { imageTextHash } from '../src/locked-image-plan.mjs';
 import { plannedForStandaloneRecovery, StandaloneImageRecoveryError } from '../src/standalone-image-recovery.mjs';
 import { visualEvidenceOptions, visualPlanSchema } from '../src/visual-plan-schema.mjs';
+import { IMAGE_PLAN_BULLET_HARD_MAX } from '../src/image-plan-editing.mjs';
 
 function postFixture() {
   return {
@@ -506,6 +507,39 @@ describe('visual plan contract', () => {
       () => parseVisualPlanOutput(JSON.stringify(direct), { post, imageCount: 3 }),
       /mustShow\[0\].*100 characters/iu,
     );
+  });
+
+  it('recovers canonical mustShow for locked English bullets at the raw safety limit', () => {
+    for (const grapheme of ['a', 'e\u0301']) {
+      const post = postFixture();
+      const bullet = grapheme.repeat(IMAGE_PLAN_BULLET_HARD_MAX);
+      post.imagePlan[1].bullets[0] = bullet;
+      const first = parseVisualPlanOutput(JSON.stringify(validVisualPlan(post)), { post, imageCount: 3 });
+      const recovered = plannedForStandaloneRecovery({
+        storedPlan: { value: first, model: 'saved-planner', degraded: false, warning: null },
+        post,
+        normalizeNotice: (value) => value,
+      }).visualPlan;
+
+      assert.equal(recovered.pages[1].allowedVisibleText.bullets[0], bullet);
+      assert.deepEqual(recovered.pages[1].mustShow, first.pages[1].mustShow);
+      assert.ok(recovered.pages[1].mustShow.includes(`文字：${bullet}`));
+      assert.deepEqual(recovered.pages[1].mustShowSanitization,
+        first.pages[1].mustShowSanitization);
+
+      const noncanonical = structuredClone(first);
+      noncanonical.pages[1].mustShow = [`文字：${bullet.slice(0, -1)}b`];
+      assert.throws(
+        () => parseVisualPlanOutput(JSON.stringify(noncanonical), { post, imageCount: 3 }),
+        /mustShow\[0\].*100 characters/iu,
+      );
+
+      noncanonical.pages[1].mustShow = [`画面：${'a'.repeat(97)}`];
+      const sanitized = parseVisualPlanOutput(JSON.stringify(noncanonical), { post, imageCount: 3 });
+      assert.deepEqual(sanitized.pages[1].mustShow, first.pages[1].mustShow);
+      assert.deepEqual(sanitized.pages[1].mustShowSanitization,
+        { droppedCount: 1, reason: 'UNTRUSTED_MUST_SHOW_DROPPED' });
+    }
   });
 
   it('preserves repeated locked text occurrences and order across sanitization recovery', () => {

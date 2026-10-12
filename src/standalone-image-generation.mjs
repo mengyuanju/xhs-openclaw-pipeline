@@ -3,6 +3,8 @@ import { withPromptRuntime, promptExecutionSnapshot, createPromptRuntime } from 
 import { prepareImageArtifacts, publicImageArtifacts, IMAGE_ARTIFACT_FILE } from './image-artifacts.mjs';
 import { normalizeImageSettings } from '../server/src/image-options.mjs';
 import { preparePageLayouts } from './image-layout-controls.mjs';
+import { IMAGE_PLAN_BULLET_HARD_MAX } from './image-plan-editing.mjs';
+import { visibleCharacterCount } from './visible-text.mjs';
 import { randomUUID } from 'node:crypto';
 import { codexErrorCode } from './codex-protocol.mjs';
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
@@ -149,10 +151,10 @@ function isTransientModelFailure(error) {
   return !AUTHORIZATION_FAILURE.test(detail) && TRANSIENT_MODEL_FAILURE.test(detail);
 }
 
-function boundedText(value, field, minimum, maximum) {
+function boundedText(value, field, minimum, maximum, count = null) {
   if (typeof value !== 'string') throw new TypeError(`${field} must be a string`);
   const text = value.trim();
-  const length = [...text].length;
+  const length = count ? count(text) : [...text].length;
   if (length < minimum || length > maximum) {
     throw new RangeError(`${field} must contain between ${minimum} and ${maximum} characters`);
   }
@@ -644,12 +646,13 @@ function publicTextList(value, field, {
   minimum = 0,
   maximum = 10,
   itemMaximum = 500,
+  itemCount = null,
 } = {}) {
   if (!Array.isArray(value) || value.length < minimum || value.length > maximum) {
     if (minimum === 0 && value === undefined) return [];
     throw new TypeError(`${field} is invalid`);
   }
-  return value.map((item, index) => boundedText(item, `${field}[${index}]`, 1, itemMaximum));
+  return value.map((item, index) => boundedText(item, `${field}[${index}]`, 1, itemMaximum, itemCount));
 }
 
 function publicLayout(page, field = 'layout') {
@@ -668,7 +671,8 @@ function publicLayout(page, field = 'layout') {
       bullets: publicTextList(page.allowedVisibleText.bullets, `${field}.allowedVisibleText.bullets`, {
         minimum: 2,
         maximum: 5,
-        itemMaximum: 40,
+        itemMaximum: IMAGE_PLAN_BULLET_HARD_MAX,
+        itemCount: visibleCharacterCount,
       }),
       labels: publicTextList(page.allowedVisibleText.labels ?? [], `${field}.allowedVisibleText.labels`, {
         minimum: 0,
@@ -679,7 +683,8 @@ function publicLayout(page, field = 'layout') {
     mustShow: publicTextList(page.mustShow, `${field}.mustShow`, {
       minimum: 1,
       maximum: 10,
-      itemMaximum: 100,
+      itemMaximum: IMAGE_PLAN_BULLET_HARD_MAX + visibleCharacterCount('文字：'),
+      itemCount: visibleCharacterCount,
     }),
     mustAvoid: publicTextList(page.mustAvoid, `${field}.mustAvoid`, {
       minimum: 1,
@@ -1138,6 +1143,13 @@ async function generateStandaloneImagesInContext({
       expectedImageCount: imageCount,
       rubricAssessment: assessed.assessment,
     });
+    activeStage = 'FINALIZING';
+    await reportProgress({
+      stage: 'FINALIZING',
+      progressPercent: 96,
+      completedImages: imageCount,
+      message: '正在保存运行结果和图片清单',
+    });
     const result = publicResult({
       runId,
       mode,
@@ -1147,13 +1159,6 @@ async function generateStandaloneImagesInContext({
       planning: planned,
       post,
       inputPost: recovery?.inputPost ?? normalizedPost,
-    });
-    activeStage = 'FINALIZING';
-    await reportProgress({
-      stage: 'FINALIZING',
-      progressPercent: 96,
-      completedImages: imageCount,
-      message: '正在保存运行结果和图片清单',
     });
     await writeJsonAtomic(join(outputDir, 'qc.json'), qc);
     await writeJsonAtomic(join(outputDir, 'result.json'), result);

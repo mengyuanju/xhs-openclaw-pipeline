@@ -10,6 +10,7 @@ import {
   validateLayoutTemplate,
 } from './layout-contract.mjs';
 import { assertLockedImageText, directSourceEvidence, imageTextHash } from './locked-image-plan.mjs';
+import { IMAGE_PLAN_BULLET_HARD_MAX } from './image-plan-editing.mjs';
 import { imagePlanBulletCount, visibleCharacterCount } from './visible-text.mjs';
 
 const VISUAL_MEDIA = new Set(['PHOTO', 'ILLUSTRATION', 'INFOGRAPHIC', 'PHOTO_INFOGRAPHIC']);
@@ -135,8 +136,8 @@ function validatedImagePlanBullets(value, name, lockedBullets, recommendedMax) {
   return value.map((item, index) => {
     const field = `${name}[${index}]`;
     const text = requiredText(item, field);
-    if (visibleCharacterCount(text) > 200) {
-      throw new RangeError(`${field} cannot exceed 200 characters`);
+    if (visibleCharacterCount(text) > IMAGE_PLAN_BULLET_HARD_MAX) {
+      throw new RangeError(`${field} cannot exceed ${IMAGE_PLAN_BULLET_HARD_MAX} characters`);
     }
     if (imagePlanBulletCount(text) > recommendedMax && text !== lockedBullets?.[index]) {
       throw new RangeError(`${field} cannot exceed ${recommendedMax} characters`);
@@ -221,12 +222,18 @@ function normalizeMustShow(value, name, allowedVisibleText, previousSanitization
     throw new TypeError(`${name} must contain between 0 and ${MUST_SHOW_MAX_ITEMS} items`);
   }
   const canonicalItems = canonicalMustShow(allowedVisibleText);
+  const canonical = new Set(canonicalItems);
   for (const [index, rawItem] of value.entries()) {
     if (typeof rawItem !== 'string') throw new TypeError(`${name}[${index}] must be a string`);
     const item = rawItem.trim();
     if (!item) throw new RangeError(`${name}[${index}] cannot be empty`);
-    if ([...item].length > MUST_SHOW_ITEM_MAX) {
-      throw new RangeError(`${name}[${index}] cannot exceed ${MUST_SHOW_ITEM_MAX} characters`);
+    const isCanonical = canonical.has(item);
+    const itemMaximum = isCanonical
+      ? IMAGE_PLAN_BULLET_HARD_MAX + visibleCharacterCount('文字：')
+      : MUST_SHOW_ITEM_MAX;
+    const itemLength = isCanonical ? visibleCharacterCount(item) : [...item].length;
+    if (itemLength > itemMaximum) {
+      throw new RangeError(`${name}[${index}] cannot exceed ${itemMaximum} characters`);
     }
   }
   // mustShow is model-controlled and can disguise visible copy as a scene

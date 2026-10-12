@@ -1031,7 +1031,7 @@ input[type="checkbox"]:disabled { border-color: #d5cfc8; background-color: #e8e4
 .workbench-review-form .workbench-image-plan-fields[data-edit-blocked="true"] textarea { cursor: not-allowed; }
 .workbench-autosize-textarea { overflow-y: hidden; resize: none; }
 .workbench-scroll-textarea { position: relative; min-width: 0; }
-.workbench-copy-body-editor { height: clamp(300px, 38dvh, 380px); min-height: 300px; max-height: 380px; padding-right: 28px; overflow-y: auto; resize: none; line-height: 1.8; scrollbar-width: none; overscroll-behavior: contain; }
+.workbench-copy-body-editor { height: clamp(300px, 38dvh, 380px); min-height: 300px; max-height: 380px; padding-right: 28px; overflow-y: auto; resize: none; font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif; line-height: 1.8; scrollbar-width: none; overscroll-behavior: contain; }
 .workbench-copy-body-editor::-webkit-scrollbar { display: none; }
 .workbench-scroll-textarea-track { position: absolute; top: 12px; right: 7px; bottom: 12px; width: 7px; padding: 1px; border-radius: 99px; background: #e6dfd8; pointer-events: none; transition: opacity .15s ease; }
 .workbench-scroll-textarea-track > span { position: absolute; right: 1px; left: 1px; min-height: 24px; border-radius: inherit; background: #aa9e94; box-shadow: inset 0 0 0 1px rgba(255,255,255,.3); }

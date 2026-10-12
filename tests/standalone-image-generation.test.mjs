@@ -12,6 +12,8 @@ import { catalogDirectPlan } from '../src/catalog-planning.mjs';
 import { BUILTIN_LAYOUT_CATALOG } from '../server/src/layout-catalog.mjs';
 import { imageTimingProfile, readImageTimingSamples, recordImageTimingSample } from '../src/image-stage-timing.mjs';
 import { DEFAULT_HUMAN_QUALITY_SETTINGS } from '../src/human-quality-settings.mjs';
+import { IMAGE_PLAN_BULLET_HARD_MAX } from '../src/image-plan-editing.mjs';
+import { imagePlanBulletCount, visibleCharacterCount } from '../src/visible-text.mjs';
 import {
   StandaloneImageConfirmationError,
   StandaloneImageCancellationError,
@@ -209,6 +211,105 @@ function resumableLiveClient({
 }
 
 describe('standalone image generation service', () => {
+  it('publishes English bullets using the accepted image-plan limit and recovers completed images without model calls', async (t) => {
+    const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-english-bullet-'));
+    t.after(() => rm(outputRoot, { recursive: true, force: true }));
+    const source = validSource();
+    const bullet = '全称：Executive Master of Business Administration';
+    source.imagePlan[1].bullets[0] = bullet;
+    assert.equal([...bullet].length, 46);
+    assert.equal(imagePlanBulletCount(bullet), 12);
+
+    const result = await generateStandaloneImages({
+      source, mode: 'LIVE', outputRoot, runId: RECOVERY_SOURCE_RUN_ID,
+      runtime: resumableLiveClient({ source }),
+    });
+    assert.equal(result.status, 'COMPLETED');
+    assert.equal(result.images[1].layout.allowedVisibleText.bullets[0], bullet);
+    const progress = await readStandaloneImageProgress({ outputRoot, runId: RECOVERY_SOURCE_RUN_ID });
+    assert.equal(progress.result.images[1].layout.allowedVisibleText.bullets[0], bullet);
+
+    const sourceDirectory = join(outputRoot, 'standalone-image-generations', RECOVERY_SOURCE_RUN_ID);
+    const originals = await Promise.all(result.images.map(image => readFile(join(sourceDirectory, image.file))));
+    // Model the historical failure after accepted image and quality checkpoints,
+    // before the result manifest was successfully published.
+    await unlink(join(sourceDirectory, 'result.json'));
+    await writeFile(join(sourceDirectory, 'progress.json'), JSON.stringify({
+      ...progress, status: 'FAILED', stage: 'FAILED', result: null,
+      diagnostic: { stage: 'QUALITY_CHECK', code: 'QUALITY_CHECK_FAILED', message: 'legacy 40-character serializer limit' },
+    }));
+    const resumedRuntime = resumableLiveClient({ source });
+    for (const method of ['runText', 'runVision', 'runImage', 'runImageEdit']) {
+      resumedRuntime.client[method] = () => assert.fail(`${method} must not run when all checkpoints are reusable`);
+    }
+    const recovered = await retryStandaloneImageRun({
+      sourceRunId: RECOVERY_SOURCE_RUN_ID, runId: RECOVERY_RUN_ID, outputRoot, runtime: resumedRuntime,
+    });
+    assert.equal(recovered.status, 'COMPLETED');
+    assert.equal(recovered.images[1].layout.allowedVisibleText.bullets[0], bullet);
+    for (const [index, image] of recovered.images.entries()) {
+      const saved = await readStandaloneImageFile({ outputRoot, runId: RECOVERY_RUN_ID, file: image.file });
+      assert.deepEqual(saved.content, originals[index]);
+    }
+  });
+
+  it('preserves the raw bullet safety limit and business-length validation when publishing stored results', async (t) => {
+    const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-bullet-limit-'));
+    t.after(() => rm(outputRoot, { recursive: true, force: true }));
+    const source = validSource();
+    source.imagePlan[1].bullets[0] = 'a'.repeat(IMAGE_PLAN_BULLET_HARD_MAX);
+    const result = await generateStandaloneImages({
+      source, mode: 'LIVE', outputRoot, runId: RUN_ID, runtime: resumableLiveClient({ source }),
+    });
+    assert.equal(result.images[1].layout.allowedVisibleText.bullets[0].length, IMAGE_PLAN_BULLET_HARD_MAX);
+    const resumedRuntime = resumableLiveClient({ source });
+    for (const method of ['runText', 'runVision', 'runImage', 'runImageEdit']) {
+      resumedRuntime.client[method] = () => assert.fail(`${method} must not run when all checkpoints are reusable`);
+    }
+    const recovered = await retryStandaloneImageRun({
+      sourceRunId: RUN_ID, runId: RECOVERY_RUN_ID, outputRoot, runtime: resumedRuntime, allowInterrupted: true,
+    });
+    assert.equal(recovered.images[1].layout.allowedVisibleText.bullets[0].length, IMAGE_PLAN_BULLET_HARD_MAX);
+    const progress = await readStandaloneImageProgress({ outputRoot, runId: RUN_ID });
+    const decomposedBullet = 'e\u0301'.repeat(IMAGE_PLAN_BULLET_HARD_MAX);
+    assert.equal(visibleCharacterCount(decomposedBullet), IMAGE_PLAN_BULLET_HARD_MAX);
+    source.imagePlan[1].bullets[0] = decomposedBullet;
+    assert.equal(normalizeStandaloneImageSource(source).imagePlan[1].bullets[0], decomposedBullet);
+    progress.result.images[1].layout.allowedVisibleText.bullets[0] = decomposedBullet;
+    progress.result.images[1].layout.mustShow[2] = `文字：${decomposedBullet}`;
+    await writeFile(join(outputRoot, 'standalone-image-generations', RUN_ID, 'progress.json'), JSON.stringify(progress));
+    const stored = await readStandaloneImageProgress({ outputRoot, runId: RUN_ID });
+    assert.equal(stored.result.images[1].layout.allowedVisibleText.bullets[0], decomposedBullet);
+    progress.result.images[1].layout.allowedVisibleText.bullets[0] += 'a';
+    await writeFile(join(outputRoot, 'standalone-image-generations', RUN_ID, 'progress.json'), JSON.stringify(progress));
+    await assert.rejects(readStandaloneImageProgress({ outputRoot, runId: RUN_ID }),
+      /images\[1\]\.layout\.allowedVisibleText\.bullets\[0\] must contain between 1 and 200 characters/u);
+    source.imagePlan[1].bullets[0] += 'a';
+    assert.throws(() => normalizeStandaloneImageSource(source), /cannot exceed 200 characters/u);
+    source.imagePlan[1].bullets[0] = '中'.repeat(31);
+    assert.throws(() => normalizeStandaloneImageSource(source), /cannot exceed 30 image-plan characters/u);
+  });
+
+  it('reports result serialization failures as finalization failures after quality checking completes', async (t) => {
+    const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-finalization-failure-'));
+    t.after(() => rm(outputRoot, { recursive: true, force: true }));
+    const source = validSource();
+    let visualPlan;
+    await assert.rejects(generateStandaloneImages({
+      source, mode: 'LIVE', outputRoot, runId: FAILURE_RUN_ID, runtime: resumableLiveClient({ source }),
+      onVisualPlan: plan => { visualPlan = plan.value; },
+      onProgress: progress => {
+        if (progress.stage === 'QUALITY_CHECK' && progress.progressPercent === 92) {
+          visualPlan.pages[1].allowedVisibleText.bullets[0] = 'a'.repeat(IMAGE_PLAN_BULLET_HARD_MAX + 1);
+        }
+      },
+    }), error => error.stage === 'FINALIZING' && /结果保存失败/u.test(error.message));
+    const progress = await readStandaloneImageProgress({ outputRoot, runId: FAILURE_RUN_ID });
+    assert.equal(progress.diagnostic.stage, 'FINALIZING');
+    assert.equal(progress.generatedImages, 3);
+    assert.equal(progress.validatedImages, 3);
+  });
+
   it('allows an empty subtitle through quality-check result publishing', async (t) => {
     const outputRoot = await mkdtemp(join(tmpdir(), 'standalone-empty-subtitle-'));
     t.after(() => rm(outputRoot, { recursive: true, force: true }));
