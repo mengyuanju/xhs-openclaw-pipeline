@@ -42,7 +42,7 @@ test('image worker polling is opt-in and model edits share the executor image la
   assert.match(repository, /COUNT\(\*\) FILTER \(WHERE execution\.kind = 'IMAGE'\) AS image_count/u);
   assert.match(repository, /STALE_EXECUTION/u);
   assert.match(repository, /current_execution_id/u);
-  assert.match(repository,/imageEditExecutorVersion: 13/u);
+  assert.match(repository,/imageEditExecutorVersion: 14/u);
   assert.match(repository,/edit\.operation <> 'SVG_DISCLOSURE'/u);
   assert.match(repository,/edit\.operation = 'TEXT' OR edit\.operation LIKE 'AI_%' THEN 7/u);
   assert.match(repository,/image_edit_request_id/u);

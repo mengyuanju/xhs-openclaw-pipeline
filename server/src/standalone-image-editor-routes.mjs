@@ -50,7 +50,7 @@ export function installStandaloneImageEditorRoutes(router,repository,storageRoot
   router.post(`${base}/workspaces/:workspaceId/image-versions/:runId/restore`,async ctx=>json(ctx,201,await service.createEdit(ctx.params.workspaceId,
     {...requireJson(ctx),operation:'RESTORE',restoreRunId:ctx.params.runId},actor(ctx))));
   router.get(`${base}/edits/:editId`,async ctx=>json(ctx,200,await service.getEdit(ctx.params.editId,actor(ctx))));
-  for(const action of ['queue','retry','apply-suggestion','cancel','accept','reject']) {
+  for(const action of ['queue','retry','apply-suggestion','regenerate-reference','cancel','accept','reject']) {
     router.post(`${base}/edits/:editId/${action}`,async ctx=>json(ctx,200,await service.action(ctx.params.editId,action,requireJson(ctx),actor(ctx))));
   }
   router.get(`${base}/assets/:assetId`,async ctx=>{

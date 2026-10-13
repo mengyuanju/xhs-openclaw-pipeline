@@ -12,7 +12,10 @@ export function installImageEditingRoutes({
       ...context,
       source: imageEditExecutorAsset(context.source),
       repairSource: imageEditExecutorAsset(context.repairSource),
-      refs: context.refs.map(imageEditExecutorAsset)
+      refs: context.refs.map(imageEditExecutorAsset),
+      ...(context.textRepairState?{textRepairState:{...context.textRepairState,
+        references:context.textRepairState.references.map(entry=>({...entry,asset:imageEditExecutorAsset(entry.asset)})),
+        locations:context.textRepairState.locations.map(entry=>({...entry,asset:imageEditExecutorAsset(entry.asset)}))}}:{})
     });
   });
   router.get('/v1/executions/:executionId/image-edit/assets/:assetId', async ctx => {
@@ -35,6 +38,19 @@ export function installImageEditingRoutes({
   router.post('/v1/executions/:executionId/image-edit/validation', async ctx => {
     const identity = imageEditExecutionIdentity(ctx);
     json(ctx, 200, await imageEditing.stageExecutorValidation(identity.executionId, identity.editId, identity.leaseToken, requireJson(ctx).validation));
+  });
+  router.post('/v1/executions/:executionId/image-edit/text-repair-checkpoint', async ctx => {
+    const identity=imageEditExecutionIdentity(ctx);
+    const input=requireJson(ctx);
+    if(Object.hasOwn(input,'bytes'))throw new TypeError('请使用标准图片编码');
+    const {base64,...checkpoint}=input;
+    if(base64!=null) {
+      if(typeof base64!=='string'||base64.length>14*1024*1024||base64.length%4!==0
+        ||!/^[A-Za-z0-9+/]*={0,2}$/u.test(base64))throw new TypeError('文字修正图片编码无效');
+      checkpoint.bytes=Buffer.from(base64,'base64');
+    }
+    const result=await imageEditing.executorTextRepairCheckpoint(identity.executionId,identity.editId,identity.leaseToken,checkpoint);
+    json(ctx,200,{...result,asset:imageEditExecutorAsset(result.asset)});
   });
   router.put('/v1/executions/:executionId/image-edit/result', async ctx => {
     if (String(ctx.request.headers['content-type'] ?? '').split(';')[0].trim() !== 'image/png') {
@@ -142,7 +158,7 @@ export function installImageEditingRoutes({
     });
     json(ctx, 200, edit);
   });
-  for (const action of ['queue', 'retry', 'apply-suggestion', 'cancel', 'accept', 'reject']) {
+  for (const action of ['queue', 'retry', 'apply-suggestion', 'regenerate-reference', 'cancel', 'accept', 'reject']) {
     router.post(`/v1/image-edits/:editId/${action}`, async ctx => {
       const actor = requestActor(ctx, ['ADMIN', 'USER']);
       const edit = await imageEditing.get(ctx.params.editId);

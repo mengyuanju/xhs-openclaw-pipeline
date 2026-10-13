@@ -12,7 +12,10 @@ import { normalizeAiDisclosureBadgeColor } from '../../src/ai-disclosure-badge.m
 import { normalizeImageEditRepairMaxAttempts } from '../../src/production-settings.mjs';
 import { createPromptRuntime } from '../../src/prompt-runtime.mjs';
 import { selectLocalEditAlternative } from '../../src/local-edit-alternatives.mjs';
-import { scheduleReferenceCleanupForAsset, scheduleReferenceCleanupForEdit, drainReferenceCleanup } from './image-reference-cleanup.mjs';
+import { scheduleReferenceCleanupForAsset, scheduleReferenceCleanupForEdit, scheduleObsoleteTextRepairCleanup, drainReferenceCleanup } from './image-reference-cleanup.mjs';
+import { normalizeTextRepairs } from '../../src/image-text-repair.mjs';
+import { initialTextRepairState, publicTextRepairState, assertTextRepairApprovedCopy, normalizeTextRepairCheckpoint,
+  textRepairArtifactMetadata, resetTextRepairReference, verifyTextRepairCompletion } from './image-text-repair-state.mjs';
 
 const REFERENCE_TASK_LIMIT_BYTES = 100 * 1024 * 1024;
 const REFERENCE_EDIT_LIMIT_BYTES = 40 * 1024 * 1024;
@@ -34,7 +37,8 @@ const IMAGE_EDIT_CREATOR_ACCOUNT_SQL = `(SELECT creator.id FROM app_users creato
   WHERE creator.username=e.created_by AND creator.created_at<e.created_at)`;
 function imageEditWithCreator(row) {
   return { ...row, created_by_account_id: row.created_by_account_id == null
-    ? null : Number(row.created_by_account_id) };
+    ? null : Number(row.created_by_account_id),
+    ...(row.operation === 'AI_TEXT_REPAIR' ? { textRepairState: publicTextRepairState(row.text_repair_state) } : {}) };
 }
 async function lockEditor(c,actor,taskId) {
   actorName(actor);
@@ -59,10 +63,12 @@ export function editStoragePath(root, stored) {
 }
 export function normalizeEdit(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('修改参数无效');
-  const allowed = ['requestId','batchId','batchSize','sourceImageRunId','sourceAssetId','copyRevisionId','sha256','targetPage','operation','instruction','preserve','negative','overlay','mask','target','references','replacements','referenceMode','targetMode','confirmation','draft','restoreRunId'];
+  const allowed = ['requestId','batchId','batchSize','sourceImageRunId','sourceAssetId','copyRevisionId','sha256','targetPage','operation','instruction','preserve','negative','overlay','mask','target','references','replacements','referenceMode','targetMode','confirmation','draft','restoreRunId','textRepairs'];
   if(Object.keys(input).some(k => !allowed.includes(k))) throw new TypeError('未知修改参数');
   const operation = input.operation;
-  if(!['TEXT','SVG_DISCLOSURE','COMPOSITE','AI_FUSION','AI_FULL','AI_LOCAL','RESTORE'].includes(operation)) throw new TypeError('修改类型无效');
+  if(!['TEXT','SVG_DISCLOSURE','COMPOSITE','AI_FUSION','AI_FULL','AI_LOCAL','AI_TEXT_REPAIR','RESTORE'].includes(operation)) throw new TypeError('修改类型无效');
+  if(operation !== 'AI_TEXT_REPAIR' && input.textRepairs != null) throw new TypeError('只有文字修正可指定错字位置');
+  const textRepairs = operation === 'AI_TEXT_REPAIR' ? normalizeTextRepairs(input.textRepairs) : null;
   if(input.batchId != null && !['TEXT','SVG_DISCLOSURE','AI_FUSION'].includes(operation)) throw new TypeError('只有人工生成标识或真实产品替换支持整套批次');
   if(input.batchSize != null && input.batchId == null)throw new TypeError('批次大小必须与批次编号同时提供');
   const usesBillableModel = operation === 'TEXT' || operation.startsWith('AI_');
@@ -143,7 +149,8 @@ export function normalizeEdit(input) {
     sourceImageRunId: normalizeUuid(input.sourceImageRunId,'sourceImageRunId'),
     sourceAssetId: normalizeTaskId(input.sourceAssetId), copyRevisionId: normalizeTaskId(input.copyRevisionId), sha256: input.sha256,
     targetPage: boundedNumber(input.targetPage,1,5), operation,
-    instruction: shortText(input.instruction ?? '',2000,operation.startsWith('AI_')), preserve: shortText(input.preserve ?? '',2000,false), negative: shortText(input.negative ?? '',2000,false),
+    instruction: shortText(input.instruction ?? (textRepairs ? `修正已框选文字：${[...new Set(textRepairs.map(item => item.correctText))].join('、')}` : ''),2000,operation.startsWith('AI_')), preserve: shortText(input.preserve ?? '',2000,false), negative: shortText(input.negative ?? '',2000,false),
+    ...(textRepairs ? { textRepairs } : {}),
     overlay,
     // New local edits locate the target from the operator's prompt. Keep accepting
     // a mask for already-created clients and queued historical requests.
@@ -378,10 +385,66 @@ export function createImageEditingService({ pool, storageRoot, onProgrammaticRea
       ||new Date(row.lease_expires_at)<=new Date())conflict('图片修改执行已取消或租约过期');
     return row;
   }
+  async function hydrateTextRepairState(c,e) {
+    if(e.operation !== 'AI_TEXT_REPAIR')return null;
+    const state=e.text_repair_state?.references?e.text_repair_state:initialTextRepairState(e.config.textRepairs);
+    const ids=[...state.references,...state.locations].map(entry=>entry.assetId).filter(Number.isSafeInteger);
+    const assets=ids.length?(await c.query('SELECT * FROM assets WHERE task_id=$1 AND id=ANY($2::bigint[]) AND content_cleared_at IS NULL',[e.task_id,ids])).rows:[];
+    const hydrate=entry=>{
+      if(!entry.assetId)return entry;
+      const asset=assets.find(asset=>Number(asset.id)===entry.assetId&&asset.sha256===entry.sha256
+        &&asset.edit_metadata?.editId===e.id);
+      if(!asset)conflict('文字修正资产已变化或不可用');
+      return {...entry,asset};
+    };
+    return {...state,references:state.references.map(hydrate),locations:state.locations.map(hydrate)};
+  }
+  async function saveTextRepairCheckpoint(c,e,input) {
+    const state=e.text_repair_state?.references?e.text_repair_state:initialTextRepairState(e.config.textRepairs);
+    const checkpoint=normalizeTextRepairCheckpoint(input,e.config,state);
+    const entries=checkpoint.item?state.locations:state.references;
+    const current=entries.find(entry=>checkpoint.item?entry.id===checkpoint.item.id:entry.text===checkpoint.text);
+    if(checkpoint.kind==='STATUS'&&['READY','COMPLETED'].includes(current.status))return current;
+    let entry;
+    if(checkpoint.kind==='STATUS') {
+      entry={...current,status:checkpoint.status,message:checkpoint.message};
+      if(sameJson(current,entry))return entry;
+    } else {
+      const metadata=await textRepairArtifactMetadata(checkpoint,state);
+      if(current.assetId&&current.sha256===metadata.sha256&&current.status===checkpoint.status
+        &&sameJson(current.validation,checkpoint.validation)&&sameJson(current.rect??null,checkpoint.rect)) {
+        const asset=(await c.query('SELECT * FROM assets WHERE id=$1 AND task_id=$2 AND content_cleared_at IS NULL',[current.assetId,e.task_id])).rows[0];
+        if(!asset||asset.sha256!==current.sha256)conflict('文字修正资产已变化');
+        return {...current,asset};
+      }
+      if(['READY','COMPLETED'].includes(current.status))conflict('已完成的字形或位置不能在执行中替换，请重新生成参考后重做');
+      const source=await assertEditSource(c,Number(e.task_id),e.config,{allowCompatibleCurrentRun:true});
+      const asset=await storeAsset(c,Number(e.task_id),source.run,checkpoint.bytes,
+        checkpoint.kind==='REFERENCE'?'TEXT_REFERENCE':'TEXT_PATCH',
+        {editId:e.id,text:checkpoint.text,locationId:checkpoint.item?.id??null,...metadata},e.source_asset_id);
+      entry={...current,...metadata,status:checkpoint.status,validation:checkpoint.validation,
+        assetId:Number(asset.id),url:`/v1/assets/${asset.id}`,
+        ...(checkpoint.rect?{rect:checkpoint.rect,referenceSha256:state.references.find(value=>value.text===checkpoint.text).sha256}:{}),
+        asset};
+    }
+    const storedEntry={...entry};delete storedEntry.asset;
+    const next={...state,revision:(state.revision??0)+1,
+      references:checkpoint.item?state.references:state.references.map(value=>value.text===checkpoint.text?storedEntry:value),
+      locations:checkpoint.item?state.locations.map(value=>value.id===checkpoint.item.id?storedEntry:value):state.locations};
+    await c.query('UPDATE image_edit_requests SET text_repair_state=$2,version=version+1,updated_at=now() WHERE id=$1',[e.id,next]);
+    if(checkpoint.kind!=='STATUS'&&current.assetId&&current.assetId!==entry.assetId) {
+      await scheduleObsoleteTextRepairCleanup(c,e.task_id,e.id);
+    }
+    if(e.execution_id)await c.query("UPDATE task_executions SET last_activity_at=now(),progress_message=$2 WHERE id=$1 AND status='RUNNING'",
+      [e.execution_id,checkpoint.kind==='REFERENCE'?`正确字形“${checkpoint.text}”参考已生成`:
+        checkpoint.kind==='LOCATION'?`“${checkpoint.text}”对应位置已处理`:(checkpoint.message||'正在修正图片文字')]);
+    return entry;
+  }
   async function loadContext(c,e) {
     // An existing one-page edit remains valid when only other pages have been
     // adopted since it was created. Acceptance rebases it onto the latest run.
     const source=await assertEditSource(c,Number(e.task_id),e.config,{allowCompatibleCurrentRun:true});
+    assertTextRepairApprovedCopy(source.task,source.revision,source.run,e.config);
     const refs=(await c.query('SELECT a.* FROM image_edit_reference_assets r JOIN assets a ON a.id=r.asset_id AND a.content_cleared_at IS NULL WHERE r.request_id=$1 ORDER BY r.sort_order',[e.id])).rows;
     const bindings=(await c.query('SELECT asset_id,sha256 FROM image_edit_reference_assets WHERE request_id=$1',[e.id])).rows;
     if(refs.length!==e.config.references.length||refs.some(a=>!bindings.some(b=>Number(b.asset_id)===Number(a.id)&&b.sha256===a.sha256))) conflict('参考图绑定或校验值变化');
@@ -399,7 +462,8 @@ export function createImageEditingService({ pool, storageRoot, onProgrammaticRea
     const page=Number(e.target_page);
     const run={...source.run,result:imageResultScopedToPage(source.run.result,page)};
     const executorSettings=imageSettingsScopedToPage(settings,source.run.result,page);
-    return {...source,run,refs,settings:executorSettings,restored,imageEditPrompt,repairSource};
+    return {...source,run,refs,settings:executorSettings,restored,imageEditPrompt,repairSource,
+      ...(e.operation==='AI_TEXT_REPAIR'?{textRepairState:await hydrateTextRepairState(c,e)}:{})};
   }
   async function get(id) {
     const row=(await pool.query(`SELECT e.*,${IMAGE_EDIT_CREATOR_ACCOUNT_SQL} AS created_by_account_id,row_to_json(r) AS result,
@@ -414,17 +478,21 @@ export function createImageEditingService({ pool, storageRoot, onProgrammaticRea
       FROM image_edit_requests e WHERE e.id=$1 FOR UPDATE OF e`,[id])).rows[0];
     const previous=(await c.query('SELECT * FROM image_edit_events WHERE task_id=$1 AND request_id=$2',[e.task_id,requestId])).rows[0];
     if(previous) { if(previous.edit_id !== id || previous.action !== action || previous.reason !== reason || previous.actor !== username
-      || (action==='apply-suggestion' && (previous.detail?.suggestionId??null)!==(input.suggestionId??null))) conflict('requestId 已用于其他操作'); return imageEditWithCreator(e); }
+      || (action==='apply-suggestion' && (previous.detail?.suggestionId??null)!==(input.suggestionId??null))
+      || (action==='regenerate-reference' && previous.detail?.text!==input.text)) conflict('requestId 已用于其他操作'); return imageEditWithCreator(e); }
     if(e.version !== version) conflict('编辑状态已更新，请刷新');
-    const states={queue:['DRAFT'],retry:['FAILED'],'apply-suggestion':['FAILED'],cancel:['DRAFT','QUEUED','RUNNING','PREVIEW_READY','FAILED'],reject:['PREVIEW_READY'],accept:['PREVIEW_READY','FAILED']};
+    const states={queue:['DRAFT'],retry:['FAILED'],'apply-suggestion':['FAILED'],'regenerate-reference':['FAILED','PREVIEW_READY'],cancel:['DRAFT','QUEUED','RUNNING','PREVIEW_READY','FAILED'],reject:['PREVIEW_READY'],accept:['PREVIEW_READY','FAILED']};
     if(!states[action]?.includes(e.status)) conflict('当前编辑状态不允许此操作');
+    if(action==='regenerate-reference'&&(e.operation!=='AI_TEXT_REPAIR'||input.confirmation!=='LIVE_IMAGE_COST_ACCEPTED')) {
+      throw new TypeError('重新生成字形参考会再次调用模型，请确认费用');
+    }
     const usesBillableModel=e.operation==='TEXT'||e.operation.startsWith('AI_');
     const confirmsCost=e.config?.confirmation==='LIVE_IMAGE_COST_ACCEPTED'||input.confirmation==='LIVE_IMAGE_COST_ACCEPTED';
     if(['queue','retry','apply-suggestion'].includes(action)&&usesBillableModel&&!confirmsCost) throw new TypeError('请确认图片编辑或视觉校验模型费用');
     if(action==='retry'&&input.useRejectedPreview===true&&input.confirmation!=='LIVE_IMAGE_COST_ACCEPTED') {
       throw new TypeError('基于失败图定向修复会再次调用图片模型，请重新确认费用');
     }
-    const editSource=['queue','retry','apply-suggestion','accept'].includes(action)
+    const editSource=['queue','retry','apply-suggestion','accept','regenerate-reference'].includes(action)
       ? await assertEditSource(c,Number(e.task_id),e.config,{
         allowCompatibleCurrentRun:true,
         // A ready preview is an explicit version choice. It may replace another
@@ -446,7 +514,13 @@ export function createImageEditingService({ pool, storageRoot, onProgrammaticRea
       if(acceptedRejectedPreview&&input.acceptRejectedResult!==true)conflict('请明确确认采用未通过自动验收的结果');
       if(!acceptedRejectedPreview&&r.validation?.passed!==true)conflict('图片校验未通过');
       const output=(await c.query('SELECT * FROM assets WHERE id=$1 AND task_id=$2',[r.asset_id,e.task_id])).rows[0];
-      if(!output || imageHash(await readFile(editStoragePath(storageRoot,output.storage_path)))!==output.sha256 || output.sha256!==r.validation.integrity?.sha256) conflict('预览图片完整性校验失败');
+      if(!output || output.content_cleared_at)conflict('当前请求没有可采用的图片结果');
+      if(acceptedRejectedPreview&&(output.asset_role!=='REJECTED_PREVIEW'||output.image_run_id!==r.image_run_id
+        ||output.edit_metadata?.editId!==e.id||Number(output.parent_asset_id)!==Number(e.source_asset_id)
+        ||Number(output.edit_metadata?.targetPage)!==Number(e.target_page)))conflict('失败预览不属于当前修改请求');
+      const outputBytes=await readFile(editStoragePath(storageRoot,output.storage_path));
+      if(imageHash(outputBytes)!==output.sha256 || output.sha256!==r.validation.integrity?.sha256) conflict('预览图片完整性校验失败');
+      if(acceptedRejectedPreview)await previewMetadata(outputBytes);
       if(acceptedRejectedPreview)await c.query("UPDATE assets SET asset_role='DELIVERY' WHERE id=$1 AND task_id=$2",[output.id,e.task_id]);
       await withdrawReadyDeliveryEntries(c,e.task_id,'IMAGE_MANUAL_EDIT_ACCEPTED');
       let adoptedRunId=r.image_run_id;
@@ -475,15 +549,23 @@ export function createImageEditingService({ pool, storageRoot, onProgrammaticRea
         image_reviewed_at=NULL,image_reviewed_by_user_id=NULL,
         progress_message='图片修改已采用，请重新提交图片初审',updated_at=now() WHERE id=$1`,[e.task_id,adoptedRunId]);
     }
-    const next={queue:'QUEUED',retry:'QUEUED','apply-suggestion':'QUEUED',cancel:'CANCELLED',reject:'REJECTED',accept:'ACCEPTED'}[action];
+    const next={queue:'QUEUED',retry:'QUEUED','apply-suggestion':'QUEUED','regenerate-reference':'QUEUED',cancel:'CANCELLED',reject:'REJECTED',accept:'ACCEPTED'}[action];
     let config=usesBillableModel&&input.confirmation==='LIVE_IMAGE_COST_ACCEPTED'?{...e.config,confirmation:'LIVE_IMAGE_COST_ACCEPTED'}:e.config;
     const previousPageAssetId=Number(editSource?.currentPage?.deliveryAssetId??editSource?.currentPage?.assetId);
     const replacesCurrentPage=action==='accept'&&editSource.currentRun.id!==e.source_image_run_id
       &&previousPageAssetId!==Number(e.source_asset_id);
     let auditDetail={
-      ...(acceptedRejectedPreview?{acceptedRejectedPreview:true,validationPassed:false}:{}),
+      ...(acceptedRejectedPreview?{acceptedRejectedPreview:true,manualOverride:true,validationPassed:false}:{}),
       ...(replacesCurrentPage?{replacedCurrentPage:true,previousAssetId:previousPageAssetId}:{}),
     };
+    if(action==='regenerate-reference') {
+      const text=shortText(input.text,32);
+      const state=resetTextRepairReference(e.text_repair_state,text);
+      if(Number(e.attempts)>=3)conflict('已达到三次执行上限，请创建新的文字修正请求');
+      await c.query('UPDATE image_edit_requests SET text_repair_state=$2 WHERE id=$1',[id,state]);
+      await scheduleObsoleteTextRepairCleanup(c,e.task_id,id);
+      auditDetail={text,regeneratedReference:true,invalidatedLocations:e.config.textRepairs.filter(item=>item.correctText===text).map(item=>item.id)};
+    }
     if(action==='retry') {
       if(retryResolution.targetedRepair) {
         const localRepair=retryResolution.localRepair;
@@ -548,7 +630,8 @@ export function createImageEditingService({ pool, storageRoot, onProgrammaticRea
       imageEditRepairMaxAttempts:normalizeImageEditRepairMaxAttempts(productionSettings.imageEditRepairMaxAttempts),
       ...(imageEditPrompt?{imageEditPrompt}:{}),
     };
-    await assertEditSource(c,taskId,config);
+    const editSource=await assertEditSource(c,taskId,config);
+    assertTextRepairApprovedCopy(editSource.task,editSource.revision,editSource.run,config);
     let bytes=0,pixels=0;
     for(const ref of config.references) {
       const a=(await c.query("SELECT * FROM assets WHERE id=$1 AND task_id=$2 AND asset_role='REFERENCE' AND content_cleared_at IS NULL",[ref.assetId,taskId])).rows[0];
@@ -557,8 +640,8 @@ export function createImageEditingService({ pool, storageRoot, onProgrammaticRea
     }
     assertEditReferenceQuota({ bytes, pixels });
     const id=randomUUID();
-    const row=(await c.query(`INSERT INTO image_edit_requests(id,task_id,request_id,source_image_run_id,source_asset_id,copy_revision_id,source_sha256,target_page,operation,config,status,created_by)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,[id,taskId,config.requestId,config.sourceImageRunId,config.sourceAssetId,config.copyRevisionId,config.sha256,config.targetPage,config.operation,config,config.draft?'DRAFT':'QUEUED',username])).rows[0];
+    const row=(await c.query(`INSERT INTO image_edit_requests(id,task_id,request_id,source_image_run_id,source_asset_id,copy_revision_id,source_sha256,target_page,operation,config,status,created_by,text_repair_state)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,[id,taskId,config.requestId,config.sourceImageRunId,config.sourceAssetId,config.copyRevisionId,config.sha256,config.targetPage,config.operation,config,config.draft?'DRAFT':'QUEUED',username,config.operation==='AI_TEXT_REPAIR'?initialTextRepairState(config.textRepairs):{}])).rows[0];
     for(const [i,ref] of config.references.entries()) await c.query('INSERT INTO image_edit_reference_assets(request_id,asset_id,purpose,sort_order,sha256) SELECT $1,id,$3,$4,sha256 FROM assets WHERE id=$2',[id,ref.assetId,ref.purpose,i]);
     // Drafts and previews leave the approved version deliverable until acceptance.
     await audit(c,taskId,id,'CREATE',username,config.instruction || config.operation);
@@ -570,12 +653,22 @@ export function createImageEditingService({ pool, storageRoot, onProgrammaticRea
     async executorContext(executionId,editId,leaseToken) {
       return tx(async c=>loadContext(c,await lockedExecutorEdit(c,executionId,editId,leaseToken)));
     },
+    async executorTextRepairCheckpoint(executionId,editId,leaseToken,input) {
+      const result=await tx(async c=>saveTextRepairCheckpoint(c,await lockedExecutorEdit(c,executionId,editId,leaseToken),input));
+      if(input.kind!=='STATUS'&&result.asset?.task_id) {
+        await drainReferenceCleanup(pool,storageRoot,{taskId:result.asset.task_id,limit:32}).catch(()=>{});
+      }
+      return result;
+    },
     async executorAsset(executionId,editId,leaseToken,assetId) {
       return tx(async c=>{
         const e=await lockedExecutorEdit(c,executionId,editId,leaseToken);
         const context=await loadContext(c,e);
         const allowed=new Set([Number(context.source.id),...context.refs.map(asset=>Number(asset.id))]);
         if(context.repairSource)allowed.add(Number(context.repairSource.id));
+        for(const entry of [...(context.textRepairState?.references??[]),...(context.textRepairState?.locations??[])]) {
+          if(entry.assetId)allowed.add(entry.assetId);
+        }
         if(context.restored)for(const image of context.restored.result?.images??[]) {
           const id=Number(image.deliveryAssetId??image.assetId);
           if(Number.isSafeInteger(id))allowed.add(id);
@@ -885,7 +978,7 @@ export function createImageEditingService({ pool, storageRoot, onProgrammaticRea
         await c.query('SELECT id FROM tasks WHERE id=$1 FOR UPDATE',[initial.task_id]);
         return applyAction(c,initial.id,action,input,actor);
       });
-      if(action==='reject'||action==='cancel')await drainReferenceCleanup(pool,storageRoot,{taskId:initial.task_id}).catch(()=>{});
+      if(action==='reject'||action==='cancel'||action==='regenerate-reference')await drainReferenceCleanup(pool,storageRoot,{taskId:initial.task_id}).catch(()=>{});
       if(action==='queue'||action==='retry')await notifyProgrammaticReady([updated]);
       return updated;
     },
@@ -990,6 +1083,16 @@ export function createImageEditingService({ pool, storageRoot, onProgrammaticRea
     async context(e) {
       return tx(c=>loadContext(c,e));
     },
+    async textRepairCheckpoint(e,input) {
+      const result=await tx(async c=>{
+        const locked=(await c.query('SELECT * FROM image_edit_requests WHERE id=$1 FOR UPDATE',[e.id])).rows[0];
+        if(!locked||locked.status!=='RUNNING'||locked.lease_token!==e.lease_token
+          ||new Date(locked.lease_expires_at)<=new Date())conflict('执行已取消或租约过期');
+        return saveTextRepairCheckpoint(c,locked,input);
+      });
+      if(input.kind!=='STATUS')await drainReferenceCleanup(pool,storageRoot,{taskId:e.task_id,limit:32}).catch(()=>{});
+      return result;
+    },
     async readAsset(asset) { const bytes=await readFile(editStoragePath(storageRoot,asset.storage_path)); if(imageHash(bytes)!==asset.sha256) throw new Error('资产完整性校验失败'); return bytes; },
     async complete(e,{bytes,mask,validation,originalResult}) {
       return tx(async c=> {
@@ -1000,6 +1103,18 @@ export function createImageEditingService({ pool, storageRoot, onProgrammaticRea
         await previewMetadata(bytes);
         if(validation?.integrity?.sha256!==imageHash(bytes))throw new TypeError('图片修改结果与校验哈希不一致');
         if(validation?.passed!==true) throw new TypeError('校验未通过');
+        if(e.operation==='AI_TEXT_REPAIR') {
+          const original=await readFile(editStoragePath(storageRoot,source.source.storage_path));
+          if(imageHash(original)!==locked.source_sha256)throw new TypeError('源图片完整性校验失败');
+          const verified=await verifyTextRepairCompletion({config:locked.config,state:locked.text_repair_state,source:original,result:bytes,
+            readAsset:async(assetId,sha256)=>{
+              const patch=(await c.query("SELECT * FROM assets WHERE id=$1 AND task_id=$2 AND sha256=$3 AND asset_role='TEXT_PATCH' AND content_cleared_at IS NULL",[assetId,e.task_id,sha256])).rows[0];
+              if(!patch||patch.edit_metadata?.editId!==e.id)throw new TypeError('文字修正片段不属于当前请求');
+              return readFile(editStoragePath(storageRoot,patch.storage_path));
+            }});
+          mask=verified.mask;
+          validation={...validation,textRepair:{...(validation.textRepair??{}),centralVerification:{passed:true,regions:verified.regions,outside:verified.outside}}};
+        }
         const run=(await c.query("INSERT INTO image_runs(id,task_id,execution_id,copy_revision_id,status,image_production_chain_id,finished_at) VALUES($1,$2,$3,$4,'COMPLETED',$1,now()) RETURNING *",[randomUUID(),e.task_id,e.execution_id??null,e.copy_revision_id])).rows[0];
         const asset=await storeAsset(c,Number(e.task_id),run,bytes,'DELIVERY',{operation:e.operation,editId:e.id,targetPage:Number(e.target_page),disclosure:e.config.overlay?.disclosureType?{type:e.config.overlay.disclosureType,text:e.config.overlay.text}:null,validation},e.source_asset_id,
           orderedImageFileName(source.source.original_name,e.target_page,'image/png'));
@@ -1034,7 +1149,8 @@ export function createImageEditingService({ pool, storageRoot, onProgrammaticRea
         if(!locked||locked.status!=='RUNNING'||locked.lease_token!==e.lease_token||new Date(locked.lease_expires_at)<=new Date())conflict('执行已取消或租约过期');
         const safeError=String(error?.message??'图片修改失败').replace(/sk-[\w-]+|Bearer\s+\S+/gu,'[REDACTED]').slice(0,1000);
         const {sha256}=await previewMetadata(preview.bytes);
-        const validation={...(error?.validation??{}),passed:false,billedImageGeneration:true,
+        const validation={...(error?.validation??{}),passed:false,
+          billedImageGeneration:e.operation==='AI_TEXT_REPAIR'?error?.validation?.billedImageGeneration===true:true,
           integrity:{...(error?.validation?.integrity??{}),sha256}};
         const run=(await c.query("INSERT INTO image_runs(id,task_id,execution_id,copy_revision_id,status,image_production_chain_id,result,finished_at) VALUES($1,$2,$3,$4,'FAILED',$1,$5,now()) RETURNING *",
           [randomUUID(),e.task_id,e.execution_id??null,e.copy_revision_id,{failure:safeError}])).rows[0];

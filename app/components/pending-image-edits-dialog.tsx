@@ -35,7 +35,7 @@ type Props = {
   onResolved: (remaining: PendingImageEdit[]) => Promise<void>;
 };
 const statusLabels: Record<string, string> = { DRAFT: '草稿', QUEUED: '排队中', RUNNING: '执行中', PREVIEW_READY: '结果待确认' };
-const operationLabels: Record<string, string> = { TEXT: '添加文字', SVG_DISCLOSURE: '添加标识', AI_LOCAL: '局部修改', AI_FUSION: '产品替换', RESTORE: '恢复版本' };
+const operationLabels: Record<string, string> = { TEXT: '添加文字', SVG_DISCLOSURE: '添加标识', AI_LOCAL: '局部修改', AI_FUSION: '产品替换', AI_TEXT_REPAIR: '修正错字', RESTORE: '恢复版本' };
 const endpoint = (taskId: number) => `/api/control-plane/v1/tasks/${taskId}/image-edits`;
 
 function EditInstruction({ instruction }: { instruction?: string }) {

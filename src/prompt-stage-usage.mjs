@@ -4,7 +4,7 @@ export const PROMPT_STAGE_USAGE = Object.freeze({
   VISUAL_PLAN_SYSTEM: { usage: '启用视觉规划时调用，仅规划画面；关闭时跳过模型，由程序适配布局。', callSites: ['src/visual-plan.mjs#buildVisualPlanPrompt'] },
   LAYOUT_CATALOG_SYSTEM: { usage: '管理员在布局库生成候选模板时调用；不参与每次正文生成。', callSites: ['src/layout-catalog-generation.mjs#generateLayoutCandidates'] },
   IMAGE_SYSTEM: { usage: '生成每一张完整图文图片时调用，与锁定文字和当前页面数据共同传入图片模型。', callSites: ['src/image-prompt.mjs#buildGovernedImageTaskPrompt'] },
-  IMAGE_EDIT_SYSTEM: { usage: '人工生成标识、产品融合或局部修改时调用；与本次操作对应的图片编辑补充模板组合。', callSites: ['server/src/image-edit-renderer.mjs#governedImageEditPrompt', 'src/admin/image-edit-worker.mjs'] },
+  IMAGE_EDIT_SYSTEM: { usage: '人工生成标识、产品融合、局部修改及错字定位、替换、最终检查时调用；独立字形参考生成和参考校验不继承海报编辑规则。', callSites: ['server/src/image-edit-renderer.mjs#governedImageEditPrompt', 'server/src/image-text-repair-renderer.mjs#renderImageTextRepair', 'src/admin/image-edit-worker.mjs'] },
   QUERY_REVIEW_SYSTEM: { usage: '启用 Query 筛选后，在生成正文前判断准入；默认关闭。', callSites: ['src/content-stage-review.mjs#buildQueryReviewPrompt'] },
   TEXT_REVIEW_SYSTEM: { usage: '自动文案审核启用时检查正文和证据；当前分布式文案流程跳过自动文案审核。', callSites: ['src/content-stage-review.mjs#buildTextReviewPrompt'] },
   COPY_LENGTH_REPAIR_SYSTEM: { usage: '正文长度或句子完整性校验失败时调用，只修改正文；常规修复后仍超长时，复用此规则自动继续压缩最多两次。', callSites: ['src/copy-generation.mjs#buildPostRepairPrompt'] },

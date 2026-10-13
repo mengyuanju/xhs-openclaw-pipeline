@@ -38,6 +38,15 @@ function timeout(value, minimum = 5000, maximum = 540_000) {
   return value;
 }
 
+function imageCanvas(value) {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).some(key => !['width', 'height'].includes(key))
+    || ![value.width, value.height].every(size => Number.isInteger(size) && size >= 32 && size <= 4096)
+    || value.width * value.height > 16_000_000) throw new TypeError('image canvas dimensions are invalid');
+  return { width: value.width, height: value.height };
+}
+
 function validSearchResult(item) {
   if (!item || typeof item.title !== 'string' || typeof item.snippet !== 'string' || typeof item.url !== 'string') return false;
   try {
@@ -67,7 +76,7 @@ export function createCodexClient({
   const command = () => executable ?? resolveCodexExecutable(environment);
   const generatedRoot = join(environment.CODEX_HOME || join(homedir(), '.codex'), 'generated_images');
 
-  async function executeOnce({ prompt, model, thinking = 'low', timeoutMs = 180_000, inputPaths, operation = 'TEXT', outputPath, outputSchema, signal,
+  async function executeOnce({ prompt, model, thinking = 'low', timeoutMs = 180_000, inputPaths, operation = 'TEXT', outputPath, outputSchema, signal, canvas,
     routing }) {
     const image = ['IMAGE', 'IMAGE_EDIT'].includes(operation);
     const search = operation === 'WEB_SEARCH';
@@ -94,10 +103,13 @@ export function createCodexClient({
         const prepared = inputPaths ? await prepareCodexImageInputs(inputPaths, directory, { preview: !image }) : { paths: [], diagnostics: [] };
         const images = prepared.paths;
         attachments = images;
+        const attachmentInstructions = image ? internalPrompt(operation === 'IMAGE_EDIT'
+          ? 'INTERNAL_CODEX_EDIT_ATTACHMENT' : 'INTERNAL_CODEX_IMAGE_ATTACHMENT') : '';
         const instructions = image
-          ? internalPrompt('INTERNAL_CODEX_IMAGE_EXECUTION', { slot1: (operation === 'IMAGE_EDIT'
-            ? internalPrompt('INTERNAL_CODEX_EDIT_ATTACHMENT')
-            : internalPrompt('INTERNAL_CODEX_IMAGE_ATTACHMENT')), slot2: (GENERATION_IMAGE_SIZE), slot3: (DELIVERY_IMAGE_WIDTH), slot4: (DELIVERY_IMAGE_HEIGHT) })
+          ? (canvas ? internalPrompt('INTERNAL_CODEX_IMAGE_CROP_EXECUTION', {
+            slot1: attachmentInstructions, slot2: canvas.width, slot3: canvas.height,
+          }) : internalPrompt('INTERNAL_CODEX_IMAGE_EXECUTION', { slot1: attachmentInstructions,
+            slot2: GENERATION_IMAGE_SIZE, slot3: DELIVERY_IMAGE_WIDTH, slot4: DELIVERY_IMAGE_HEIGHT }))
             + (images.length ? '\n' + internalPrompt('INTERNAL_CODEX_IMAGE_PATHS', { slot1: JSON.stringify(images) }) : '')
           : search
             ? internalPrompt('INTERNAL_CODEX_SEARCH_EXECUTION')
@@ -250,10 +262,11 @@ export function createCodexClient({
   async function imageRequest(input, edit) {
     promptText(input.prompt, 10, 200_000);
     if (typeof input.outputPath !== 'string' || !input.outputPath || input.outputPath.length > 1000) throw new TypeError('outputPath is invalid');
+    const canvas = imageCanvas(input.canvas);
     const config = configuration();
     if (modelName(input.model, config.imageModel) !== 'openai/gpt-image-2') throw new TypeError('Codex built-in images require openai/gpt-image-2');
     if (edit && (!Array.isArray(input.inputPaths) || !input.inputPaths.length)) throw new TypeError('image edit requires input images');
-    return execute({ ...input, model: config.textModel, outputPath: resolve(input.outputPath), timeoutMs: input.timeoutMs ?? config.imageTimeoutMs,
+    return execute({ ...input, canvas, model: config.textModel, outputPath: resolve(input.outputPath), timeoutMs: input.timeoutMs ?? config.imageTimeoutMs,
       operation: edit ? 'IMAGE_EDIT' : 'IMAGE' });
   }
   return withWebSearchProvider(client, { environment, fetchImpl, settings: modelApi });

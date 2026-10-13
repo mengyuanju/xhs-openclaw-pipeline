@@ -344,6 +344,7 @@ export async function executeImageEditClaim({
     context: () => controlPlane.imageEditContext(execution.id, imageEdit),
     readAsset: asset => controlPlane.imageEditAsset(execution.id, imageEdit, Number(asset.id)),
     asset: assetId => controlPlane.imageEditAssetMetadata(execution.id, imageEdit, Number(assetId)),
+    textRepairCheckpoint: (_edit,checkpoint) => controlPlane.textRepairCheckpoint(execution.id,imageEdit,checkpoint),
     async complete(_edit, { bytes, validation }) {
       await controlPlane.stageImageEditValidation(execution.id, imageEdit, validation);
       return controlPlane.completeImageEdit(execution.id, imageEdit, bytes);
@@ -408,7 +409,7 @@ export function createExecutorAgent({
   });
   const registration = () => ({ nodeId, name: nodeName, imageWorkerEnabled,
     copyConcurrency, imageConcurrency, codexPoolId, codexTotalConcurrency, codexImageConcurrency,
-    imageEditExecutorVersion: imageWorkerEnabled ? 13 : 0,
+    imageEditExecutorVersion: imageWorkerEnabled ? 14 : 0,
     copyImagePlanRegenerationVersion: 1 });
   let ready = false;
   const pendingFailures = new Map();

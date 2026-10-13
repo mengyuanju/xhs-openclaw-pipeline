@@ -283,14 +283,25 @@ export function createControlPlaneClient({
       method: 'POST', body: { nodeId },
     }),
     claimImage: (nodeId) => request('/v1/executions/claim-image', {
-      method: 'POST', body: { nodeId, imageControlsVersion: 1, layoutCatalogVersion: 2, imageEditExecutorVersion: 13 },
+      method: 'POST', body: { nodeId, imageControlsVersion: 1, layoutCatalogVersion: 2, imageEditExecutorVersion: 14 },
     }),
     claimCopyBatch: (input) => claimBatch('COPY', input),
-    claimImageBatch: (input) => claimBatch('IMAGE', { ...input, imageControlsVersion: 1, layoutCatalogVersion: 2, imageEditExecutorVersion: 13 }),
+    claimImageBatch: (input) => claimBatch('IMAGE', { ...input, imageControlsVersion: 1, layoutCatalogVersion: 2, imageEditExecutorVersion: 14 }),
     imageEditContext: (executionId, edit) => request(`/v1/executions/${executionId}/image-edit/context`, {
       headers: imageEditHeaders(executionId, edit),
     }),
     imageEditAsset: downloadImageEditAsset,
+    async textRepairCheckpoint(executionId,edit,checkpoint) {
+      const {bytes,...metadata}=checkpoint;
+      const body={...metadata,...(bytes?{base64:Buffer.from(bytes).toString('base64')}:{})};
+      const path=`/v1/executions/${executionId}/image-edit/text-repair-checkpoint`;
+      const options={method:'POST',body,headers:imageEditHeaders(executionId,edit),timeoutMs:60_000};
+      try {return await request(path,options);}
+      catch(error) {
+        if(error instanceof ControlPlaneApiError&&error.status<500)throw error;
+        return request(path,options);
+      }
+    },
     imageEditAssetMetadata: (executionId, edit, assetId) => request(
       `/v1/executions/${executionId}/image-edit/asset-metadata/${assetId}`, {
         headers: imageEditHeaders(executionId, edit),

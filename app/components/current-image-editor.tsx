@@ -11,6 +11,7 @@ import { ApiRequestError, apiRequest } from './api-client';
 import { createRequestId } from './request-id';
 import { useBackgroundTasks } from './background-tasks';
 import { useImageEditState } from './use-image-edit-state';
+import { TextRepairPanel, TextRepairProgress, newTextRepairItem, textRepairIssue, type TextRepairItem, type TextRepairState } from './image-text-repair-panel';
 import { type ImageEditState } from './image-edit-state';
 import { isBackgroundTaskRunning } from './background-task-store';
 import { ImageDisclosureColorControl, DISCLOSURE_COLOR_ERROR, normalizeDisclosureBadgeColor, type DisclosureColorMode } from './image-disclosure-color-control';
@@ -41,8 +42,8 @@ type PreviewMode = 'SOURCE' | 'RESULT' | 'COMPARE';
 type PromptAction = '' | '改颜色' | '替换物体' | '删除物体' | '修复瑕疵';
 type LocalSuggestion = { stage:'LOCAL_EDIT_SUGGESTION'; decision:'SUGGEST'; canEdit:true; suggestedInstruction:string; reason:string; operationType:string; touchesImageEdge:boolean; editRegions:TargetRegion[] };
 type LocalRepairRecommendation = { repairableFromRejected:true; repairInstruction:string; failureCodes:string[]; repairRegions:TargetRegion[]; repairAttempt:number; repairMaxAttempts:number };
-type Edit = { id: string; version: number; attempts:number; status: string; operation: string; source_asset_id?:number; target_page:number; created_by:string; created_by_account_id:number|null; validation?:unknown; events?:Array<{action:string;actor:string;reason:string}>; error: string | null; config: {instruction:string;confirmation?:string|null;batchId?:string|null;batchSize?:number|null;references?:Array<{assetId:number}>;replacements?:Array<{referenceAssetId:number}>}; result?: {asset_id: number; image_run_id: string; validation: unknown} };
-const labels: Record<string,string> = {DRAFT:'草稿',QUEUED:'排队中',RUNNING:'执行与校验中',PREVIEW_READY:'预览待确认',ACCEPTED:'已采用',REJECTED:'已拒绝',FAILED:'失败',CANCELLED:'已取消',SVG_DISCLOSURE:'程序生成标识',TEXT:'模型生成标识',COMPOSITE:'实体合成（历史）',AI_FUSION:'真实产品替换',AI_LOCAL:'局部修改',AI_FULL:'整图修改（历史）',RESTORE:'恢复版本',REGENERATE:'重新生成',REPROCESS:'格式处理'};
+type Edit = { id: string; version: number; attempts:number; status: string; operation: string; source_asset_id?:number; target_page:number; created_by:string; created_by_account_id:number|null; validation?:unknown; textRepairState?:TextRepairState; events?:Array<{action:string;actor:string;reason:string}>; error: string | null; config: {instruction:string;textRepairs?:TextRepairItem[];confirmation?:string|null;batchId?:string|null;batchSize?:number|null;references?:Array<{assetId:number}>;replacements?:Array<{referenceAssetId:number}>}; result?: {asset_id: number; image_run_id: string; validation: unknown} };
+const labels: Record<string,string> = {DRAFT:'草稿',QUEUED:'排队中',RUNNING:'执行与校验中',PREVIEW_READY:'预览待确认',ACCEPTED:'已采用',REJECTED:'已拒绝',FAILED:'失败',CANCELLED:'已取消',SVG_DISCLOSURE:'程序生成标识',TEXT:'模型生成标识',COMPOSITE:'实体合成（历史）',AI_FUSION:'真实产品替换',AI_LOCAL:'局部修改',AI_TEXT_REPAIR:'修正错字',AI_FULL:'整图修改（历史）',RESTORE:'恢复版本',REGENERATE:'重新生成',REPROCESS:'格式处理'};
 const actionLabels: Record<EditAction,string> = {accept:'采用此版本',reject:'拒绝',cancel:'直接删除此修复',retry:'重试（AI 可能再次收费）',queue:'提交草稿','apply-suggestion':'采用建议并修改'};
 const promptActions: PromptAction[] = ['改颜色','替换物体','删除物体','修复瑕疵'];
 const quickRequirements = ['保持材质','保持光影','不改文字'];
@@ -134,6 +135,7 @@ function localRepairRecommendation(edit:Edit):LocalRepairRecommendation|null {
     repairRegions:local.repairRegions,repairAttempt:Number(local.repairAttempt??0),repairMaxAttempts:Number(local.repairMaxAttempts??0)};
 }
 function historyActionLabel(edit:Edit,action:EditAction) {
+  if(action==='retry'&&edit.operation==='AI_TEXT_REPAIR')return '重试未完成的位置（可能再次收费）';
   if(action==='accept'&&isRejectedPreview(edit))return '仍采用此结果';
   if(action==='retry'&&edit.operation==='SVG_DISCLOSURE')return '重试程序处理';
   if(action==='retry'&&edit.operation!=='TEXT'&&!edit.operation.startsWith('AI_'))return '重试';
@@ -179,6 +181,9 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
   const [activeBatchId,setActiveBatchId]=useState('');
   const [recentDisclosureTexts,setRecentDisclosureTexts]=useState<string[]>([]);
   const [instruction,setInstruction]=useState('');
+  const [textRepairs,setTextRepairs]=useState<TextRepairItem[]>(()=>[newTextRepairItem()]);
+  const [activeTextRepairId,setActiveTextRepairId]=useState('');
+  const activeTextRepair=textRepairs.find(item=>item.id===activeTextRepairId)??textRepairs[0];
   const [replacements,setReplacements]=useState<ProductReplacement[]>(()=>[newReplacement(1,page)]);
   const [activeReplacementKey,setActiveReplacementKey]=useState('product-1');
   const [entityPage,setEntityPage]=useState(page);
@@ -255,11 +260,11 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
   useEffect(()=>{if(open)setRecentDisclosureTexts(loadRecentDisclosureTexts(window.localStorage));},[open]);
   useEffect(()=>{if(!notice||busy)return;const timer=window.setTimeout(()=>setNotice(''),NOTICE_DURATION_MS);return()=>window.clearTimeout(timer);},[notice,busy]);
   useEffect(()=>()=>{if(targetSelectionFrame.current!==null)window.cancelAnimationFrame(targetSelectionFrame.current);},[]);
-  const operation=tab==='TEXT'?(disclosureMethod==='SVG'?'SVG_DISCLOSURE':'TEXT'):tab==='ENTITY'?'AI_FUSION':'AI_LOCAL';
+  const operation=tab==='TEXT'?(disclosureMethod==='SVG'?'SVG_DISCLOSURE':'TEXT'):tab==='ENTITY'?'AI_FUSION':tab==='TEXT_REPAIR'?'AI_TEXT_REPAIR':'AI_LOCAL';
   const usesBillableModel=operation==='TEXT'||operation.startsWith('AI_');
   const promptRequestInstruction=[pointLocation(promptTarget)&&`${pointLocation(promptTarget)}附近`,promptAction,instruction.trim()].filter(Boolean).join('，');
   const requestInstruction=tab==='TEXT'?`${disclosureMethod==='SVG'?'使用 SVG + Sharp 确定性叠加':'使用图片编辑模型融合'}人工生成标识“${text.trim()}”并放在右下角`:
-    tab==='ENTITY'?`按每个替换项绑定的参考图和框选区域，替换第 ${displayPage} 页中的 ${replacements.filter(item=>item.targets[displayPage]).length} 个目标，保持场景、人物、构图和全部文字不变`:promptRequestInstruction;
+    tab==='ENTITY'?`按每个替换项绑定的参考图和框选区域，替换第 ${displayPage} 页中的 ${replacements.filter(item=>item.targets[displayPage]).length} 个目标，保持场景、人物、构图和全部文字不变`:tab==='TEXT_REPAIR'?`根据模型生成的正确字形参考，修正本图中的 ${textRepairs.length} 处错字，保留其余文字、背景和排版`:promptRequestInstruction;
   const preserve=tab==='ENTITY'?'保留原图全部已批准文字、人物、背景、构图、色调和未被替换的物品':'除说明明确点名的目标外，保留原图全部已批准文字、所有未点名区域、人物、构图和色调';
   const negative=tab==='ENTITY'
     ?replacements.some(item=>item.referenceMode==='APPEARANCE')
@@ -303,6 +308,7 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
         if(!target.region)return `请在左侧第 ${targetPage} 页框选产品 ${index+1} 要替换的物品。`;
       }
     }
+    if(tab==='TEXT_REPAIR'){const issue=textRepairIssue(textRepairs);if(issue)return issue;}
     if(tab==='PROMPT'&&!instruction.trim())return '请先填写局部修改说明，并同时写清修改位置和内容。';
     if(!draft&&usesBillableModel&&!confirmed)return '请先勾选费用确认，再生成修改预览。保存草稿不调用模型，无需勾选。';
     return '';
@@ -312,11 +318,13 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
     if(issue){setNotice('');setError(issue);return;}
     if(tab==='ENTITY')return submitEntity(draft);
     return act(async()=>{
-      await trackedPost(`/v1/tasks/${taskId}/image-edits`,{...(tab==='TEXT'?pageBase(textPages[0]):base()),operation,instruction:requestInstruction,preserve,negative,
+      const created=await trackedPost(`/v1/tasks/${taskId}/image-edits`,{...(tab==='TEXT'?pageBase(textPages[0]):base()),operation,instruction:requestInstruction,preserve,negative,
       ...(isDisclosureOperation(operation)?{overlay:disclosureOverlay}:{}),
       references:[],
+      ...(tab==='TEXT_REPAIR'?{textRepairs:textRepairs.map(item=>({...item,correctText:item.correctText.trim(),contextText:item.contextText.trim()}))}:{}),
       confirmation:usesBillableModel&&confirmed?'LIVE_IMAGE_COST_ACCEPTED':undefined,draft});
       if(isDisclosureOperation(operation))rememberDisclosureText();
+      if(operation==='AI_TEXT_REPAIR')setComparisonId(created.id);
     },draft?'正在保存草稿…':'正在提交修改预览…',draft?'草稿已保存。':'修改请求已提交，可关闭窗口；完成或失败后会在“后台任务”中提醒。');}
   async function submitEntity(draft=false) {
     const pages=entityPages,batchId=pages.length>1?createRequestId():null,failedPages:number[]=[];
@@ -441,6 +449,7 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
     ??edits.find(e=>e.target_page===displayPage&&e.result);
   const latestRejected=isRejectedPreview(latest);
   const pageEdits=edits.filter(e=>e.target_page===displayPage);
+  const textRepairEdit=pageEdits.find(e=>e.operation==='AI_TEXT_REPAIR'&&e.id===comparisonId)??pageEdits.find(e=>e.operation==='AI_TEXT_REPAIR');
   const suggestedEdit=pageEdits.find(e=>localSuggestion(e)!==null);
   const suggestedPlan=suggestedEdit?localSuggestion(suggestedEdit):null;
   useEffect(()=>{if(latest?.result)setPreviewMode(current=>current==='SOURCE'?'COMPARE':current);},[latest?.id,latest?.result?.asset_id]);
@@ -477,26 +486,42 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
     return {x:Math.max(0,Math.min(1085,Math.round((event.clientX-box.left)*1086/box.width))),
       y:Math.max(0,Math.min(1447,Math.round((event.clientY-box.top)*1448/box.height)))};
   }
+  function selectTextRepair(id:string) {
+    setActiveTextRepairId(id);setComparisonId('');setPreviewMode('SOURCE');setError('');
+  }
+  function setSelectionRegion(region:TargetRegion|null) {
+    if(tab==='TEXT_REPAIR')setTextRepairs(current=>current.map(item=>item.id===activeTextRepair?.id?{...item,region}:item));
+    else setTargetRegion(region);
+  }
+  function reuseTextRepair(edit:Edit) {
+    const items=edit.config.textRepairs;if(!items?.length)return;
+    setTextRepairs(items);setActiveTextRepairId(items[0].id);setTab('TEXT_REPAIR');setComparisonId(edit.id);
+    setPreviewMode('SOURCE');setConfirmed(false);setError('');showPanel('EDIT');
+  }
+  function regenerateTextReference(edit:Edit,text:string) {
+    return act(()=>trackedPost(`/v1/image-edits/${edit.id}/regenerate-reference`,{requestId:createRequestId(),version:edit.version,text,
+      reason:'参考字形需要重新生成',confirmation:'LIVE_IMAGE_COST_ACCEPTED'}),'正在重新生成参考并重做关联位置…','参考重新生成已提交。');
+  }
   function startTargetSelection(event:ReactPointerEvent<HTMLDivElement>) {
     if(event.button!==0)return;
     if(tab==='PROMPT'){
       setPromptTarget(targetPoint(event));setError('');setPreviewMode('SOURCE');
       return;
     }
-    if(tab!=='ENTITY')return;
-    if(!activeTarget){setError(`请先勾选“在第 ${entityPage} 页替换这个产品”。`);return;}
+    if(tab!=='ENTITY'&&tab!=='TEXT_REPAIR')return;
+    if(tab==='ENTITY'&&!activeTarget){setError(`请先勾选“在第 ${entityPage} 页替换这个产品”。`);return;}
     if(targetSelectionFrame.current!==null){window.cancelAnimationFrame(targetSelectionFrame.current);targetSelectionFrame.current=null;}
     pendingTargetRegion.current=null;
-    const point=targetPoint(event);targetDragStart.current=point;setTargetRegion(null);setError('');
+    const point=targetPoint(event);targetDragStart.current=point;setSelectionRegion(null);setError('');
     event.currentTarget.setPointerCapture(event.pointerId);
   }
   function moveTargetSelection(event:ReactPointerEvent<HTMLDivElement>) {
-    const start=targetDragStart.current;if(tab!=='ENTITY'||!start)return;
+    const start=targetDragStart.current;if(!['ENTITY','TEXT_REPAIR'].includes(tab)||!start)return;
     pendingTargetRegion.current=regionBetween(start,targetPoint(event));
     if(targetSelectionFrame.current!==null)return;
     targetSelectionFrame.current=window.requestAnimationFrame(()=>{
       targetSelectionFrame.current=null;
-      if(pendingTargetRegion.current)setTargetRegion(pendingTargetRegion.current);
+      if(pendingTargetRegion.current)setSelectionRegion(pendingTargetRegion.current);
       pendingTargetRegion.current=null;
     });
   }
@@ -507,8 +532,8 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
     pendingTargetRegion.current=null;
     if(targetSelectionFrame.current!==null){window.cancelAnimationFrame(targetSelectionFrame.current);targetSelectionFrame.current=null;}
     if(event.currentTarget.hasPointerCapture(event.pointerId))event.currentTarget.releasePointerCapture(event.pointerId);
-    if(region.width>=24&&region.height>=24){setTargetRegion(region);return;}
-    setTargetRegion(null);setError('目标框选区域过小，请框出物品的大致位置并保留少量周边。');
+    if(region.width>=24&&region.height>=24){setSelectionRegion(region);return;}
+    setSelectionRegion(null);setError(tab==='TEXT_REPAIR'?'文字框选区域过小，请框选错字所在的一句话或小段文字。':'目标框选区域过小，请框出物品的大致位置并保留少量周边。');
   }
   async function runHistoryAction(e:Edit,action:EditAction) {
     const choice=action==='apply-suggestion'?localEditAlternatives(e).find(option=>option.id===selectedAlternatives[`${e.id}:${e.version}`]):null;
@@ -593,7 +618,7 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
         {backgroundTasks.some(item=>item.taskId===taskId&&item.kind==='IMAGE_EDIT'&&isBackgroundTaskRunning(item))&&<p className={styles.description} role="status">图片修复正在排队或处理中，可关闭窗口继续其他工作。</p>}</div>
         <span className={styles.pageCount}>{displayPage} / {imageAssets.length}</span>
       </header>
-      <div className={styles.tabs} role="tablist" aria-label="图片修改方式">{[['TEXT','添加文字'],['ENTITY','实体替换'],['PROMPT','局部修改']].map(([key,label])=><Button unstyled className={styles.tab} type="button" key={key} role="tab" aria-selected={tab===key} onClick={()=>{setTab(key);setConfirmed(false);setError('');setNotice('');setPreviewMode('SOURCE');showPanel('EDIT');}}>{label}</Button>)}</div>
+      <div className={styles.tabs} role="tablist" aria-label="图片修改方式">{[['TEXT','添加文字'],['TEXT_REPAIR','修正错字'],['ENTITY','实体替换'],['PROMPT','局部修改']].map(([key,label])=><Button unstyled className={styles.tab} type="button" key={key} role="tab" aria-selected={tab===key} onClick={()=>{setTab(key);setConfirmed(false);setError('');setNotice('');setPreviewMode('SOURCE');showPanel('EDIT');}}>{label}</Button>)}</div>
       <div className={styles.mobileViewTabs} role="tablist" aria-label="移动端工作区">
         <Button unstyled type="button" role="tab" aria-selected={mobileView==='PREVIEW'} onClick={()=>setMobileView('PREVIEW')}>预览</Button>
         <Button unstyled type="button" role="tab" aria-selected={mobileView==='EDIT'} onClick={()=>showPanel('EDIT')}>编辑</Button>
@@ -615,13 +640,14 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
               {latestRejected&&<div className={styles.rejectedPreviewNotice} role="alert"><strong>自动验收未通过</strong><span>{latest?.status==='ACCEPTED'?'该结果已由用户明确采用，审计记录已保留。':'结果已保留，可检查后自行决定采用或重试。'}</span></div>}
             </div>
             <div className={styles.previewViewport}>
-              {(previewMode==='SOURCE'||!latest?.result)&&<div className={`${styles.previewCanvas} ${['ENTITY','PROMPT'].includes(tab)?styles.targetCanvas:''}`} role="img" aria-label="实时修改预览" style={{width:`${zoom*100}%`}}
+              {(previewMode==='SOURCE'||!latest?.result)&&<div className={`${styles.previewCanvas} ${['ENTITY','PROMPT','TEXT_REPAIR'].includes(tab)?styles.targetCanvas:''}`} role="img" aria-label="实时修改预览" style={{width:`${zoom*100}%`}}
                 onPointerDown={startTargetSelection} onPointerMove={moveTargetSelection} onPointerUp={finishTargetSelection} onPointerCancel={finishTargetSelection}>
                 <PreviewSourceImage src={path(displayAsset.url)}/>
                 <svg className={styles.previewOverlay} aria-hidden="true" viewBox="0 0 1086 1448">
                    {tab==='TEXT'&&(disclosureMethod==='SVG'
                      ?<g data-disclosure-preview="true"><rect x={tx+0.75} y={ty+0.75} width={textWidth-1.5} height={textHeight-1.5} rx="18" fill={disclosureBadgeVariant==='solid-pill'?previewBadgeColor:'none'} stroke={previewBadgeColor} strokeWidth="1.5"/><text x={tx+textWidth/2} y={ty+textHeight/2} textAnchor="middle" dominantBaseline="central" fill={previewBadgeTextColor} fontSize="20" fontWeight="600" fontFamily="Microsoft YaHei,Noto Sans CJK SC,sans-serif">{text}</text></g>
                      :<g><rect x={tx} y={ty} width={textWidth} height={textHeight} rx="8" fill="#111827"/><text x={tx+textWidth/2} y={ty+40} textAnchor="middle" fill="#ffffff" fontSize="32" fontWeight="500" fontFamily="Noto Sans CJK SC,Microsoft YaHei,sans-serif">{text}</text></g>)}
+                   {tab==='TEXT_REPAIR'&&textRepairs.map((item,index)=>item.region&&<g key={item.id}><rect className={item.id===activeTextRepair?.id?styles.targetSelection:styles.secondaryTargetSelection} x={item.region.x} y={item.region.y} width={item.region.width} height={item.region.height}/><text className={styles.targetSelectionLabel} x={item.region.x+12} y={item.region.y+28}>{index+1}</text></g>)}
                    {tab==='ENTITY'&&replacements.map((item,index)=>item.targets[entityPage]?.region&&<g key={item.key}><rect className={item.key===activeReplacement?.key?styles.targetSelection:styles.secondaryTargetSelection} x={item.targets[entityPage].region!.x} y={item.targets[entityPage].region!.y} width={item.targets[entityPage].region!.width} height={item.targets[entityPage].region!.height}/><text className={styles.targetSelectionLabel} x={item.targets[entityPage].region!.x+12} y={item.targets[entityPage].region!.y+28}>{index+1}</text></g>)}
                    {tab==='PROMPT'&&panel==='HISTORY'&&suggestedPlan?.editRegions.map((region,index)=><rect key={index} className={styles.suggestionSelection} x={region.x} y={region.y} width={region.width} height={region.height}/>)}
                    {tab==='PROMPT'&&promptTarget&&<circle className={styles.promptTarget} cx={promptTarget.x} cy={promptTarget.y} r="54"/>}
@@ -631,7 +657,7 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
               {previewMode==='COMPARE'&&latest?.result&&<div className={styles.previewCanvas} role="img" aria-label="修改前后对比画面" style={{width:`${zoom*100}%`}}><img className={styles.previewImage} src={path(`/v1/assets/${latest.source_asset_id??displayAsset.id}`)} alt=""/><img className={styles.previewImage} src={path(`/v1/assets/${latest.result.asset_id}`)} alt="" style={{clipPath:`inset(0 ${100-compare}% 0 0)`}}/></div>}
             </div>
             {previewMode==='COMPARE'&&latest?.result?<section className={styles.inlineComparison} aria-label="修改前后对比"><div><h3>修改前后滑动对比</h3><span>第 {latest.target_page} 页 · {labels[latest.operation]}{latestRejected?' · 自动验收未通过':''}</span></div><Slider aria-label="修改前后对比滑块" min="0" max="100" value={compare} onChange={e=>setCompare(Number(e.target.value))}/></section>:<label className={styles.zoomControl}><span>预览缩放</span><Slider aria-label="预览缩放" min="1" max="3" step="0.1" value={zoom} onChange={e=>setZoom(Number(e.target.value))}/><strong>{Math.round(zoom*100)}%</strong></label>}
-            <p className={styles.help}>{tab==='TEXT'?(disclosureMethod==='SVG'?`左侧为${disclosureBadgeVariant==='solid-pill'?'实心':'描边'}徽章${customBadgeColor?'自定义颜色预览。':'样式示意；生成时自动沿用图片主题色。'}`:'左侧是模型标识的统一目标样式示意；提交后由图片编辑模型融合绘制。'):tab==='ENTITY'?`正在标注第 ${displayPage} 页、产品 ${Math.max(1,replacements.findIndex(item=>item.key===activeReplacement?.key)+1)}；${targetMode==='ALL_MATCHES'?'框选包含全部同款目标的搜索范围。':'框内只放一个目标。'}`:promptTarget?`已标记${pointLocation(promptTarget)}附近；右侧只需补充怎么修改。`:'可直接点击图片中的目标以自动补充位置，也可以完整输入自然语言说明。'}</p>
+            <p className={styles.help}>{tab==='TEXT'?(disclosureMethod==='SVG'?`左侧为${disclosureBadgeVariant==='solid-pill'?'实心':'描边'}徽章${customBadgeColor?'自定义颜色预览。':'样式示意；生成时自动沿用图片主题色。'}`:'左侧是模型标识的统一目标样式示意；提交后由图片编辑模型融合绘制。'):tab==='TEXT_REPAIR'?`正在框选第 ${Math.max(1,textRepairs.findIndex(item=>item.id===activeTextRepair?.id)+1)} 处错字；建议包含一句话或小段文字。`:tab==='ENTITY'?`正在标注第 ${displayPage} 页、产品 ${Math.max(1,replacements.findIndex(item=>item.key===activeReplacement?.key)+1)}；${targetMode==='ALL_MATCHES'?'框选包含全部同款目标的搜索范围。':'框内只放一个目标。'}`:promptTarget?`已标记${pointLocation(promptTarget)}附近；右侧只需补充怎么修改。`:'可直接点击图片中的目标以自动补充位置，也可以完整输入自然语言说明。'}</p>
           </section>
 
           <section className={styles.controlPanel} aria-label="图片修改控制">
@@ -668,6 +694,10 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
                   {activeTarget?<><label>替换范围<Select value={targetMode} onValueChange={value=>setTargetMode(value as TargetMode)}><SelectTrigger aria-label="产品替换范围"><SelectValue /></SelectTrigger><SelectContent className={styles.selectContent}><SelectItem value="SINGLE">只替换一个产品</SelectItem><SelectItem value="ALL_MATCHES">替换框内全部同款产品或特写</SelectItem></SelectContent></Select><small>{targetMode==='ALL_MATCHES'?'框选搜索范围；系统会先定位每个匹配目标并生成紧框。紧框略超出搜索范围、目标未完整包含或含持握手部时会提醒，但不会阻止调用图片模型。':'框出目标的大致位置即可；框未完整覆盖或带有持握手部时，仍会直接交给模型完整替换该产品。'}</small></label><label>目标物品说明<Textarea aria-label={replacements.findIndex(item=>item.key===activeReplacement?.key)===0&&entityPage===page?'目标物品说明':`产品 ${replacements.findIndex(item=>item.key===activeReplacement?.key)+1} 第 ${entityPage} 页目标物品说明`} value={targetDescription} maxLength={500} placeholder={targetMode==='ALL_MATCHES'?'例如：框内全部蓝黑色儿童手表及旋钮特写':'例如：画面右侧人物手持的红色证件本'} onChange={e=>setTargetDescription(e.target.value)}/><small>{targetMode==='ALL_MATCHES'?'描述所有需要匹配的同款产品；定位蒙版只提供给模型参考，模型返回的完整画面会直接用于验收。':'同时写清颜色、持有者或相邻物体，帮助模型锁定唯一目标；框只用于定位。'}</small></label><div className={styles.targetSelectionInfo} role="status"><span>{targetRegion?`第 ${entityPage} 页已框选${targetMode==='ALL_MATCHES'?'搜索范围':'目标'}：x ${targetRegion.x}，y ${targetRegion.y}，宽 ${targetRegion.width}，高 ${targetRegion.height}`:`第 ${entityPage} 页尚未框选${targetMode==='ALL_MATCHES'?'搜索范围':'目标'}，请在左侧原图上拖动。`}</span>{targetRegion&&<Button variant="outline" size="sm" type="button" onClick={()=>setTargetRegion(null)}>重新框选</Button>}</div></>:<div className={styles.inactivePageNotice}>当前产品不应用到第 {entityPage} 页；勾选后可填写说明并框选目标。</div>}
                   <p>单目标模式会把说明和大致位置直接交给图片编辑模型；全部同款模式会先识别最多 4 个目标并生成紧框，再在一次模型编辑中完成。</p>
                 </>}
+                {tab==='TEXT_REPAIR'&&<>
+                  {textRepairEdit&&<TextRepairProgress key={textRepairEdit.id} state={textRepairEdit.textRepairState} items={textRepairEdit.config.textRepairs??[]} sourceUrl={path(`/v1/assets/${textRepairEdit.source_asset_id??asset.id}`)} assetUrl={path} status={textRepairEdit.status} attempts={textRepairEdit.attempts} disabled={busy} onRegenerate={text=>void regenerateTextReference(textRepairEdit,text)}/>}
+                  <TextRepairPanel items={textRepairs} activeId={activeTextRepair?.id??''} onChange={setTextRepairs} onSelect={selectTextRepair} disabled={busy}/>
+                </>}
                 {tab==='PROMPT'&&<>
                   <div className={styles.promptStep}><div className={styles.stepHeading}><strong>1. 选择修改目标</strong><span>减少位置描述</span></div><div className={styles.targetSelectionInfo} role="status"><span>{promptTarget?`已定位：${pointLocation(promptTarget)}附近`:'可在左侧图片点击要修改的目标，也可跳过并在说明中写位置。'}</span>{promptTarget&&<Button variant="outline" size="sm" type="button" onClick={()=>setPromptTarget(null)}>清除定位</Button>}</div></div>
                   <div className={styles.promptStep}><div className={styles.stepHeading}><strong>2. 选择修改动作</strong><span>可选</span></div><div className={styles.promptActions} role="group" aria-label="局部修改动作">{promptActions.map(action=><Button unstyled type="button" key={action} aria-pressed={promptAction===action} onClick={()=>setPromptAction(current=>current===action?'':action)}>{action.replace('物体','')}</Button>)}</div></div>
@@ -675,9 +705,9 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
                   <div className={styles.quickRequirements} aria-label="快捷补充要求">{quickRequirements.map(item=><Button unstyled type="button" key={item} onClick={()=>appendRequirement(item)}>＋ {item}</Button>)}</div>
                   <p>系统会将原图和修改说明直接交给图片编辑模型，生成后检查修改结果及文字。请查看预览后再采用。</p>
                  </>}
-                {usesBillableModel?<label className={styles.feeConfirmation}><input className={styles.feeCheckboxInput} type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/><span className={styles.feeCheckboxVisual} data-fee-checkbox aria-hidden="true"/><span>{tab==='TEXT'?`确认对已选 ${textPages.length} 张图片分别调用图片编辑与视觉验收模型，会产生费用；生成结果需查看并采用后才会替换当前图片。`:'确认调用图片编辑与视觉验收模型，会产生费用；生成结果需查看并采用后才会替换当前图片。'}</span></label>:<p>程序标识不调用模型，无需费用确认。</p>}
+                {usesBillableModel?<label className={styles.feeConfirmation}><input className={styles.feeCheckboxInput} type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/><span className={styles.feeCheckboxVisual} data-fee-checkbox aria-hidden="true"/><span>{tab==='TEXT_REPAIR'?'确认生成文字参考图、修正图片并进行视觉校验会调用模型并产生费用；完成后检查参考图和修改预览再采用。':tab==='TEXT'?`确认对已选 ${textPages.length} 张图片分别调用图片编辑与视觉验收模型，会产生费用；生成结果需查看并采用后才会替换当前图片。`:'确认调用图片编辑与视觉验收模型，会产生费用；生成结果需查看并采用后才会替换当前图片。'}</span></label>:<p>程序标识不调用模型，无需费用确认。</p>}
               </section></section>
-              <footer className={styles.actionBar}><span>{usesBillableModel?'保存草稿不会调用模型':'程序标识不调用模型'}</span><div>{!(tab==='TEXT'&&textPages.length>1)&&<Button variant="outline" disabled={busy||tab==='TEXT'&&(textPages.length===0||!disclosureColorValid)} onClick={()=>void submit(true)}>{busy?'处理中…':'保存草稿'}</Button>}<Button disabled={busy||tab==='TEXT'&&(textPages.length===0||!disclosureColorValid)} onClick={()=>void (tab==='TEXT'&&textPages.length>1?submitDisclosureBatch():submit())}>{busy?'处理中…':tab==='TEXT'?`生成已选 ${textPages.length} 张${disclosureMethod==='SVG'?'程序':'模型'}标识预览`:tab==='PROMPT'||(entityPages.length===1&&replacements.length===1)?'生成修改预览':entityPages.length>1?`生成 ${entityPages.length} 张批量替换预览`:`生成 ${replacements.length} 个产品替换预览`}</Button></div></footer>
+              <footer className={styles.actionBar}><span>{usesBillableModel?'保存草稿不会调用模型':'程序标识不调用模型'}</span><div>{!(tab==='TEXT'&&textPages.length>1)&&<Button variant="outline" disabled={busy||tab==='TEXT'&&(textPages.length===0||!disclosureColorValid)} onClick={()=>void submit(true)}>{busy?'处理中…':'保存草稿'}</Button>}<Button disabled={busy||tab==='TEXT'&&(textPages.length===0||!disclosureColorValid)} onClick={()=>void (tab==='TEXT'&&textPages.length>1?submitDisclosureBatch():submit())}>{busy?'处理中…':tab==='TEXT_REPAIR'?'生成参考并修正错字':tab==='TEXT'?`生成已选 ${textPages.length} 张${disclosureMethod==='SVG'?'程序':'模型'}标识预览`:tab==='PROMPT'||(entityPages.length===1&&replacements.length===1)?'生成修改预览':entityPages.length>1?`生成 ${entityPages.length} 张批量替换预览`:`生成 ${replacements.length} 个产品替换预览`}</Button></div></footer>
             </>:<section className={styles.panelBody} aria-label="任务记录">
               <section className={styles.restorePanel} aria-label="历史图片版本"><div><strong>历史图片版本</strong><span>恢复入口与任务记录集中管理</span></div><Select value={history} onValueChange={setHistory} disabled={busy || !runs.some(r=>r.id!==runId)}><SelectTrigger aria-label="历史图片版本"><SelectValue placeholder="选择要恢复的图集" /></SelectTrigger><SelectContent className={styles.selectContent}>{runs.filter(r=>r.id!==runId).map(r=><SelectItem key={r.id} value={r.id}>{labels[r.result?.processing?.type??'']??'原始生成'} · {r.id.slice(0,8)}</SelectItem>)}</SelectContent></Select><Button variant="outline" disabled={!history||busy} onClick={()=>void act(()=>post(`/v1/tasks/${taskId}/image-versions/${history}/restore`,{...base(),instruction:'恢复历史图片版本'}),'正在创建恢复预览…','恢复预览请求已提交。')}>生成恢复预览</Button></section>
               {tab==='TEXT'&&!!disclosureBatchId&&disclosureBatchEdits.length>0&&<section className={styles.batchStatus} aria-label="标识批次状态"><div><h3>最近标识批次</h3><p>{disclosureBatchComplete?`本次选择 ${disclosureBatchSize} 张，全部预览就绪后可一次采用。`:`已创建 ${disclosureBatchEdits.length} / ${disclosureBatchSize} 张请求，批次不完整。`}</p></div><div className={styles.batchCounts}>{disclosureBatchEdits.map(edit=><Button variant="outline" size="sm" type="button" key={edit.id} onClick={()=>{setTextPreviewPage(edit.target_page);setComparisonId(edit.id);setPreviewMode(edit.result?'RESULT':'SOURCE');}}>{`第 ${edit.target_page} 页 · ${editStatusLabel(edit)}`}</Button>)}</div><Button disabled={busy||!disclosureBatchReady||disclosureBatchAccepted} onClick={()=>{setReason('');setPendingHistoryAction(null);setPendingBatchAccept(true);}}>{disclosureBatchAccepted?'已选标识已采用':disclosureBatchReady?`一次采用已选 ${disclosureBatchSize} 张标识`:'等待所选预览就绪'}</Button>{pendingBatchAccept&&<form className={styles.reasonEditor} onSubmit={event=>{event.preventDefault();void acceptDisclosureBatch();}}><label>采用所选标识的原因<Input aria-label="所选标识采用原因" value={reason} maxLength={1000} autoFocus onChange={e=>setReason(e.target.value)}/></label><div className={styles.quickReasons}>{quickReasons.slice(0,2).map(item=><Button variant="outline" size="sm" type="button" key={item} onClick={()=>setReason(item)}>{item}</Button>)}</div><div className={styles.reasonActions}><Button variant="outline" type="button" onClick={()=>{setPendingBatchAccept(false);setReason('');}}>取消</Button><Button type="submit" disabled={busy}>确认采用</Button></div></form>}</section>}
@@ -700,9 +730,10 @@ export function CurrentImageEditor({taskId,runId,copyRevisionId,asset,assets,pag
                     <span>{suggestion?'选择方案后点击下方“采用建议并修改”，结果仍需确认。':'选择方案后将直接生成修改预览，再进行结果验收。'}</span>
                   </section>}
                   {preflightWarnings.length>0&&<details className={styles.preflightWarningCard} aria-label="执行前提醒"><summary>执行前提醒（未阻止生成） · {preflightWarnings.length} 项</summary><ul>{preflightWarnings.map((warning,index)=><li key={index}>{warning}</li>)}</ul><span>系统已继续调用图片模型，是否采用仍以生成后的验收结果为准。</span></details>}
-                  {rejectedPreview&&<section className={styles.rejectedResultCard} aria-label="自动验收未通过的结果"><strong>图片已生成，但没有完整完成任务</strong><p>{failedPreviewReason(e)}</p>{e.operation==='SVG_DISCLOSURE'?<span>请检查标识样式、文字或位置，调整后重试程序处理；重试不调用模型。</span>:repairRecommendation?<><span>系统可以上一张失败图为起点，仅处理以下未完成部分：</span><blockquote>{repairRecommendation.repairInstruction}</blockquote><span>定向修复会再次调用图片模型并产生费用，只有确认后才会执行；修复结果仍由你决定是否采用。</span></>:<span>这是一张可查看的失败预览。当前问题不适合安全局部补救，你可以仍然采用，也可以调整说明后从原图重试；重试可能再次产生模型费用。</span>}</section>}
+                  {rejectedPreview&&<section className={styles.rejectedResultCard} aria-label="自动验收未通过的结果"><strong>图片已生成，自动验收未通过</strong><p>{failedPreviewReason(e)}</p>{e.status==='ACCEPTED'?<span>该结果已由用户明确采用，系统保留自动校验记录和人工采用原因。</span>:e.operation==='AI_TEXT_REPAIR'?<span>请对照原图、参考图和逐处修改检查结果。即使自动校验未通过，也可以选择“仍采用此结果”并填写原因；或者重试未通过的位置、重新生成参考图。</span>:e.operation==='SVG_DISCLOSURE'?<span>请检查标识样式、文字或位置，调整后重试程序处理；重试不调用模型。</span>:repairRecommendation?<><span>系统可以上一张失败图为起点，仅处理以下未完成部分：</span><blockquote>{repairRecommendation.repairInstruction}</blockquote><span>定向修复会再次调用图片模型并产生费用，只有确认后才会执行；修复结果仍由你决定是否采用。</span></>:<span>这是一张可查看的失败预览。当前问题不适合安全局部补救，你可以仍然采用，也可以调整说明后从原图重试；重试可能再次产生模型费用。</span>}</section>}
                   {e.error&&<details><summary>查看失败原因</summary><p role="alert">{e.error}</p></details>}
-                  <div className={styles.historyActions}>{e.operation==='AI_LOCAL'&&<Button variant="outline" size="sm" onClick={()=>reuseInstruction(e)}>复用说明并修改</Button>}{e.result&&<><Button size="sm" onClick={()=>{setComparisonId(e.id);setPreviewMode('COMPARE');setMobileView('PREVIEW');}}>在左侧对比</Button><a href={path(`/v1/assets/${e.result.asset_id}`)} target="_blank" rel="noreferrer">打开结果</a></>}{historyActions(e).map(action=><Button key={action} size="sm" variant={action==='cancel'?'outline':undefined} className={action==='cancel'?styles.deleteAction:undefined} disabled={busy||action==='apply-suggestion'&&!selectedAlternative} onClick={()=>{setReason(action==='apply-suggestion'&&selectedAlternative?`采用「${selectedAlternative.title}」方案`:'');setHistoryCostConfirmed(false);setPendingBatchAccept(false);setPendingHistoryAction({editId:e.id,action});}}>{historyActionLabel(e,action)}</Button>)}</div>
+                  {e.operation==='AI_TEXT_REPAIR'&&<TextRepairProgress key={e.id} state={e.textRepairState} items={e.config.textRepairs??[]} sourceUrl={path(`/v1/assets/${e.source_asset_id??asset.id}`)} assetUrl={path} status={e.status} attempts={e.attempts} disabled={busy} onRegenerate={text=>void regenerateTextReference(e,text)}/>}
+                  <div className={styles.historyActions}>{e.operation==='AI_TEXT_REPAIR'&&<Button variant="outline" size="sm" disabled={busy} onClick={()=>reuseTextRepair(e)}>复用错字位置</Button>}{e.operation==='AI_LOCAL'&&<Button variant="outline" size="sm" onClick={()=>reuseInstruction(e)}>复用说明并修改</Button>}{e.result&&<><Button size="sm" onClick={()=>{setComparisonId(e.id);setPreviewMode('COMPARE');setMobileView('PREVIEW');}}>在左侧对比</Button><a href={path(`/v1/assets/${e.result.asset_id}`)} target="_blank" rel="noreferrer">打开结果</a></>}{historyActions(e).map(action=><Button key={action} size="sm" variant={action==='cancel'?'outline':undefined} className={action==='cancel'?styles.deleteAction:undefined} disabled={busy||action==='apply-suggestion'&&!selectedAlternative} onClick={()=>{setReason(action==='apply-suggestion'&&selectedAlternative?`采用「${selectedAlternative.title}」方案`:'');setHistoryCostConfirmed(false);setPendingBatchAccept(false);setPendingHistoryAction({editId:e.id,action});}}>{historyActionLabel(e,action)}</Button>)}</div>
                   {!!(e.result?.validation??e.validation)&&<details><summary>质量校验记录</summary><pre style={{whiteSpace:'pre-wrap'}}>{JSON.stringify(e.result?.validation??e.validation,null,2)}</pre></details>}
                   {!!e.events?.length&&<details><summary>操作审计</summary><ul>{e.events.map((event,index)=><li key={index}>{event.actor} · {event.action} · {event.reason}</li>)}</ul></details>}
                   {pendingHistoryAction?.editId===e.id&&<form className={styles.reasonEditor} onSubmit={event=>{event.preventDefault();void runHistoryAction(e,pendingHistoryAction.action);}}><label>{historyActionLabel(e,pendingHistoryAction.action)}的操作原因<Input aria-label={`${historyActionLabel(e,pendingHistoryAction.action)}操作原因`} value={reason} maxLength={1000} autoFocus onChange={event=>setReason(event.target.value)}/></label>{pendingHistoryAction.action==='retry'&&e.operation!=='SVG_DISCLOSURE'&&repairRecommendation&&<label className={styles.feeConfirmation}><Checkbox checked={historyCostConfirmed} onChange={event=>setHistoryCostConfirmed(event.target.checked)}/><span>确认本次定向修复会再次调用图片模型并产生费用</span></label>}<div className={styles.quickReasons}>{quickReasons.map(item=><Button variant="outline" size="sm" type="button" key={item} onClick={()=>setReason(item)}>{item}</Button>)}</div><div className={styles.reasonActions}><Button variant="outline" type="button" onClick={()=>{setPendingHistoryAction(null);setHistoryCostConfirmed(false);setReason('');}}>取消</Button><Button type="submit" disabled={busy}>确认{historyActionLabel(e,pendingHistoryAction.action)}</Button></div></form>}

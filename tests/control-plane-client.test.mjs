@@ -7,6 +7,21 @@ import {
   createControlPlaneClient,
 } from '../src/control-plane/client.mjs';
 
+test('text repair checkpoints transfer frozen artifact bytes with the execution lease and retry an uncertain response',async()=>{
+  const executionId=randomUUID(),edit={id:randomUUID(),lease_token:randomUUID()},bytes=Buffer.from('fake PNG bytes');
+  const checkpoint={kind:'REFERENCE',text:'滩',bytes,validation:{passed:true}};
+  const calls=[];
+  const client=createControlPlaneClient({baseUrl:'http://localhost',fetchImpl:async(url,options)=>{
+    calls.push({url,options});
+    return calls.length===1?new Response('',{status:503}):Response.json({data:{assetId:41,sha256:'a'.repeat(64)}});
+  }});
+  assert.equal((await client.textRepairCheckpoint(executionId,edit,checkpoint)).assetId,41);
+  assert.equal(calls.length,2);assert.equal(calls[0].options.body,calls[1].options.body);
+  assert.ok(calls[0].url.endsWith(`/v1/executions/${executionId}/image-edit/text-repair-checkpoint`));
+  assert.equal(calls[0].options.headers['X-Image-Edit-Lease'],edit.lease_token);
+  assert.deepEqual(JSON.parse(calls[0].options.body),{kind:'REFERENCE',text:'滩',validation:{passed:true},base64:bytes.toString('base64')});
+});
+
 test('task heartbeat responses must partition exactly the requested executions', async () => {
   const id = randomUUID(), input = { nodeId: 'a', executionIds: [id] };
   let payload = { activeExecutionIds: [id], staleExecutionIds: [] };
@@ -164,7 +179,7 @@ test('image claim and edit transfer protocol carries capability, lease and idemp
   }});
   assert.deepEqual(await client.claimImageBatch({nodeId:'image-a',requestId,limit:1}),{requestId,claims:[claim]});
   const claimBody=JSON.parse(seen[0].options.body);
-  assert.equal(claimBody.imageEditExecutorVersion,13);
+  assert.equal(claimBody.imageEditExecutorVersion,14);
   assert.deepEqual(await client.imageEditContext(executionId,edit),{task:{id:7}});
   assert.deepEqual(await client.imageEditAsset(executionId,edit,31),Buffer.from('asset'));
   assert.equal((await client.imageEditAssetMetadata(executionId,edit,31)).sha256,'a'.repeat(64));

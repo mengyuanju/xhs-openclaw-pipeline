@@ -5,6 +5,21 @@ import { ControlPlaneConflictError, ControlPlaneNotFoundError, normalizeTaskId, 
 const IN_USE_STATUSES = ['DRAFT', 'QUEUED', 'RUNNING', 'FAILED'];
 const REFERENCE_FILE_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.png$/iu;
 const SHA256 = /^[0-9a-f]{64}$/u;
+const TEXT_REPAIR_ROLES = ['TEXT_REFERENCE', 'TEXT_PATCH'];
+
+/** Bound artifacts, including references pending regeneration, survive until their binding is replaced. */
+export function isObsoleteTextRepairAsset(asset, edit, { workspaceDeleted = false } = {}) {
+  if (!TEXT_REPAIR_ROLES.includes(asset?.asset_role) || edit?.operation !== 'AI_TEXT_REPAIR'
+    || !Number.isSafeInteger(Number(asset?.id)) || Number(asset.id) < 1
+    || !Number.isSafeInteger(Number(asset.task_id)) || Number(asset.task_id) < 1 || typeof edit.id !== 'string'
+    || Number(asset.task_id) !== Number(edit.task_id) || asset.edit_metadata?.editId !== edit.id
+    || asset.content_cleared_at) return false;
+  if (workspaceDeleted) return true;
+  const state = edit.text_repair_state;
+  return ![...(Array.isArray(state?.references) ? state.references : []),
+    ...(Array.isArray(state?.locations) ? state.locations : [])]
+    .some(entry => entry.assetId === Number(asset.id));
+}
 
 function inside(root, path) {
   const part = relative(root, path);
@@ -59,6 +74,48 @@ async function scheduleAssets(client, taskId, assetIds, { rejectInUse = false, i
       UPDATE assets SET content_cleared_at=clock_timestamp(),active=false
       WHERE id=$1 AND task_id=$2 AND asset_role='REFERENCE' AND content_cleared_at IS NULL
     `, [row.id, taskId]);
+    scheduled++;
+  }
+  return scheduled;
+}
+
+/** Call after replacing/removing state bindings, within their transaction. */
+export async function scheduleObsoleteTextRepairCleanup(client, rawTaskId, rawEditId = null) {
+  const taskId = normalizeTaskId(rawTaskId);
+  const editId = rawEditId == null ? null : normalizeUuid(rawEditId, 'editId');
+  await lockTask(client, taskId);
+  const rows = (await client.query(`
+    SELECT a.*, e.id AS repair_edit_id, e.task_id AS repair_task_id,
+      e.operation AS repair_operation, e.text_repair_state,
+      EXISTS (
+        SELECT 1 FROM standalone_image_workspaces workspace
+        JOIN image_edit_events event ON event.task_id=workspace.task_id AND event.action='DELETE_WORKSPACE'
+        WHERE workspace.task_id=a.task_id
+      ) AS workspace_deleted
+    FROM assets a JOIN image_edit_requests e
+      ON e.task_id=a.task_id AND e.id::text=a.edit_metadata->>'editId'
+    WHERE a.task_id=$1 AND a.asset_role IN ('TEXT_REFERENCE','TEXT_PATCH')
+      AND e.operation='AI_TEXT_REPAIR' AND ($2::uuid IS NULL OR e.id=$2)
+      AND a.content_cleared_at IS NULL
+    ORDER BY a.id FOR UPDATE OF a
+  `, [taskId, editId])).rows;
+  let scheduled = 0;
+  for (const row of rows) {
+    if (Number(row.task_id) !== taskId || (editId != null && row.repair_edit_id !== editId)
+      || !isObsoleteTextRepairAsset(row, { id: row.repair_edit_id, task_id: row.repair_task_id,
+        operation: row.repair_operation, text_repair_state: row.text_repair_state },
+      { workspaceDeleted: row.workspace_deleted === true })) continue;
+    await client.query(`
+      INSERT INTO image_reference_cleanup_jobs(asset_id,task_id,storage_path,sha256)
+      VALUES($1,$2,$3,$4)
+      ON CONFLICT(asset_id) DO UPDATE SET storage_path=EXCLUDED.storage_path,
+        sha256=EXCLUDED.sha256, next_attempt_at=clock_timestamp(), last_error=NULL
+    `, [row.id, taskId, row.storage_path, row.sha256]);
+    await client.query(`
+      UPDATE assets SET content_cleared_at=clock_timestamp(),active=false
+      WHERE id=$1 AND task_id=$2 AND asset_role IN ('TEXT_REFERENCE','TEXT_PATCH')
+        AND edit_metadata->>'editId'=$3 AND content_cleared_at IS NULL
+    `, [row.id, taskId, row.repair_edit_id]);
     scheduled++;
   }
   return scheduled;
@@ -134,7 +191,8 @@ export async function scheduleReferenceCleanupForDeletedWorkspace(client, rawTas
   const ids = (await client.query(`
     SELECT id FROM assets WHERE task_id=$1 AND asset_role='REFERENCE' AND content_cleared_at IS NULL ORDER BY id
   `, [taskId])).rows.map(row => normalizeTaskId(row.id));
-  return scheduleAssets(client, taskId, ids, { inUseStatuses: [] });
+  return (await scheduleAssets(client, taskId, ids, { inUseStatuses: [] }))
+    + (await scheduleObsoleteTextRepairCleanup(client, taskId));
 }
 
 async function removeWithinStorage(realRoot, path) {
@@ -195,6 +253,13 @@ export async function drainReferenceCleanup(pool, storageRoot, { taskId, assetId
       `, [normalizedTaskId, normalizedAssetId, candidate.asset_id])).rows[0];
       if (!job) return 'skip';
       try {
+        const asset=(await client.query(`SELECT task_id,asset_role,storage_path,sha256,content_cleared_at
+          FROM assets WHERE id=$1 FOR UPDATE`,[job.asset_id])).rows[0];
+        if(!asset||!asset.content_cleared_at||Number(asset.task_id)!==Number(job.task_id)
+          ||!['REFERENCE',...TEXT_REPAIR_ROLES].includes(asset.asset_role)
+          ||asset.storage_path!==job.storage_path||asset.sha256!==job.sha256) {
+          throw new Error('参考图清理任务与已清除资产的绑定不一致');
+        }
         await deleteJobFiles(storageRoot, job);
         await client.query('DELETE FROM image_reference_cleanup_jobs WHERE asset_id=$1', [job.asset_id]);
         return true;
@@ -211,6 +276,34 @@ export async function drainReferenceCleanup(pool, storageRoot, { taskId, assetId
     if (outcome) processed++; else failed++;
   }
   return { processed, failed };
+}
+
+/** Recovers obsolete generated artifacts after a missed foreground cleanup. */
+async function backfillTextRepairCleanup(pool, { limitTasks, excludeTasks = [] }) {
+  if (limitTasks === 0) return { tasks: 0, scheduled: 0 };
+  const tasks = (await pool.query(`
+    SELECT DISTINCT a.task_id FROM assets a JOIN image_edit_requests e
+      ON e.task_id=a.task_id AND e.id::text=a.edit_metadata->>'editId'
+    WHERE a.asset_role IN ('TEXT_REFERENCE','TEXT_PATCH') AND a.content_cleared_at IS NULL
+      AND e.operation='AI_TEXT_REPAIR' AND NOT (a.task_id=ANY($2::bigint[]))
+      AND (
+        EXISTS (
+          SELECT 1 FROM standalone_image_workspaces workspace
+          JOIN image_edit_events event ON event.task_id=workspace.task_id AND event.action='DELETE_WORKSPACE'
+          WHERE workspace.task_id=a.task_id
+        )
+        OR NOT EXISTS (
+          SELECT 1 FROM jsonb_array_elements(coalesce(e.text_repair_state->'references','[]'::jsonb)
+            || coalesce(e.text_repair_state->'locations','[]'::jsonb)) binding
+          WHERE binding->>'assetId'=a.id::text
+        )
+      )
+    ORDER BY a.task_id LIMIT $1
+  `, [limitTasks, excludeTasks])).rows;
+  let scheduled = 0;
+  for (const task of tasks) scheduled += await inTransaction(pool,
+    client => scheduleObsoleteTextRepairCleanup(client, task.task_id));
+  return { tasks: tasks.length, scheduled };
 }
 
 /** Schedules old terminal edits, delivered references and deleted workspaces. */
@@ -274,8 +367,11 @@ export async function backfillEligibleReferenceCleanup(pool, { limitTasks = 100 
           )
         ORDER BY a.id
       `, [taskId])).rows.map(row => normalizeTaskId(row.id));
-      return scheduleAssets(client, taskId, ids);
+      return (await scheduleAssets(client, taskId, ids))
+        + (await scheduleObsoleteTextRepairCleanup(client, taskId));
     });
   }
-  return { tasks: tasks.length, scheduled };
+  const repairs = await backfillTextRepairCleanup(pool,
+    { limitTasks: Math.max(0, limitTasks - tasks.length), excludeTasks: tasks.map(task => normalizeTaskId(task.task_id)) });
+  return { tasks: tasks.length + repairs.tasks, scheduled: scheduled + repairs.scheduled };
 }

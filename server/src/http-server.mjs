@@ -89,7 +89,8 @@ export function createControlPlaneApp({
   app.use(async (ctx, next) => {
     const rawUpload = ctx.method === 'POST' && /^\/v1\/image-editor\/uploads\/[^/]+\/[1-5]$/u.test(ctx.path) || ctx.method === 'PUT' && (/^\/v1\/executions\/[^/]+\/assets$/u.test(ctx.path) || /^\/v1\/executions\/[^/]+\/image-edit\/result$/u.test(ctx.path) || /^\/v1\/knowledge-versions\/[^/]+\/asset$/u.test(ctx.path) || ctx.path === '/v1/query-packages/import-preview');
     if (rawUpload) return next();
-    if (ctx.method === 'POST' && ctx.path === '/v1/image-editor/workspaces') return parseImageEditorUpload(ctx, next);
+    if (ctx.method === 'POST' && (ctx.path === '/v1/image-editor/workspaces'
+      || /^\/v1\/executions\/[^/]+\/image-edit\/text-repair-checkpoint$/u.test(ctx.path))) return parseImageEditorUpload(ctx, next);
     return parseJsonBody(ctx, next);
   });
   app.use(async (ctx, next) => {

@@ -90,6 +90,73 @@ test('PostgreSQL manual edit lifecycle, concurrency, immutable membership, retry
       await assert.rejects(()=>service.create(taskId,request(),actor),{code:'IMAGE_EDIT_CONFLICT'});
       await pool.query('UPDATE tasks SET mandatory_copy_qc=false WHERE id=$1',[taskId]);
     });
+    await t.test('text repair progress persists leased references and patches, safely retries and regenerates only related locations',async()=>{
+      const textRepairs=[
+        {id:'first',correctText:'参',region:{x:100,y:100,width:300,height:70}},
+        {id:'second',correctText:'参',region:{x:100,y:300,width:300,height:70}},
+        {id:'third',correctText:'真',region:{x:100,y:500,width:300,height:70}},
+      ];
+      await assert.rejects(service.create(taskId,request({operation:'AI_TEXT_REPAIR',textRepairs:[{...textRepairs[0],correctText:'鼬'}]}),actor),/已批准/u);
+      const edit=await service.create(taskId,request({operation:'AI_TEXT_REPAIR',textRepairs}),actor);
+      assert.equal(edit.textRepairState.references.length,2);
+      let claimed=await service.claim('edit-test');assert.equal(claimed.id,edit.id);
+      await assert.rejects(service.textRepairCheckpoint({...claimed,lease_token:randomUUID()},
+        {kind:'STATUS',text:'参',status:'GENERATING'}),{code:'IMAGE_EDIT_CONFLICT'});
+      await service.textRepairCheckpoint(claimed,{kind:'STATUS',text:'参',status:'GENERATING'});
+      assert.ok((await service.get(edit.id)).version>edit.version);
+      const reference=await sharp({create:{width:256,height:256,channels:4,background:'white'}}).png().toBuffer();
+      const refCheckpoint={kind:'REFERENCE',text:'参',bytes:reference,validation:{passed:true,sourceSha256:sha256,correctText:'参'}};
+      const saved=await service.textRepairCheckpoint(claimed,refCheckpoint);
+      const version=(await service.get(edit.id)).version;
+      assert.equal((await service.textRepairCheckpoint(claimed,refCheckpoint)).assetId,saved.assetId);
+      assert.equal((await service.get(edit.id)).version,version);
+      await service.textRepairCheckpoint(claimed,{...refCheckpoint,text:'真',validation:{...refCheckpoint.validation,correctText:'真'}});
+      const patch=await sharp({create:{width:12,height:18,channels:4,background:'black'}}).png().toBuffer();
+      const rects=[{x:120,y:110,width:12,height:18},{x:120,y:310,width:12,height:18},{x:120,y:510,width:12,height:18}];
+      const saveLocation=index=>service.textRepairCheckpoint(claimed,{kind:'LOCATION',id:textRepairs[index].id,
+        rect:rects[index],bytes:patch,validation:{passed:true,correctText:textRepairs[index].correctText,sourceSha256:sha256,referenceSha256:imageHash(reference)}});
+      await saveLocation(0);
+      await service.fail(claimed,Object.assign(new Error('second location failed'),{validation:{passed:false,stage:'TEXT_REPAIR'}}));
+      await assert.rejects(action(edit.id,'accept',{acceptRejectedResult:true}),/没有可采用/u);
+      await action(edit.id,'retry');claimed=await service.claim('edit-test');
+      const cached=(await service.context(claimed)).textRepairState;
+      assert.equal(cached.references[0].assetId,saved.assetId);assert.equal(cached.locations[0].status,'COMPLETED');
+      await saveLocation(1);await saveLocation(2);
+      const repaired=await sharp(png).composite(rects.map(rect=>({input:patch,left:rect.x,top:rect.y}))).png().toBuffer();
+      const validation={passed:true,integrity:{sha256:imageHash(repaired)},requiredText:['真实参考']};
+      const outsideDrift=await sharp(repaired).composite([{input:patch,left:800,top:800}]).png().toBuffer();
+      await assert.rejects(service.complete(claimed,{bytes:outsideDrift,validation:{...validation,integrity:{sha256:imageHash(outsideDrift)}}}),/遮罩外/u);
+      await service.complete(claimed,{bytes:repaired,validation});
+      const completed=await service.get(edit.id);assert.equal(completed.status,'PREVIEW_READY');
+      assert.equal(completed.validation.textRepair.centralVerification.outside.changedPixels,0);
+      const regenerated=await action(edit.id,'regenerate-reference',{text:'参',confirmation:'LIVE_IMAGE_COST_ACCEPTED'});
+      assert.equal(regenerated.status,'QUEUED');
+      assert.equal(regenerated.textRepairState.references[0].status,'PENDING');
+      assert.equal(regenerated.textRepairState.locations[0].status,'PENDING');assert.equal(regenerated.textRepairState.locations[1].status,'PENDING');
+      assert.equal(regenerated.textRepairState.locations[2].status,'COMPLETED');
+      await action(edit.id,'cancel');
+    });
+    await t.test('failed text repair images may be adopted by explicit human review while automatic validation remains failed',async()=>{
+      const edit=await service.create(taskId,request({operation:'AI_TEXT_REPAIR',textRepairs:[
+        {id:'first',correctText:'参',region:{x:100,y:100,width:300,height:70}},
+      ]}),actor);
+      const claimed=await service.claim('edit-test');assert.equal(claimed.id,edit.id);
+      const candidate=await service.readAsset(await service.asset(currentAsset,taskId));
+      const failure=Object.assign(new Error('错字结果未通过自动验收'),{
+        validation:{passed:false,stage:'TEXT_REPAIR',billedImageGeneration:false,requiredText:['真实参考']},
+      });
+      await service.fail(claimed,failure,{bytes:candidate});
+      const failed=await service.get(edit.id);assert.equal(failed.result.validation.billedImageGeneration,false);
+      await assert.rejects(action(edit.id,'accept'),/明确确认/u);
+      await action(edit.id,'accept',{acceptRejectedResult:true});
+      const adopted=await service.get(edit.id);
+      assert.equal(adopted.status,'ACCEPTED');assert.equal(adopted.result.adopted,true);
+      assert.equal(adopted.result.validation.passed,false);assert.equal(adopted.validation.passed,false);
+      const acceptedEvent=adopted.events.find(event=>event.action==='accept');
+      assert.equal(acceptedEvent.detail.manualOverride,true);assert.equal(acceptedEvent.detail.validationPassed,false);
+      assert.equal((await service.asset(Number(adopted.result.asset_id),taskId)).asset_role,'DELIVERY');
+      currentRun=adopted.result.image_run_id;currentAsset=Number(adopted.result.asset_id);currentHash=(await service.asset(currentAsset,taskId)).sha256;
+    });
     await t.test('reference uploads store only sanitized reference assets and freeze hashes in drafts',async()=>{
       const uploaded=await service.upload(taskId,{base64:png.toString('base64'),mediaType:'image/png',purpose:'实物',source:'测试自有照片'},actor);
       const asset=await service.asset(uploaded.id,taskId);assert.equal(asset.asset_role,'REFERENCE');assert.equal(asset.active,false);assert.equal(asset.edit_metadata.uploadedBy,actor.username);

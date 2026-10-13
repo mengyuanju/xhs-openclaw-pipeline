@@ -10,6 +10,7 @@ import { ImageAlignmentServiceError, createImageAlignmentValidator } from '../..
 import { imageHash, renderMask, renderRegionsMask, mergeWithMask, assertOutsideMask, safeRect, EDIT_WIDTH, EDIT_HEIGHT } from '../../src/image-edit-pixels.mjs';
 import { aiDisclosureBadgeSvg, createAiDisclosureStyle, resolveAiDisclosureVisualStyle } from '../../src/ai-disclosure-badge.mjs';
 import { businessPrompt, withPromptRuntime, promptExecutionSnapshot, promptProvenance } from '../../src/prompt-runtime.mjs';
+import { renderImageTextRepair } from './image-text-repair-renderer.mjs';
 
 const cleanText=s=>String(s).normalize('NFKC').replace(/[\s\p{P}\p{S}]/gu,'').toLowerCase();
 function occurrences(value, phrase) {
@@ -455,6 +456,25 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
       if(lostLease)throw new Error('执行租约失效');
       return {status:'PREVIEW_READY',...await service.complete(e,{bytes:result,mask,validation})};
     }
+    if(e.operation==='AI_TEXT_REPAIR') {
+      const client=agentClient??createAgentClient({modelApi:context.settings.modelApi,environment});
+      const repairRequired=[...pageRequired,...(inheritedDisclosure?.text?[inheritedDisclosure.text]:[])];
+      const disclosureMetadata={required:inheritedDisclosure?.text??'',added:inheritedDisclosure??null};
+      let repaired;
+      try {
+        repaired=await renderImageTextRepair({service,edit:e,context:validationContext,source,inputPath,outputPath,directory,client,
+          requiredText:repairRequired,signal:controller.signal,mock,
+          onImageRequested:()=>{imageModelRequested=true;},onFailedPreview:bytes=>{failedPreviewBytes=bytes;}});
+        repaired.validation.disclosure=disclosureMetadata;
+        if(lostLease)throw new Error('执行租约失效');
+        return {status:'PREVIEW_READY',...await service.complete(e,repaired)};
+      } catch(error) {
+        error.validation={...(repaired?.validation??{}),billedImageGeneration:repaired?.validation?.billedImageGeneration??imageModelRequested,
+          ...(error.validation??{}),passed:false,
+          requiredText:repairRequired,disclosure:disclosureMetadata};
+        throw error;
+      }
+    }
     const client=agentClient??(validateImage?null:createAgentClient({modelApi:context.settings.modelApi,environment}));
     const verify=input=>validateImage?validateImage(input):validateWithExistingVision({client,...input});
     const inheritedDisclosureText=inheritedDisclosure?.text??'';
@@ -708,7 +728,7 @@ export async function processImageEdit({service,storageRoot,workerId,edit=null,s
         code:error.code,serviceCode:error.serviceCode,billedImageGeneration:imageModelRequested};
     }
     if(sourcePreflight)error.validation={...(error.validation??{}),sourcePreflight};
-    await service.fail(e,error,imageModelRequested&&failedPreviewBytes?{bytes:failedPreviewBytes}:undefined);
+    await service.fail(e,error,failedPreviewBytes&&(imageModelRequested||e.operation==='AI_TEXT_REPAIR')?{bytes:failedPreviewBytes}:undefined);
     return {status:'FAILED',error:String(error.message)};
   }
   finally {clearInterval(heartbeat);signal?.removeEventListener('abort',externalAbort);await rm(directory,{recursive:true,force:true});}

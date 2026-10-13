@@ -9,6 +9,12 @@ import { normalizeTaskId, normalizeUuid, ControlPlaneAuthorizationError, Control
 import { createStandaloneImageUploads, normalizeUploadManifest } from './standalone-image-uploads.mjs';
 
 const assetUrl = id => `/v1/image-editor/assets/${id}`;
+function workspaceEditUrls(edit) {
+  if(!edit.textRepairState)return edit;
+  const withUrl=entry=>({...entry,...(entry.assetId?{url:assetUrl(entry.assetId)}:{})});
+  const state={...edit.textRepairState,references:edit.textRepairState.references.map(withUrl),locations:edit.textRepairState.locations.map(withUrl)};
+  return {...edit,textRepairState:state,text_repair_state:state};
+}
 const visibleWorkspace = alias => `NOT EXISTS (SELECT 1 FROM image_edit_events removed WHERE removed.task_id=${alias}.task_id AND removed.action='DELETE_WORKSPACE')`;
 async function currentActor(c, actor) {
   if (!['ADMIN','USER'].includes(actor?.role)) throw new ControlPlaneAuthorizationError();
@@ -243,7 +249,7 @@ export function createStandaloneImageEditor({ pool, storageRoot, onProgrammaticR
       await access(id,actor);
       const items=await edits.list(id);
       const refs=(await pool.query("SELECT id,sha256 FROM assets WHERE task_id=$1 AND asset_role='REFERENCE' AND content_cleared_at IS NULL",[id])).rows;
-      return items.map(edit=>({...edit,referenceAssets:refs.filter(ref=>edit.config.references.some(value=>Number(value.assetId)===Number(ref.id)))
+      return items.map(edit=>workspaceEditUrls({...edit,referenceAssets:refs.filter(ref=>edit.config.references.some(value=>Number(value.assetId)===Number(ref.id)))
         .map(ref=>({id:Number(ref.id),sha256:ref.sha256,url:assetUrl(ref.id),purpose:edit.config.references.find(value=>Number(value.assetId)===Number(ref.id)).purpose}))}));
     },
     async getEdit(id,actor) {
@@ -251,13 +257,13 @@ export function createStandaloneImageEditor({ pool, storageRoot, onProgrammaticR
       const workspace=await access(edit.task_id,actor,pool,{includeDeleted:true});
       // A minimal owner-only receipt lets background monitors stop silently.
       // Details, assets and all mutation endpoints still reject deleted data.
-      return workspace.deleted?{id:edit.id,task_id:edit.task_id,status:'DELETED'}:edit;
+      return workspace.deleted?{id:edit.id,task_id:edit.task_id,status:'DELETED'}:workspaceEditUrls(edit);
     },
-    async createEdit(id,input,actor) {await access(id,actor);return writableEdits(id,actor).create(id,input,actor);},
+    async createEdit(id,input,actor) {await access(id,actor);return workspaceEditUrls(await writableEdits(id,actor).create(id,input,actor));},
     async acceptBatch(id,batchId,input,actor) {await access(id,actor);return writableEdits(id,actor).acceptBatch(id,batchId,input,actor);},
     async uploadReference(id,input,actor) {await access(id,actor);const a=await writableEdits(id,actor).upload(id,input,actor);return {...a,url:assetUrl(a.id)};},
     async deleteReference(id,assetId,actor) {await access(id,actor);return writableEdits(id,actor).deleteReference(id,assetId,actor);},
-    async action(id,action,input,actor) {const edit=await editAccess(id,actor);return writableEdits(edit.task_id,actor).action(id,action,input,actor);},
+    async action(id,action,input,actor) {const edit=await editAccess(id,actor);return workspaceEditUrls(await writableEdits(edit.task_id,actor).action(id,action,input,actor));},
     async asset(id,actor) {
       const asset=(await pool.query('SELECT * FROM assets WHERE id=$1 AND content_cleared_at IS NULL',[normalizeTaskId(id)])).rows[0];
       if(!asset)throw new ControlPlaneNotFoundError('图片不存在');

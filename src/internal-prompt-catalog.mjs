@@ -1786,5 +1786,39 @@ export const INTERNAL_PROMPT_CATALOG = Object.freeze([
         "description": "criteria"
       }
     ]
+  }, {
+    kind: 'INTERNAL_CODEX_IMAGE_CROP_EXECUTION', label: 'Codex 字形和局部图块执行协议', group: '模型执行协议',
+    description: '字形参考或段落图块使用明确的宽高，避免套用完整海报比例。',
+    usage: '图片调用明确指定 canvas 时执行；完整海报调用仍使用原画布协议。',
+    editable: false, layer: 'CONTRACT', defaultPath: 'prompts/internal/codex_image_crop_execution.md',
+    callSites: ['src/codex.mjs#createCodexClient'], variables: [
+      { name: 'slot1', description: '图片生成或编辑的附件角色协议' },
+      { name: 'slot2', description: '经过整数和像素上限校验的画布宽度' },
+      { name: 'slot3', description: '经过整数和像素上限校验的画布高度' },
+    ],
+  }, {
+    kind: 'INTERNAL_TEXT_REPAIR_REFERENCE', label: '错字字形参考生成', group: '图片文字修正',
+    description: '根据用户输入生成正确字形参考图，供展示和后续局部替换使用。',
+    usage: '每种正确文字生成一次参考图；同图多个位置复用同一参考。',
+    editable: false, layer: 'CONTRACT', defaultPath: 'prompts/internal/text_repair_reference.md',
+    callSites: ['server/src/image-text-repair-renderer.mjs#renderImageTextRepair'], variables: [],
+  }, {
+    kind: 'INTERNAL_TEXT_REPAIR_LOCALIZE', label: '段落内错字定位', group: '图片文字修正',
+    description: '从用户框选的句段中定位实际错字小区域，并阻止含混或越界定位。',
+    usage: '替换前定位每个修正项；用户的上下文框不直接作为修改蒙版。',
+    editable: false, layer: 'CONTRACT', defaultPath: 'prompts/internal/text_repair_localize.md',
+    callSites: ['server/src/image-text-repair-renderer.mjs#renderImageTextRepair'], variables: [],
+  }, {
+    kind: 'INTERNAL_TEXT_REPAIR_REPLACE', label: '参考字形局部替换', group: '图片文字修正',
+    description: '结合上下文和生成的参考字形修复指定文字，并匹配邻字样式。',
+    usage: '生成局部修正候选后，程序仅回贴已定位的字形区域。',
+    editable: false, layer: 'CONTRACT', defaultPath: 'prompts/internal/text_repair_replace.md',
+    callSites: ['server/src/image-text-repair-renderer.mjs#renderImageTextRepair'], variables: [],
+  }, {
+    kind: 'INTERNAL_TEXT_REPAIR_VERIFY', label: '字形及替换结果核对', group: '图片文字修正',
+    description: '核对参考字、每处修正和整张结果，保留逐项检查结果。',
+    usage: '错误参考图或失败位置停止通过，保留成功项供明确重试使用。',
+    editable: false, layer: 'CONTRACT', defaultPath: 'prompts/internal/text_repair_verify.md',
+    callSites: ['server/src/image-text-repair-renderer.mjs#renderImageTextRepair'], variables: [],
   }
 ].map(item=>Object.freeze(item)));
