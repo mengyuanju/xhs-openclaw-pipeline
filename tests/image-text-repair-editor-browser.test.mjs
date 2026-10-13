@@ -22,12 +22,12 @@ test('text repair progress shows concrete failure details before generic message
   const locationReason='目标字底部横线与中竖粘连。<script>window.repairFailureInjected=true</script>';
   const referenceMessage='“鼬”参考字形未通过检查，请重新生成参考图';
   const locationMessage='替换后的文字字形或样式未通过检查';
-  const progressMessage='正在按失败原因修正参考图';
+  const progressMessage='正在重新排字';
   const items=[{id:'failed',correctText:'鼬',contextText:'',region:null},{id:'working',correctText:'滩',contextText:'',region:null},
     {id:'malformed',correctText:'撬',contextText:'',region:null}];
   const state={references:[
-    {text:'鼬',status:'FAILED',message:referenceMessage,validation:{passed:false,reason:referenceReason}},
-    {text:'滩',status:'FAILED',message:'参考字形未通过检查',validation:{passed:false,reason:'  '}},
+    {text:'鼬',status:'FAILED',url:'/reference.png',message:referenceMessage,validation:{passed:false,method:'STANDARD_FONT',reason:referenceReason}},
+    {text:'滩',status:'FAILED',url:'/reference.png',message:'参考字形未通过检查',validation:{passed:false,reason:'  '}},
     {text:'撬',status:'FAILED',message:'参考字形详情不可用，请重新检查',validation:{passed:false,reason:{detail:'不应渲染的对象'}}},
   ],locations:[
     {id:'failed',correctText:'鼬',status:'FAILED',message:locationMessage,validation:{passed:false,reason:locationReason}},
@@ -37,8 +37,10 @@ test('text repair progress shows concrete failure details before generic message
   try {
     await build({stdin:{contents:`import React from 'react';import{createRoot}from'react-dom/client';import{TextRepairProgress}from'./app/components/image-text-repair-panel';window.regenerationRequests=[];createRoot(document.getElementById('root')).render(<TextRepairProgress state={${JSON.stringify(state)}} items={${JSON.stringify(items)}} sourceUrl="/source.png" assetUrl={value=>value} status="FAILED" attempts={1} onRegenerate={text=>window.regenerationRequests.push(text)}/>);`,resolveDir:process.cwd(),loader:'tsx'},bundle:true,outfile:join(directory,'bundle.js'),jsx:'automatic',platform:'browser',alias:{'@':process.cwd()},define:{'process.env.NODE_ENV':'"test"'}});
     const js=await readFile(join(directory,'bundle.js'));
+    const referencePng=await sharp({create:{width:64,height:64,channels:4,background:'white'}}).png().toBuffer();
     server=createServer((req,res)=>{
       if(req.url==='/bundle.js'){res.setHeader('content-type','application/javascript');res.end(js);return;}
+      if(req.url==='/reference.png'){res.setHeader('content-type','image/png');res.end(referencePng);return;}
       res.setHeader('content-type','text/html');res.end('<html><meta charset="utf-8"><body><div id="root"></div><script src="/bundle.js"></script></body></html>');
     });
     await new Promise(done=>server.listen(0,'127.0.0.1',done));
@@ -46,13 +48,19 @@ test('text repair progress shows concrete failure details before generic message
     const page=await browser.newPage();await page.goto(`http://127.0.0.1:${server.address().port}`);
     const reference=page.getByRole('region',{name:'文字 鼬 的参考图',exact:true});
     await reference.getByText(referenceReason,{exact:true}).waitFor();
+    assert.equal(await reference.getByRole('img',{name:'标准字体绘制的 鼬 字形参考图',exact:true}).count(),1);
+    assert.equal(await reference.getByText('标准字体排字',{exact:true}).count(),1);
     assert.equal(await reference.getByText(referenceMessage,{exact:true}).count(),0,'generic status must not mask the actual reference failure');
     const location=page.getByRole('region',{name:'第 1 处修正结果',exact:true});
     assert.equal(await location.getByText(locationReason,{exact:true}).count(),1);
     assert.equal(await location.getByText(locationMessage,{exact:true}).count(),0,'local failures also show the actual check reason');
     assert.equal(await location.locator('script').count(),0,'model text remains plain React text');
     assert.equal(await page.evaluate(()=>window.repairFailureInjected),undefined);
-    await page.getByRole('region',{name:'文字 滩 的参考图',exact:true}).getByText('参考字形未通过检查',{exact:true}).waitFor();
+    const legacy=page.getByRole('region',{name:'文字 滩 的参考图',exact:true});
+    await legacy.getByText('参考字形未通过检查',{exact:true}).waitFor();
+    assert.equal(await legacy.getByRole('img',{name:'已保存的 滩 字形参考图',exact:true}).count(),1);
+    assert.equal(await legacy.getByText('历史参考图（未标记标准字体来源）',{exact:true}).count(),1);
+    assert.equal(await legacy.getByText('标准字体排字',{exact:true}).count(),0,'legacy model references must not be relabeled as standard font output');
     await page.getByRole('region',{name:'文字 撬 的参考图',exact:true}).getByText('参考字形详情不可用，请重新检查',{exact:true}).waitFor();
     assert.equal(await page.getByRole('region',{name:'第 3 处修正结果',exact:true}).getByText('局部校验未通过，请重试',{exact:true}).count(),1,'nonstring reasons fall back without rendering untrusted objects');
     assert.equal(await page.getByText('不应渲染的对象',{exact:true}).count(),0);
@@ -60,9 +68,9 @@ test('text repair progress shows concrete failure details before generic message
     assert.equal(await working.getByText(progressMessage,{exact:true}).count(),1,'current progress takes precedence over a previous failed check');
     assert.equal(await working.getByText('旧失败原因',{exact:true}).count(),0);
     assert.deepEqual(await page.evaluate(()=>window.regenerationRequests),[],'rendering a failure must not start a paid retry');
-    const regenerate=reference.getByRole('button',{name:'重新生成此参考并重做关联位置',exact:true});
+    const regenerate=reference.getByRole('button',{name:'重新排字并重做关联位置',exact:true});
     assert.equal(await regenerate.isDisabled(),true);
-    await page.getByLabel('确认重新生成参考及关联修正会再次调用模型并产生费用。',{exact:true}).check();
+    await page.getByLabel('确认重新排字后，关联位置的定位、复杂背景清理和视觉校验可能再次调用模型并产生费用。',{exact:true}).check();
     await regenerate.click();assert.deepEqual(await page.evaluate(()=>window.regenerationRequests),['鼬']);
   } finally {await browser?.close();if(server)await new Promise(done=>server.close(done));await rm(directory,{recursive:true,force:true});}
 });
@@ -86,7 +94,7 @@ async function runTextRepairEditor(standalone,{manualAdoption=false}={}) {
       let chunks=[];for await(const chunk of req)chunks.push(chunk);const input=chunks.length?JSON.parse(Buffer.concat(chunks)):{};
       if(req.url==='/checkpoint') {
         const edit=edits[0];edit.version+=1;
-        if(input.phase==='REFERENCES')edit.textRepairState.references=[{text:'滩',status:'READY',url:'/v1/assets/10',assetId:10,validation:{passed:true}},{text:'鼬',status:'READY',url:'/v1/assets/12',assetId:12,validation:{passed:true}}];
+        if(input.phase==='REFERENCES')edit.textRepairState.references=[{text:'滩',status:'READY',url:'/v1/assets/10',assetId:10,validation:{passed:true,method:'STANDARD_FONT'}},{text:'鼬',status:'READY',url:'/v1/assets/12',assetId:12,validation:{passed:true,method:'STANDARD_FONT'}}];
         else {edit.status=input.phase==='FAILED_NO_RESULT'?'FAILED':input.phase;edit.result=input.phase==='FAILED_NO_RESULT'?null:{asset_id:20,image_run_id:randomUUID(),validation:{passed:input.phase==='PREVIEW_READY'}};edit.textRepairState.locations=edit.config.textRepairs.map((item,index)=>({id:item.id,correctText:item.correctText,status:edit.status==='FAILED'&&index===1?'FAILED':'COMPLETED',rect:{x:180,y:310,width:30,height:42},assetId:11,url:'/v1/assets/11',...(edit.status==='FAILED'&&index===1?{message:'错字位置仍不明确',validation:{passed:false}}:{validation:{passed:true}})}));}
         res.setHeader('content-type','application/json');res.end(JSON.stringify({ok:true}));return;
       }
@@ -106,7 +114,7 @@ async function runTextRepairEditor(standalone,{manualAdoption=false}={}) {
     const page=await browser.newPage({viewport:{width:1280,height:940}}),errors=[];page.on('pageerror',error=>errors.push(error.message));
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     await page.getByRole('tab',{name:'修正错字',exact:true}).click();
-    const submit=page.getByRole('button',{name:standalone?'保存并修正错字':'生成参考并修正错字',exact:true});
+    const submit=page.getByRole('button',{name:standalone?'保存并排字修正':'排字并修正错字',exact:true});
     await submit.click();await page.getByRole('alert').filter({hasText:'请填写第 1 处正确文字'}).waitFor();
     assert.equal(submitted,undefined);
     await page.getByLabel('第 1 处正确文字',{exact:true}).fill('滩');
@@ -125,7 +133,9 @@ async function runTextRepairEditor(standalone,{manualAdoption=false}={}) {
     await page.getByRole('button',{name:'添加另一处错字',exact:true}).click();
     await page.getByLabel('第 3 处正确文字',{exact:true}).fill('鼬');await draw(regions[2]);
     assert.equal(await preview.locator('svg rect').count(),3);
-    await page.getByLabel('确认生成文字参考图、修正图片并进行视觉校验会调用模型并产生费用；完成后检查参考图和修改预览再采用。',{exact:true}).check();
+    await submit.click();await page.getByRole('alert').filter({hasText:/费用确认/u}).waitFor();
+    assert.equal(submitted,undefined,'standard font rendering still requires confirmation for localization, background and vision model calls');
+    await page.getByLabel('确认错字定位、复杂背景清理和视觉校验会调用模型并产生费用；参考字形与最终文字由标准字体绘制并由程序合成，完成后检查预览再采用。',{exact:true}).check();
     await submit.click();
     await page.getByRole('region',{name:'文字参考与修正进度',exact:true}).waitFor();
     assert.equal(submitted.operation,'AI_TEXT_REPAIR');assert.equal(submitted.confirmation,'LIVE_IMAGE_COST_ACCEPTED');assert.deepEqual(submitted.references,[]);
@@ -137,16 +147,16 @@ async function runTextRepairEditor(standalone,{manualAdoption=false}={}) {
       await page.evaluate(()=>window.dispatchEvent(new CustomEvent('xhs:workspace-updated',{detail:{scopes:['image-edits','image-editor'],taskIds:[1]}})));
     }
     await checkpoint('REFERENCES');
-    await page.getByRole('img',{name:'模型生成的 滩 字形参考图',exact:true}).waitFor();
-    assert.equal(await page.getByRole('img',{name:'模型生成的 滩 字形参考图',exact:true}).count(),1,'two identical targets share one displayed reference');
-    assert.equal(await page.getByRole('img',{name:'模型生成的 鼬 字形参考图',exact:true}).count(),1);
+    await page.getByRole('img',{name:'标准字体绘制的 滩 字形参考图',exact:true}).waitFor();
+    assert.equal(await page.getByRole('img',{name:'标准字体绘制的 滩 字形参考图',exact:true}).count(),1,'two identical targets share one displayed reference');
+    assert.equal(await page.getByRole('img',{name:'标准字体绘制的 鼬 字形参考图',exact:true}).count(),1);
     assert.equal(edits[0].status,'RUNNING','references are visible before repair completes');
     await checkpoint('PREVIEW_READY');
     await page.getByRole('img',{name:'第 1 处修改前',exact:true}).waitFor();
     assert.equal(await page.getByRole('img',{name:'第 1 处修改前',exact:true}).getAttribute('viewBox'),'180 310 30 42');
     assert.equal(await page.getByRole('img',{name:'第 1 处修改后',exact:true}).count(),1);
     if(standalone) {
-      await page.reload();await page.getByRole('img',{name:'模型生成的 滩 字形参考图',exact:true}).waitFor();
+      await page.reload();await page.getByRole('img',{name:'标准字体绘制的 滩 字形参考图',exact:true}).waitFor();
       assert.equal(await page.getByRole('tab',{name:'修正错字',exact:true}).getAttribute('aria-selected'),'true');
       assert.equal(await page.getByLabel('第 1 处正确文字',{exact:true}).inputValue(),'滩');
       assert.equal(await page.getByRole('button',{name:'保存草稿',exact:true}).count(),0);
@@ -166,7 +176,7 @@ async function runTextRepairEditor(standalone,{manualAdoption=false}={}) {
     assert.equal(await page.getByRole('button',{name:'重试未完成的位置（可能再次收费）',exact:true}).count(),1);
     if(manualAdoption) {
       assert.equal(await page.getByRole('img',{name:'第 2 处修改后',exact:true}).count(),1,'failed patch remains visible for manual inspection');
-      assert.equal(await page.getByRole('img',{name:'模型生成的 滩 字形参考图',exact:true}).count(),1);
+      assert.equal(await page.getByRole('img',{name:'标准字体绘制的 滩 字形参考图',exact:true}).count(),1);
       await page.getByRole('button',{name:'失败结果',exact:true}).click();
       await page.getByRole('img',{name:'修改结果预览',exact:true}).waitFor();
       await page.getByRole('button',{name:'仍采用此结果',exact:true}).click();
@@ -188,9 +198,9 @@ async function runTextRepairEditor(standalone,{manualAdoption=false}={}) {
       assert.deepEqual(errors,[]);return;
     }
     await page.getByRole('tab',{name:'本次编辑',exact:true}).click();
-    await page.getByLabel('确认重新生成参考及关联修正会再次调用模型并产生费用。',{exact:true}).check();
+    await page.getByLabel('确认重新排字后，关联位置的定位、复杂背景清理和视觉校验可能再次调用模型并产生费用。',{exact:true}).check();
     const regenerateResponse=page.waitForResponse(response=>response.url().endsWith('/regenerate-reference')&&response.request().method()==='POST');
-    await page.getByRole('button',{name:'重新生成此参考并重做关联位置',exact:true}).first().click();
+    await page.getByRole('button',{name:'重新排字并重做关联位置',exact:true}).first().click();
     await regenerateResponse;
     assert.equal(regeneration.text,'滩');assert.equal(regeneration.confirmation,'LIVE_IMAGE_COST_ACCEPTED');assert.equal(regeneration.version,4);
     await checkpoint('REFERENCES');await checkpoint('PREVIEW_READY');
@@ -198,11 +208,11 @@ async function runTextRepairEditor(standalone,{manualAdoption=false}={}) {
     await page.waitForFunction(()=>document.querySelector('[aria-label="文字参考与修正进度"]')?.getAttribute('data-status')==='PREVIEW_READY');
     if(!standalone) {
       const output=resolve('output');await mkdir(output,{recursive:true});
-      await page.getByRole('region',{name:'文字参考与修正进度',exact:true}).getByText('模型生成的文字参考图',{exact:true}).scrollIntoViewIfNeeded();
+      await page.getByRole('region',{name:'文字参考与修正进度',exact:true}).getByText('文字字形参考图',{exact:true}).scrollIntoViewIfNeeded();
       await page.screenshot({path:join(output,'text-repair-ui-desktop.png'),animations:'disabled'});
       await page.setViewportSize({width:420,height:880});
       await page.getByRole('tablist',{name:'移动端工作区',exact:true}).getByRole('tab',{name:'编辑',exact:true}).click();
-      await page.getByRole('region',{name:'文字参考与修正进度',exact:true}).getByText('模型生成的文字参考图',{exact:true}).scrollIntoViewIfNeeded();
+      await page.getByRole('region',{name:'文字参考与修正进度',exact:true}).getByText('文字字形参考图',{exact:true}).scrollIntoViewIfNeeded();
       await page.screenshot({path:join(output,'text-repair-ui-mobile.png'),animations:'disabled'});
       await page.setViewportSize({width:1280,height:940});
     }

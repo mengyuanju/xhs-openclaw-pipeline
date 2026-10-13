@@ -7,13 +7,57 @@ import { join } from 'node:path';
 import sharp from 'sharp';
 import { normalizeEdit,createImageEditingService } from '../server/src/image-editing.mjs';
 import { imageHash } from '../src/image-edit-pixels.mjs';
+import { renderTextRepairReference, renderTextRepairGlyph, TEXT_REPAIR_FONT_SHA256, TEXT_REPAIR_RENDERER_VERSION } from '../src/text-repair-font.mjs';
 import { initialTextRepairState, assertTextRepairApprovedCopy, normalizeTextRepairCheckpoint,
-  textRepairArtifactMetadata, resetTextRepairReference, verifyTextRepairCompletion } from '../server/src/image-text-repair-state.mjs';
+  textRepairArtifactMetadata, resetTextRepairReference, upgradeTextRepairStateForStandardFont,
+  verifyTextRepairCompletion } from '../server/src/image-text-repair-state.mjs';
 
 const item=(id,correctText,x=100)=>({id,correctText,region:{x,y:100,width:300,height:90}});
 const request=items=>({requestId:randomUUID(),sourceImageRunId:randomUUID(),sourceAssetId:1,copyRevisionId:1,
   sha256:'a'.repeat(64),targetPage:1,operation:'AI_TEXT_REPAIR',confirmation:'LIVE_IMAGE_COST_ACCEPTED',textRepairs:items});
 const png=(width,height,color)=>sharp({create:{width,height,channels:4,background:color}}).png().toBuffer();
+const standardValidation=(text,sourceSha256,extra={})=>({passed:true,method:'STANDARD_FONT',correctText:text,sourceSha256,
+  textRendering:{renderer:'STANDARD_FONT',text,fontSha256:TEXT_REPAIR_FONT_SHA256,rendererVersion:TEXT_REPAIR_RENDERER_VERSION},...extra});
+
+test('font upgrade retains old references while invalidating only incompatible patch bindings',()=>{
+  const sourceSha256='a'.repeat(64), oldHash='b'.repeat(64), currentHash='c'.repeat(64);
+  const state={revision:7,references:[
+    {text:'滩',status:'READY',assetId:11,sha256:oldHash,url:'/v1/assets/11',validation:{passed:true,model:'old-model',reason:'旧图片已通过'}},
+    {text:'鼬',status:'READY',assetId:12,sha256:currentHash,validation:standardValidation('鼬',sourceSha256)},
+  ],locations:[
+    {id:'first',correctText:'滩',status:'COMPLETED',assetId:21,rect:{x:125,y:115,width:15,height:20}},
+    {id:'second',correctText:'滩',status:'FAILED',assetId:22},
+    {id:'third',correctText:'鼬',status:'COMPLETED',assetId:23,referenceSha256:currentHash,
+      validation:standardValidation('鼬',sourceSha256,{referenceSha256:currentHash})},
+    {id:'fourth',correctText:'鼬',status:'COMPLETED',assetId:24,referenceSha256:currentHash,validation:{passed:true,model:'old-model'}},
+  ]};
+  const original=structuredClone(state), upgraded=upgradeTextRepairStateForStandardFont(state,sourceSha256);
+  assert.equal(upgraded.revision,8);
+  assert.deepEqual(upgraded.references[0],{...state.references[0],status:'PENDING'});
+  assert.equal(upgraded.references[0].assetId,11);assert.equal(upgraded.references[0].validation.reason,'旧图片已通过');
+  assert.equal(upgraded.references[1],state.references[1]);assert.equal(upgraded.locations[2],state.locations[2]);
+  for(const index of [0,1,3])assert.deepEqual(upgraded.locations[index],{id:state.locations[index].id,correctText:state.locations[index].correctText,status:'PENDING'});
+  assert.deepEqual(state,original);assert.equal(upgradeTextRepairStateForStandardFont(upgraded,sourceSha256),upgraded);
+});
+
+test('font upgrade detects incompatible source, method, renderer, version, font and text without changing valid caches',()=>{
+  const sourceSha256='a'.repeat(64), referenceHash='b'.repeat(64);
+  const state={revision:3,references:[{text:'鳖',status:'READY',assetId:2,sha256:referenceHash,validation:standardValidation('鳖',sourceSha256)}],
+    locations:[{id:'first',correctText:'鳖',status:'COMPLETED',assetId:3,referenceSha256:referenceHash,
+      validation:standardValidation('鳖',sourceSha256,{referenceSha256:referenceHash})}]};
+  assert.equal(upgradeTextRepairStateForStandardFont(state,sourceSha256),state);
+  for(const mutate of [entry=>{entry.validation.sourceSha256='f'.repeat(64);},entry=>{entry.validation.method='MODEL';},
+    entry=>{entry.validation.textRendering.renderer='MODEL';},entry=>{entry.validation.textRendering.rendererVersion='old';},
+    entry=>{entry.validation.textRendering.fontSha256='f'.repeat(64);},entry=>{entry.validation.textRendering.text='错';}]) {
+    const changed=structuredClone(state);mutate(changed.references[0]);
+    const upgraded=upgradeTextRepairStateForStandardFont(changed,sourceSha256);
+    assert.equal(upgraded.references[0].status,'PENDING');assert.equal(upgraded.references[0].assetId,2);
+    assert.deepEqual(upgraded.locations[0],{id:'first',correctText:'鳖',status:'PENDING'});
+  }
+  const wrongBinding=structuredClone(state);wrongBinding.locations[0].validation.referenceSha256='f'.repeat(64);
+  const upgraded=upgradeTextRepairStateForStandardFont(wrongBinding,sourceSha256);
+  assert.equal(upgraded.references[0],wrongBinding.references[0]);assert.equal(upgraded.locations[0].assetId,undefined);
+});
 
 test('text repairs use a dedicated billable operation, generated references and strict request identity',()=>{
   const config=normalizeEdit(request([item('first','滩'),item('second','鼬',500)]));
@@ -161,6 +205,149 @@ test('a fake repository exercises persistent streamed references, replay and lea
     row={...row,lease_expires_at:new Date(Date.now()-1).toISOString()};
     await assert.rejects(service.textRepairCheckpoint(edit,input),{code:'IMAGE_EDIT_CONFLICT'});
   } finally {await rm(storageRoot,{recursive:true,force:true});}
+});
+
+async function standardFontUpgradeFixture({legacy=true}={}) {
+  const storageRoot=await mkdtemp(join(tmpdir(),'text-repair-upgrade-'));
+  const sourceBytes=await png(1086,1448,'white');
+  const config={...normalizeEdit({...request([item('first','滩'),item('second','鼬',500)]),sha256:imageHash(sourceBytes)}),
+    imageEditPrompt:{content:'frozen edit rules'}};
+  const editId=randomUUID(),executionId=randomUUID(),cleanupJobs=[],queries=[];
+  const assets=[];
+  async function addAsset(id,bytes,role,text,locationId=null) {
+    const path=join(storageRoot,`${id}.png`);await writeFile(path,bytes);
+    const asset={id,task_id:1,sha256:imageHash(bytes),storage_path:path,asset_role:role,
+      edit_metadata:{editId,text,locationId}};assets.push(asset);return asset;
+  }
+  await addAsset(1,sourceBytes,'DELIVERY');
+  const oldReference=await addAsset(2,legacy?await png(120,120,'black'):(await renderTextRepairReference({text:'滩'})).png,'TEXT_REFERENCE','滩');
+  const oldPatch=await addAsset(3,await png(15,20,'black'),'TEXT_PATCH','滩','first');
+  const currentReference=await addAsset(4,(await renderTextRepairReference({text:'鼬'})).png,'TEXT_REFERENCE','鼬');
+  const currentPatch=await addAsset(5,await png(15,20,'black'),'TEXT_PATCH','鼬','second');
+  const reference=(text,asset,validation)=>({text,status:'READY',assetId:asset.id,sha256:asset.sha256,url:`/v1/assets/${asset.id}`,validation});
+  const location=(id,text,asset,ref,x,validation)=>({id,correctText:text,status:'COMPLETED',assetId:asset.id,
+    sha256:asset.sha256,referenceSha256:ref.sha256,rect:{x,y:115,width:15,height:20},validation});
+  const legacyValidation={passed:true,sourceSha256:config.sha256,correctText:'滩',model:'legacy-model',reason:'旧字图检查已通过'};
+  let row={id:editId,execution_id:executionId,task_id:1,source_image_run_id:config.sourceImageRunId,source_asset_id:1,
+    source_sha256:config.sha256,copy_revision_id:1,target_page:1,operation:config.operation,config,status:'RUNNING',version:4,
+    lease_token:randomUUID(),lease_expires_at:new Date(Date.now()+60_000).toISOString(),text_repair_state:{revision:2,
+      references:[reference('滩',oldReference,legacy?legacyValidation:standardValidation('滩',config.sha256)),
+        reference('鼬',currentReference,standardValidation('鼬',config.sha256))],
+      locations:[location('first','滩',oldPatch,oldReference,125,legacy?{...legacyValidation,referenceSha256:oldReference.sha256}
+        :standardValidation('滩',config.sha256,{referenceSha256:oldReference.sha256})),
+      location('second','鼬',currentPatch,currentReference,525,standardValidation('鼬',config.sha256,{referenceSha256:currentReference.sha256}))]}};
+  const run={id:config.sourceImageRunId,task_id:1,copy_revision_id:1,status:'COMPLETED',image_production_chain_id:config.sourceImageRunId,
+    result:{images:[{assetId:1}]}};
+  const reply=rows=>({rows,rowCount:rows.length});
+  const query=async(sql,values=[])=>{
+    queries.push(sql);
+    if(['BEGIN','COMMIT','ROLLBACK'].includes(sql))return reply([]);
+    if(sql.includes('FROM image_edit_requests e JOIN task_executions'))return reply([{...structuredClone(row),execution_status:'RUNNING'}]);
+    if(sql.startsWith('SELECT * FROM image_edit_requests')||sql.includes('FROM image_edit_requests e LEFT JOIN'))return reply([structuredClone(row)]);
+    if(sql.startsWith('SELECT * FROM tasks'))return reply([{id:1,state:'MANUAL_ARCHIVE',current_copy_revision_id:1,current_image_run_id:config.sourceImageRunId}]);
+    if(sql.startsWith('SELECT id FROM tasks'))return reply([{id:1}]);
+    if(sql.startsWith('SELECT * FROM copy_revisions'))return reply([{id:1,approved_at:'2026-01-01',content:{imagePlan:[{headline:'海滩猫鼬'}]}}]);
+    if(sql.startsWith('SELECT * FROM image_runs'))return reply([run]);
+    if(sql.startsWith('SELECT a.* FROM image_edit_reference_assets')||sql.startsWith('SELECT asset_id,sha256 FROM image_edit_reference_assets'))return reply([]);
+    if(sql.startsWith('SELECT value FROM global_settings'))return reply([]);
+    if(sql.startsWith('SELECT * FROM assets WHERE task_id='))return reply(assets.filter(asset=>values[1].includes(asset.id)&&!asset.content_cleared_at).map(asset=>structuredClone(asset)));
+    if(sql.startsWith('SELECT * FROM assets'))return reply(assets.filter(asset=>asset.id===Number(values[0])&&(!sql.includes('content_cleared_at IS NULL')||!asset.content_cleared_at)).map(asset=>structuredClone(asset)));
+    if(sql.includes('FROM assets a JOIN image_edit_requests e'))return reply(assets.filter(asset=>['TEXT_REFERENCE','TEXT_PATCH'].includes(asset.asset_role)&&!asset.content_cleared_at)
+      .map(asset=>({...structuredClone(asset),repair_edit_id:row.id,repair_task_id:1,repair_operation:row.operation,text_repair_state:structuredClone(row.text_repair_state),workspace_deleted:false})));
+    if(sql.includes('INSERT INTO image_reference_cleanup_jobs')) {if(!cleanupJobs.includes(values[0]))cleanupJobs.push(values[0]);return reply([]);}
+    if(sql.includes('UPDATE assets SET content_cleared_at')) {assets.find(asset=>asset.id===values[0]).content_cleared_at=new Date().toISOString();return reply([]);}
+    if(sql.includes('FROM image_reference_cleanup_jobs'))return reply([]);
+    if(sql.startsWith('INSERT INTO assets')) {
+      const asset={id:assets.length+1,task_id:values[0],image_run_id:values[1],byte_size:values[2],sha256:values[3],storage_path:values[4],
+        original_name:values[5],asset_role:values[9],edit_metadata:values[10]};assets.push(asset);return reply([structuredClone(asset)]);
+    }
+    if(sql.startsWith('UPDATE image_edit_requests SET text_repair_state')) {row={...row,text_repair_state:structuredClone(values[1]),version:row.version+1};return reply([]);}
+    if(sql.startsWith('UPDATE task_executions SET last_activity_at'))return reply([]);
+    throw new Error(`Unexpected upgrade repository query: ${sql}`);
+  };
+  const pool={query,connect:async()=>({query,release(){}})};
+  return {service:createImageEditingService({pool,storageRoot}),config,assets,cleanupJobs,queries,
+    get row(){return structuredClone(row);},changeRow(changes){row={...row,...changes};},
+    close:()=>rm(storageRoot,{recursive:true,force:true})};
+}
+
+test('running legacy retry upgrades once, retains old reference display and accepts new canonical checkpoints',async()=>{
+  const f=await standardFontUpgradeFixture();
+  try {
+    const worker=f.row,original=f.row.text_repair_state;
+    const context=await f.service.context(worker),state=context.textRepairState;
+    assert.equal(state.references[0].status,'PENDING');assert.equal(state.references[0].assetId,2);
+    assert.deepEqual(state.references[0].validation,original.references[0].validation);
+    assert.deepEqual(await f.service.readAsset(state.references[0].asset),await png(120,120,'black'));
+    assert.deepEqual(state.locations[0],{id:'first',correctText:'滩',status:'PENDING'});
+    assert.equal(state.references[1].status,'READY');assert.equal(state.locations[1].assetId,5);
+    assert.deepEqual(f.cleanupJobs,[3]);assert.equal(f.assets.find(asset=>asset.id===2).content_cleared_at,undefined);
+    assert.ok(f.assets.find(asset=>asset.id===3).content_cleared_at);
+    const version=f.row.version;await f.service.context(worker);assert.equal(f.row.version,version);
+    const canonical=await renderTextRepairReference({text:'滩'});
+    const checkpoint={kind:'REFERENCE',text:'滩',bytes:canonical.png,
+      validation:standardValidation('滩',f.config.sha256,{textRendering:canonical.metadata})};
+    const stored=await f.service.textRepairCheckpoint(worker,checkpoint);
+    assert.equal(stored.status,'READY');assert.notEqual(stored.assetId,2);
+    assert.deepEqual(f.cleanupJobs,[3,2]);assert.ok(f.assets.find(asset=>asset.id===2).content_cleared_at);
+    assert.equal(f.assets.find(asset=>asset.id===4).content_cleared_at,undefined);
+    assert.equal(f.assets.find(asset=>asset.id===5).content_cleared_at,undefined);
+    const after=(await f.service.context(worker)).textRepairState;
+    assert.equal(after.references[0].assetId,stored.assetId);assert.equal(after.locations[1].assetId,5);
+    await assert.rejects(f.service.textRepairCheckpoint(worker,{...checkpoint,bytes:await png(1024,1024,'black')}),{code:'IMAGE_EDIT_CONFLICT'});
+  } finally {await f.close();}
+});
+
+test('same-version font execution contexts remain unchanged and do not schedule cleanup',async()=>{
+  const f=await standardFontUpgradeFixture({legacy:false});
+  try {
+    const original=f.row;await f.service.context(original);
+    await f.service.executorContext(original.execution_id,original.id,original.lease_token);
+    assert.deepEqual(f.row,original);assert.deepEqual(f.cleanupJobs,[]);
+    assert.equal(f.queries.some(sql=>sql.startsWith('UPDATE image_edit_requests SET text_repair_state')),false);
+  } finally {await f.close();}
+});
+
+test('a legacy completed patch can upgrade without discarding its current standard-font reference',async()=>{
+  const f=await standardFontUpgradeFixture({legacy:false});
+  try {
+    const worker=f.row,state=worker.text_repair_state;
+    delete state.locations[0].validation.method;state.locations[0].validation.model='legacy-model';
+    f.changeRow({text_repair_state:state});
+    const context=await f.service.executorContext(worker.execution_id,worker.id,worker.lease_token);
+    assert.equal(context.textRepairState.references[0].status,'READY');
+    assert.equal(context.textRepairState.references[0].assetId,2);
+    assert.deepEqual(context.textRepairState.locations[0],{id:'first',correctText:'滩',status:'PENDING'});
+    assert.deepEqual(f.cleanupJobs,[3]);
+    const glyph=await renderTextRepairGlyph({text:'滩',width:15,height:20});
+    const bytes=await sharp(await png(15,20,'white')).composite([{input:glyph.png}]).png().toBuffer();
+    const checkpoint={kind:'LOCATION',id:'first',rect:{x:125,y:115,width:15,height:20},bytes,
+      validation:standardValidation('滩',f.config.sha256,{textRendering:glyph.metadata,referenceSha256:state.references[0].sha256})};
+    const stored=await f.service.executorTextRepairCheckpoint(worker.execution_id,worker.id,worker.lease_token,checkpoint);
+    assert.equal(stored.status,'COMPLETED');assert.notEqual(stored.assetId,3);
+    assert.equal(f.assets.find(asset=>asset.id===2).content_cleared_at,undefined);
+    await assert.rejects(f.service.executorTextRepairCheckpoint(worker.execution_id,worker.id,worker.lease_token,
+      {...checkpoint,bytes:await png(15,20,'red')}),{code:'IMAGE_EDIT_CONFLICT'});
+  } finally {await f.close();}
+});
+
+test('stale, expired or cancelled leases cannot trigger font state upgrades and accepted history stays read-only',async()=>{
+  for(const mode of ['wrong-token','expired','cancelled','accepted']) {
+    const f=await standardFontUpgradeFixture();
+    try {
+      const worker=f.row;
+      if(mode==='expired')f.changeRow({lease_expires_at:new Date(Date.now()-1000).toISOString()});
+      if(mode==='cancelled')f.changeRow({status:'CANCELLED',lease_token:null});
+      if(mode==='accepted')f.changeRow({status:'ACCEPTED',lease_token:null});
+      const original=f.row,token=mode==='wrong-token'?randomUUID():worker.lease_token;
+      await assert.rejects(f.service.context({...worker,lease_token:token}),{code:'IMAGE_EDIT_CONFLICT'});
+      await assert.rejects(f.service.executorContext(worker.execution_id,worker.id,token),{code:'IMAGE_EDIT_CONFLICT'});
+      const history=await f.service.get(worker.id);
+      assert.deepEqual(history.textRepairState,original.text_repair_state);
+      assert.deepEqual(f.row,original);assert.deepEqual(f.cleanupJobs,[]);
+      assert.equal(f.queries.some(sql=>sql.startsWith('UPDATE image_edit_requests SET text_repair_state')),false);
+    } finally {await f.close();}
+  }
 });
 
 async function failedTextRepairFixture() {

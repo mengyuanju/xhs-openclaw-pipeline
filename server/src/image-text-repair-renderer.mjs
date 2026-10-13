@@ -3,7 +3,10 @@ import { resolve } from 'node:path';
 import sharp from 'sharp';
 import { businessPrompt, internalPrompt, promptProvenance } from '../../src/prompt-runtime.mjs';
 import { normalizeTextRepairs, validateTextRepairRect, assertTextRepairRegions, renderTextRepairMask } from '../../src/image-text-repair.mjs';
-import { imageHash, assertOutsideMask, EDIT_WIDTH, EDIT_HEIGHT } from '../../src/image-edit-pixels.mjs';
+import { imageHash, assertOutsideMask, safeRect, EDIT_WIDTH, EDIT_HEIGHT } from '../../src/image-edit-pixels.mjs';
+import { getTextRepairFontMetadata, renderTextRepairReference, renderTextRepairGlyph } from '../../src/text-repair-font.mjs';
+import { analyzeTextRepairBackground } from '../../src/text-repair-background.mjs';
+import { refineTextRepairLocalization } from '../../src/text-repair-localization.mjs';
 
 const normalized = value => String(value ?? '').normalize('NFKC').replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase();
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -26,8 +29,7 @@ function confirmedReview(result, fields, text) {
     checks: Object.fromEntries(fields.map(field => [field, checks[field] === true])), reason: String(review.reason ?? '').slice(0, 1000), model: result.model ?? null };
 }
 function repairPrompt(context, config, contractName, data) {
-  if (contractName === 'INTERNAL_TEXT_REPAIR_REFERENCE'
-    || (contractName === 'INTERNAL_TEXT_REPAIR_VERIFY' && data.mode === 'REFERENCE')) {
+  if (['INTERNAL_TEXT_REPAIR_LOCALIZE', 'INTERNAL_TEXT_REPAIR_REPLACE'].includes(contractName)) {
     const input = JSON.stringify({ operation: 'AI_TEXT_REPAIR', ...data }).replaceAll('<', '\\u003c').replaceAll('>', '\\u003e');
     return `<program_contract>\n${internalPrompt(contractName)}\n</program_contract>\n<untrusted_image_text_repair_request>\n${input}\n</untrusted_image_text_repair_request>`;
   }
@@ -39,22 +41,11 @@ function repairPrompt(context, config, contractName, data) {
     data: { operation: 'AI_TEXT_REPAIR', ...data },
   });
 }
-function referenceFeedback(entry) {
-  const validation = entry.validation ?? {};
-  return {
-    passed: validation.passed === true,
-    reason: String(validation.reason ?? '').slice(0, 1000),
-    recognizedText: String(validation.recognizedText ?? '').slice(0, 100),
-    checks: Object.fromEntries(['correctGlyphs', 'readable', 'noExtraText'].map(field => [field, validation.checks?.[field] === true])),
-    requestedRegeneration: entry.status === 'PENDING',
-  };
-}
-function referenceFailureReason(checked, text) {
-  if (checked.reason.trim()) return checked.reason;
-  if (checked.recognizedText.trim() !== text) return `实际识别文字“${checked.recognizedText.slice(0, 100)}”与正确文字“${text}”不一致`;
-  if (checked.confidence < 0.9) return `参考字形检查置信度不足（${checked.confidence.toFixed(2)}），请放大核对笔画`;
-  return '参考字形的笔画、清晰度或额外文字检查未通过';
-}
+const currentFont = (entry, font) => entry?.validation?.method === 'STANDARD_FONT'
+  && entry.validation.textRendering?.renderer === 'STANDARD_FONT'
+  && entry.validation.textRendering?.text === entry.validation.correctText
+  && entry.validation.textRendering?.rendererVersion === font.rendererVersion
+  && entry.validation.textRendering?.fontSha256 === font.fontSha256;
 async function boundedPng(bytes, expected) {
   if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > 10 * 1024 * 1024) throw new TypeError('错字修复图片大小无效');
   const metadata = await sharp(bytes, { failOn: 'warning', animated: true, limitInputPixels: 16_000_000 }).metadata();
@@ -80,17 +71,34 @@ async function readCached(service, entry, expected) {
   if (!/^[a-f0-9]{64}$/u.test(entry.sha256 ?? '') || imageHash(bytes) !== entry.sha256) throw new TypeError('错字修复缓存图片校验失败');
   return (await boundedPng(bytes, expected)).bytes;
 }
-function focusRegion(item, rect) {
-  const padding = Math.max(16, rect.height * 2);
-  const x = Math.max(item.region.x, rect.x - padding), y = Math.max(item.region.y, rect.y - padding);
-  const right = Math.min(item.region.x + item.region.width, rect.x + rect.width + padding);
-  const bottom = Math.min(item.region.y + item.region.height, rect.y + rect.height + padding);
+function focusRegion(rect) {
+  // Context may be read outside the selected sentence; only rect may be written.
+  // Keeping vertical context prevents a one-line strip from exceeding native image aspect limits.
+  const padding = Math.max(32, rect.height * 2);
+  let x = Math.max(0, rect.x - padding), y = Math.max(0, rect.y - padding);
+  let right = Math.min(EDIT_WIDTH, rect.x + rect.width + padding);
+  let bottom = Math.min(EDIT_HEIGHT, rect.y + rect.height + padding);
+  if ((right - x) / (bottom - y) > 2.8) {
+    const height = Math.min(EDIT_HEIGHT, Math.ceil((right - x) / 2.8));
+    y = Math.max(0, Math.min(EDIT_HEIGHT - height, Math.floor((y + bottom - height) / 2)));
+    bottom = y + height;
+  }
+  if ((bottom - y) / (right - x) > 2.8) {
+    const width = Math.min(EDIT_WIDTH, Math.ceil((bottom - y) / 2.8));
+    x = Math.max(0, Math.min(EDIT_WIDTH - width, Math.floor((x + right - width) / 2)));
+    right = x + width;
+  }
   return { x, y, width: right - x, height: bottom - y };
 }
 async function prepareFocus(source, item, rect, path) {
-  const focus = focusRegion(item, rect);
-  const scale = Math.min(8, 2048 / focus.width, 2048 / focus.height);
-  const width = Math.max(1, Math.round(focus.width * scale)), height = Math.max(1, Math.round(focus.height * scale));
+  const focus = focusRegion(rect);
+  let scale = Math.min(8, 2048 / focus.width, 2048 / focus.height);
+  if (focus.width * focus.height * scale * scale < 655360) {
+    scale = Math.min(2048 / focus.width, 2048 / focus.height, Math.sqrt(655360 / (focus.width * focus.height)) * 1.02);
+  }
+  const width = Math.min(2048, Math.ceil(focus.width * scale / 16) * 16);
+  const height = Math.min(2048, Math.ceil(focus.height * scale / 16) * 16);
+  if (Math.max(width / height, height / width) > 3 || width * height < 655360) throw new TypeError('文字背景处理画布比例或尺寸无效');
   const bytes = await sharp(source).extract({ left: focus.x, top: focus.y, width: focus.width, height: focus.height })
     .resize(width, height).png().toBuffer();
   await writeFile(path, bytes);
@@ -118,10 +126,11 @@ function validateApprovedCopy(context, repairs, requiredText) {
 export async function renderImageTextRepair({ service, edit, context, source, inputPath, outputPath, directory, client,
   requiredText = [], signal, mock = false, onImageRequested = () => {}, onFailedPreview = () => {} }) {
   if (mock) throw new Error('mock 不生成可采用的错字修复结果');
-  if (!client?.runImage || !client?.runImageEdit || !client?.runVision || !service.textRepairCheckpoint) throw new Error('执行器尚不支持错字修复，请升级后重试');
+  if (!client?.runVision || !service.textRepairCheckpoint) throw new Error('执行器尚不支持标准字体错字修复，请升级后重试');
   const config = edit.config, repairs = normalizeTextRepairs(config.textRepairs);
   validateApprovedCopy(context, repairs, requiredText);
   const sourceSha256 = imageHash(source), state = context.textRepairState ?? { references: [], locations: [] };
+  const font = await getTextRepairFontMetadata();
   const references = new Map(), patches = [], failures = [];
   let generationAttempts = 0, model = null;
   const checkpoint = input => service.textRepairCheckpoint(edit, input);
@@ -135,38 +144,21 @@ export async function renderImageTextRepair({ service, edit, context, source, in
     const path = resolve(directory, `glyph-reference-${index}.png`);
     let bytes = null, savedReference = false;
     try {
-      const cached = state.references?.find(entry => entry.text === text && entry.status === 'READY' && entry.validation?.passed === true);
+      const cached = state.references?.find(entry => entry.text === text && entry.status === 'READY' && entry.validation?.passed === true
+        && entry.validation.sourceSha256 === sourceSha256 && entry.validation.correctText === text && currentFont(entry, font));
       if (cached) {
-        bytes = await readCached(service, cached); await writeFile(path, bytes);
+        bytes = await readCached(service, cached, { width: 1024, height: 1024 }); await writeFile(path, bytes);
         references.set(text, { ...cached, bytes, path, reused: true }); continue;
       }
-      const previous = state.references?.find(entry => entry.text === text && entry.assetId
-        && ['FAILED', 'PENDING'].includes(entry.status));
-      let previousPath;
-      if (previous) {
-        if (previous.validation?.sourceSha256 !== sourceSha256 || previous.validation?.correctText !== text) {
-          throw new TypeError('上次参考字形与当前源图或正确文字不一致');
-        }
-        previousPath = resolve(directory, `glyph-reference-${index}-previous.png`);
-        await writeFile(previousPath, await readCached(service, previous));
-      }
-      await checkpoint({ kind: 'STATUS', text, status: 'GENERATING', message: '正在生成正确字形参考图' });
-      requestImage();
-      const request = { prompt: repairPrompt(context, config, 'INTERNAL_TEXT_REPAIR_REFERENCE',
-        { correctText: text, sourceSha256, mode: previous ? 'REPAIR_REFERENCE' : 'GENERATE_REFERENCE',
-          layout: 'large readable black glyphs on plain white background; no other text',
-          ...(previous ? { previousReview: referenceFeedback(previous), attachmentRoles: ['previous glyph reference to inspect and correct'] } : {}) }),
-        canvas: { width: 1024, height: 1024 }, outputPath: path, signal };
-      const generated = previous ? await client.runImageEdit({ ...request, inputPaths: [previousPath] }) : await client.runImage(request);
-      model = generated.model ?? model;
-      bytes = (await boundedPng(await readFile(path))).bytes;
-      const checked = confirmedReview(await review('INTERNAL_TEXT_REPAIR_VERIFY', { mode: 'REFERENCE', correctText: text }, [path]),
-        ['correctGlyphs', 'readable', 'noExtraText'], text);
-      checked.passed = checked.passed && checked.recognizedText.trim() === text;
-      if (!checked.passed) checked.reason = referenceFailureReason(checked, text);
-      const saved = await checkpoint({ kind: 'REFERENCE', text, bytes, validation: { ...checked, sourceSha256, correctText: text } });
+      await checkpoint({ kind: 'STATUS', text, status: 'GENERATING', message: '正在从标准中文字库绘制参考字形' });
+      const rendered = await renderTextRepairReference({ text });
+      bytes = (await boundedPng(rendered.png, { width: 1024, height: 1024 })).bytes;
+      await writeFile(path, bytes);
+      const saved = await checkpoint({ kind: 'REFERENCE', text, bytes, validation: {
+        passed: true, method: 'STANDARD_FONT', textRendering: rendered.metadata, sourceSha256, correctText: text,
+        recognizedText: text, checks: { fontIntegrity: true, unicodeCoverage: true, noFontFallback: true },
+      } });
       savedReference = true;
-      if (!checked.passed) throw new Error(`“${text}”参考字形未通过检查：${checked.reason}；请重新生成参考图`);
       references.set(text, { ...saved, bytes, path, reused: false });
     } catch (error) {
       if (signal?.aborted) throw error;
@@ -192,7 +184,7 @@ export async function renderImageTextRepair({ service, edit, context, source, in
     try {
       const cached = state.locations?.find(entry => entry.id === item.id && entry.status === 'COMPLETED' && entry.validation?.passed === true
         && entry.validation.correctText === item.correctText && entry.validation.referenceSha256 === reference.sha256
-        && entry.validation.sourceSha256 === sourceSha256);
+        && entry.validation.sourceSha256 === sourceSha256 && currentFont(entry, font));
       if (cached) {
         rect = validateTextRepairRect(cached.rect, item); assertTextRepairRegions([...patches.map(patch => patch.rect), rect]);
         patchBytes = await readCached(service, cached, rect); patches.push({ ...cached, rect, bytes: patchBytes, reused: true }); continue;
@@ -204,43 +196,69 @@ export async function renderImageTextRepair({ service, edit, context, source, in
       const localized = reviewObject(await review('INTERNAL_TEXT_REPAIR_LOCALIZE', { ...item, sourceSha256, imageDimensions: { width: EDIT_WIDTH, height: EDIT_HEIGHT },
         attachmentRoles: ['frozen original image', 'enlarged selected paragraph', 'correct glyph reference'], coordinateSystem: 'absolute original image pixels' },
       [inputPath, paragraphPath, reference.path]));
-      if (!localized.passed || localized.confidence < 0.9 || localized.ambiguous !== false || localized.candidateCount !== 1
+      // Vision supplies a coarse anchor. Pixel separation and the independent final
+      // readability/background checks must also pass before any result is accepted.
+      if (localized.confidence < 0.85) throw new Error(`错字定位把握不足（${Math.round(localized.confidence * 100)}%），尚未修改此处；请补充修正后的完整句子或缩小选区`);
+      if (!localized.passed || localized.ambiguous !== false || localized.candidateCount !== 1
         || localized.correctText !== item.correctText || typeof localized.recognizedContext !== 'string' || localized.recognizedContext.length > 2000
         || typeof localized.correctedContext !== 'string' || localized.correctedContext.length > 2000
         || !normalized(localized.correctedContext).includes(normalized(item.correctText))
         || (item.contextText && !normalized(localized.correctedContext).includes(normalized(item.contextText)))) throw new Error('无法唯一定位错字，请缩小到对应句子或补充修正后的完整句子');
       rect = validateTextRepairRect(localized.rect, item);
+      const initialAnalysis = await analyzeTextRepairBackground({ source, rect });
+      if (!initialAnalysis.metrics.styleReliable || !initialAnalysis.style.color) throw new Error('无法可靠提取原文字颜色和范围，请缩小到对应字词后重试');
+      const refinement = await refineTextRepairLocalization({ source, rect, region: item.region,
+        correctText: item.correctText, color: initialAnalysis.style.color });
+      rect = validateTextRepairRect(refinement.rect, item);
       assertTextRepairRegions([...patches.map(patch => patch.rect), rect]);
-      await checkpoint({ kind: 'STATUS', id: item.id, status: 'REPAIRING', message: '正在按参考字形替换并匹配原文字样式' });
+      await checkpoint({ kind: 'STATUS', id: item.id, status: 'REPAIRING', message: '正在清理旧字背景并匹配标准字体样式' });
       const focusPath = resolve(directory, `focus-${index}.png`), generatedPath = resolve(directory, `generated-patch-${index}.png`);
       const transform = await prepareFocus(source, item, rect, focusPath);
-      requestImage();
-      const generated = await client.runImageEdit({ prompt: repairPrompt(context, config, 'INTERNAL_TEXT_REPAIR_REPLACE', { ...item,
-        sourceSha256, actualRegion: rect, workingImage: transform, correctedContext: localized.correctedContext,
-        attachmentRoles: ['enlarged original text neighborhood', 'correct glyph reference', 'selected paragraph context'],
-        instruction: 'Only correct the specified glyph inside workingImage.target, preserve typography and background. Keep the working image dimensions exactly.' }),
-      inputPaths: [focusPath, reference.path, paragraphPath], outputPath: generatedPath, canvas: transform.dimensions, signal });
-      model = generated.model ?? model;
-      const workingImage = await normalizedWorkingImage(await readFile(generatedPath), transform.dimensions);
-      patchBytes = await sharp(workingImage.bytes).extract({ left: transform.target.x, top: transform.target.y,
-        width: transform.target.width, height: transform.target.height }).resize(rect.width, rect.height).png().toBuffer();
+      const analyzed = await analyzeTextRepairBackground({ source, rect });
+      if (analyzed.metrics.reason === 'INK_CROSSES_BOUNDARY') throw new Error('定位框未完整包含原字笔画，请扩大句段选区后重试');
+      if (!analyzed.metrics.styleReliable || !analyzed.style.color || !analyzed.style.glyphRect) throw new Error('无法可靠提取原文字颜色和范围，请缩小到对应字词后重试');
+      const glyphRect = safeRect(analyzed.style.glyphRect);
+      if (glyphRect.x < rect.x || glyphRect.y < rect.y || glyphRect.x + glyphRect.width > rect.x + rect.width
+        || glyphRect.y + glyphRect.height > rect.y + rect.height) throw new TypeError('标准文字字形超出实际修复位置');
+      let backgroundBytes = analyzed.cleaned, backgroundMethod = 'PROGRAMMATIC_FLAT';
+      let geometry = { passed: true, requested: transform.dimensions };
+      if (!analyzed.simple) {
+        if (!client.runImageEdit) throw new Error('复杂背景清理需要支持图片编辑的执行机');
+        requestImage();
+        const generated = await client.runImageEdit({ prompt: repairPrompt(context, config, 'INTERNAL_TEXT_REPAIR_REPLACE', {
+          mode: 'ERASE_BACKGROUND', sourceSha256, actualRegion: rect, workingImage: transform,
+          attachmentRoles: ['enlarged original text neighborhood'],
+          instruction: 'Remove only the old text inside workingImage.target and reconstruct the background. Add no letters, symbols or new text. Keep all pixels outside target and the image dimensions unchanged.' }),
+        inputPaths: [focusPath], outputPath: generatedPath, canvas: transform.dimensions, signal });
+        model = generated.model ?? model;
+        const workingImage = await normalizedWorkingImage(await readFile(generatedPath), transform.dimensions);
+        geometry = workingImage.geometry;
+        backgroundBytes = await sharp(workingImage.bytes).extract({ left: transform.target.x, top: transform.target.y,
+          width: transform.target.width, height: transform.target.height }).resize(rect.width, rect.height).png().toBuffer();
+        backgroundMethod = 'MODEL_ERASE';
+      }
+      const glyph = await renderTextRepairGlyph({ text: item.correctText, width: glyphRect.width, height: glyphRect.height,
+        weight: analyzed.style.fontWeight, color: analyzed.style.color });
+      patchBytes = await sharp(backgroundBytes).composite([{ input: glyph.png,
+        left: glyphRect.x - rect.x, top: glyphRect.y - rect.y }]).png().toBuffer();
       candidateValidation = { passed: false, sourceSha256, correctText: item.correctText, referenceSha256: reference.sha256,
-        localization: { ...localized, rect }, originalRegion: item.region, workingImageGeometry: workingImage.geometry };
+        method: 'STANDARD_FONT', textRendering: glyph.metadata, glyphRect, background: { method: backgroundMethod, ...analyzed.metrics },
+        localization: { ...localized, coarseRect: localized.rect, rect, pixelRefinement: refinement.metrics }, originalRegion: item.region, workingImageGeometry: geometry };
       const candidate = await composePatches(source, [{ rect, bytes: patchBytes }]);
       const candidatePath = resolve(directory, `candidate-${index}.png`); await writeFile(candidatePath, candidate);
       const candidateFocusPath = resolve(directory, `candidate-focus-${index}.png`);
       await writeFile(candidateFocusPath, await sharp(candidate).extract({ left: transform.focus.x, top: transform.focus.y,
         width: transform.focus.width, height: transform.focus.height }).resize(transform.dimensions.width, transform.dimensions.height).png().toBuffer());
       const checked = confirmedReview(await review('INTERNAL_TEXT_REPAIR_VERIFY', { mode: 'LOCATION', ...item, actualRegion: rect,
-        correctedContext: localized.correctedContext, workingImage: transform,
+        correctedContext: localized.correctedContext, workingImage: transform, method: 'STANDARD_FONT', textRendering: glyph.metadata,
         attachmentRoles: ['frozen original full image', 'one-location corrected full image', 'correct glyph reference',
           'enlarged original text neighborhood', 'same enlarged neighborhood extracted from the composited corrected image'],
         inspection: 'Use attachments 4 and 5 to inspect each stroke, typography, neighboring letters and background. They show the actual before and after writeback at identical crop coordinates and dimensions.' },
       [inputPath, candidatePath, reference.path, focusPath, candidateFocusPath]), ['correctGlyphs', 'styleMatched', 'neighborsPreserved', 'backgroundMatched'], item.correctText);
-      const validation = { ...candidateValidation, ...checked, passed: checked.passed && workingImage.geometry.passed };
-      if (!workingImage.geometry.passed) validation.reason = workingImage.geometry.reason;
+      const validation = { ...candidateValidation, ...checked, passed: checked.passed && geometry.passed };
+      if (!geometry.passed) validation.reason = geometry.reason;
       await saveCandidate(validation);
-      if (!validation.passed) throw new Error(workingImage.geometry.reason ?? '替换后的文字字形或样式未通过检查，请查看局部对比后重试');
+      if (!validation.passed) throw new Error((geometry.reason ?? checked.reason) || '替换后的文字可读性、样式或背景未通过检查，请查看局部对比后重试');
     } catch (error) {
       if (signal?.aborted) throw error;
       if (patchBytes && candidateValidation && !savedCandidate) {
@@ -259,7 +277,7 @@ export async function renderImageTextRepair({ service, edit, context, source, in
   const mask = await renderTextRepairMask(patches.map(patch => patch.rect));
   const outsideMask = await assertOutsideMask(source, result, mask);
   await writeFile(outputPath, result);
-  const final = confirmedReview(await review('INTERNAL_TEXT_REPAIR_VERIFY', { mode: 'FINAL', repairs,
+  const final = confirmedReview(await review('INTERNAL_TEXT_REPAIR_VERIFY', { mode: 'FINAL', repairs, method: 'STANDARD_FONT',
     actualRegions: patches.map(patch => ({ id: patch.id, rect: patch.rect })), requiredText, sourceSha256,
     standalone: context.task.task_kind === 'STANDALONE_IMAGE_EDIT' || context.task.taskKind === 'STANDALONE_IMAGE_EDIT',
     attachmentRoles: ['frozen original image', 'all requested corrections composed together'] }, [inputPath, outputPath]),
@@ -271,7 +289,7 @@ export async function renderImageTextRepair({ service, edit, context, source, in
   const frozen = config.imageEditPrompt ?? context.imageEditPrompt;
   return { bytes: result, mask, validation: { passed: true, mock: false, billedImageGeneration: generationAttempts > 0,
     dimensions: { passed: true, width: EDIT_WIDTH, height: EDIT_HEIGHT }, format: 'png', integrity: { sha256: imageHash(result) }, outsideMask,
-    sourceSha256, text: final, requiredText, generationAttempts, model, referenceCount: references.size,
+    sourceSha256, method: 'STANDARD_FONT', textRendering: font, text: final, requiredText, generationAttempts, model, referenceCount: references.size,
     reusedReferences: [...references.values()].filter(entry => entry.reused).length, reusedLocations: patches.filter(entry => entry.reused).length,
     localization: { mode: 'TEXT_REPAIR_GLYPH_REGIONS', passed: true, locations: patches.map(entry => ({ id: entry.id, rect: entry.rect })) },
     promptProvenance: promptProvenance(), prompt: { kind: 'IMAGE_EDIT_SYSTEM', versionId: frozen.versionId ?? null, version: frozen.version ?? null,

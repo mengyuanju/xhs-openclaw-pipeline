@@ -1,6 +1,7 @@
 import sharp from 'sharp';
 import { shortText, imageHash, assertOutsideMask } from '../../src/image-edit-pixels.mjs';
 import { validateTextRepairRect, assertTextRepairRegions, renderTextRepairMask } from '../../src/image-text-repair.mjs';
+import { TEXT_REPAIR_FONT_SHA256, TEXT_REPAIR_RENDERER_VERSION } from '../../src/text-repair-font.mjs';
 
 const MAX_ARTIFACT_BYTES = 10 * 1024 * 1024;
 const MAX_EDIT_BYTES = 40 * 1024 * 1024;
@@ -91,10 +92,43 @@ export async function textRepairArtifactMetadata(checkpoint, state) {
 export function resetTextRepairReference(state, text) {
   if (!state?.references?.some(entry => entry.text === text)) throw new TypeError('请选择当前修正项中的正确文字');
   return { ...state, revision: (state.revision ?? 0) + 1,
-    // Keep the previous image and review available as feedback until its replacement is stored.
+    // Keep the previous reference visible until the canonical font rendering replaces it.
     references: state.references.map(entry => entry.text === text ? { ...entry, status: 'PENDING' } : entry),
     locations: state.locations.map(entry => entry.correctText === text
       ? { id: entry.id, correctText: text, status: 'PENDING' } : entry) };
+}
+function currentStandardFontEntry(entry, text, sourceSha256) {
+  const validation = entry?.validation, rendering = validation?.textRendering;
+  return validation?.passed === true && validation.method === 'STANDARD_FONT'
+    && validation.correctText === text && validation.sourceSha256 === sourceSha256
+    && rendering?.renderer === 'STANDARD_FONT' && rendering.text === text
+    && rendering.rendererVersion === TEXT_REPAIR_RENDERER_VERSION
+    && rendering.fontSha256 === TEXT_REPAIR_FONT_SHA256;
+}
+/** Upgrade only active execution state; callers keep accepted history read-only. */
+export function upgradeTextRepairStateForStandardFont(state, sourceSha256) {
+  if (!Array.isArray(state?.references) || !Array.isArray(state?.locations)) return state;
+  const invalidatedTexts = new Set();
+  const references = state.references.map(entry => {
+    if (entry.status !== 'READY' || currentStandardFontEntry(entry, entry.text, sourceSha256)) return entry;
+    invalidatedTexts.add(entry.text);
+    // Preserve the previous picture and review until a new canonical reference is stored.
+    return { ...entry, status: 'PENDING' };
+  });
+  let locationsChanged = false;
+  const locations = state.locations.map(entry => {
+    const reference = references.find(reference => reference.text === entry.correctText);
+    const invalidCompleted = entry.status === 'COMPLETED' && (!currentStandardFontEntry(entry, entry.correctText, sourceSha256)
+      || reference?.status !== 'READY' || entry.referenceSha256 !== reference.sha256
+      || entry.validation?.referenceSha256 !== reference.sha256);
+    if (!invalidatedTexts.has(entry.correctText) && !invalidCompleted) return entry;
+    const pending = { id: entry.id, correctText: entry.correctText, status: 'PENDING' };
+    if (Object.keys(entry).length === 3 && entry.status === 'PENDING') return entry;
+    locationsChanged = true;
+    return pending;
+  });
+  if (!invalidatedTexts.size && !locationsChanged) return state;
+  return { ...state, revision: (Number.isSafeInteger(state.revision) ? state.revision : 0) + 1, references, locations };
 }
 export async function verifyTextRepairCompletion({ config, state, source, result, readAsset }) {
   if (!state?.references?.length || state.locations?.length !== config.textRepairs.length) {

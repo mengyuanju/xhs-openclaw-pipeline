@@ -15,7 +15,7 @@ import { selectLocalEditAlternative } from '../../src/local-edit-alternatives.mj
 import { scheduleReferenceCleanupForAsset, scheduleReferenceCleanupForEdit, scheduleObsoleteTextRepairCleanup, drainReferenceCleanup } from './image-reference-cleanup.mjs';
 import { normalizeTextRepairs } from '../../src/image-text-repair.mjs';
 import { initialTextRepairState, publicTextRepairState, assertTextRepairApprovedCopy, normalizeTextRepairCheckpoint,
-  textRepairArtifactMetadata, resetTextRepairReference, verifyTextRepairCompletion } from './image-text-repair-state.mjs';
+  textRepairArtifactMetadata, resetTextRepairReference, upgradeTextRepairStateForStandardFont, verifyTextRepairCompletion } from './image-text-repair-state.mjs';
 
 const REFERENCE_TASK_LIMIT_BYTES = 100 * 1024 * 1024;
 const REFERENCE_EDIT_LIMIT_BYTES = 40 * 1024 * 1024;
@@ -458,6 +458,17 @@ export function createImageEditingService({ pool, storageRoot, onProgrammaticRea
       repairSource=(await c.query("SELECT * FROM assets WHERE id=$1 AND task_id=$2 AND sha256=$3 AND asset_role='REJECTED_PREVIEW'",
         [e.config.localRepair.baseAssetId,e.task_id,e.config.localRepair.baseSha256])).rows[0]??null;
       if(!repairSource)conflict('失败预览已变化或不可用，不能继续定向修复');
+    }
+    if(e.operation==='AI_TEXT_REPAIR'&&e.status==='RUNNING') {
+      if(!e.lease_token||!Number.isFinite(new Date(e.lease_expires_at).getTime())
+        ||new Date(e.lease_expires_at)<=new Date())conflict('执行已取消或租约过期');
+      const state=e.text_repair_state?.references?e.text_repair_state:initialTextRepairState(e.config.textRepairs);
+      const upgraded=upgradeTextRepairStateForStandardFont(state,e.config.sha256);
+      if(upgraded!==state) {
+        await c.query('UPDATE image_edit_requests SET text_repair_state=$2,version=version+1,updated_at=now() WHERE id=$1',[e.id,upgraded]);
+        e={...e,text_repair_state:upgraded};
+        await scheduleObsoleteTextRepairCleanup(c,e.task_id,e.id);
+      }
     }
     const page=Number(e.target_page);
     const run={...source.run,result:imageResultScopedToPage(source.run.result,page)};
@@ -1081,7 +1092,14 @@ export function createImageEditingService({ pool, storageRoot, onProgrammaticRea
       return updated.rowCount===1;
     }); },
     async context(e) {
-      return tx(c=>loadContext(c,e));
+      return tx(async c=>{
+        if(e.operation!=='AI_TEXT_REPAIR')return loadContext(c,e);
+        const locked=(await c.query('SELECT * FROM image_edit_requests WHERE id=$1 FOR UPDATE',[e.id])).rows[0];
+        if(!locked||locked.status!=='RUNNING'||locked.lease_token!==e.lease_token
+          ||!Number.isFinite(new Date(locked.lease_expires_at).getTime())
+          ||new Date(locked.lease_expires_at)<=new Date())conflict('执行已取消或租约过期');
+        return loadContext(c,locked);
+      });
     },
     async textRepairCheckpoint(e,input) {
       const result=await tx(async c=>{

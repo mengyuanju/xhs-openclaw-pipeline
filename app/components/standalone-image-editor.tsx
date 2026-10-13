@@ -315,7 +315,7 @@ export function StandaloneImageEditor({taskId,runId,copyRevisionId,asset,assets,
   const usesBillableModel=operation==='TEXT'||operation.startsWith('AI_');
   const promptRequestInstruction=[pointLocation(promptTarget)&&`${pointLocation(promptTarget)}附近`,promptAction,instruction.trim()].filter(Boolean).join('，');
   const requestInstruction=tab==='TEXT'?`${disclosureMethod==='SVG'?'使用 SVG + Sharp 确定性叠加':'使用图片编辑模型融合'}人工生成标识“${text.trim()}”并放在右下角`:
-    tab==='ENTITY'?`按每个替换项绑定的参考图和框选区域，替换第 ${displayPage} 页中的 ${replacements.filter(item=>item.targets[displayPage]).length} 个目标，保持场景、人物、构图和全部文字不变`:tab==='TEXT_REPAIR'?`根据模型生成的正确字形参考，修正本图中的 ${textRepairs.length} 处错字，保留其余文字、背景和排版`:promptRequestInstruction;
+    tab==='ENTITY'?`按每个替换项绑定的参考图和框选区域，替换第 ${displayPage} 页中的 ${replacements.filter(item=>item.targets[displayPage]).length} 个目标，保持场景、人物、构图和全部文字不变`:tab==='TEXT_REPAIR'?`由标准字体排字合成，修正本图中的 ${textRepairs.length} 处错字；模型仅定位、清理复杂背景并检查结果，保留其余文字、背景和排版`:promptRequestInstruction;
   const preserve=tab==='ENTITY'?'保留原图全部原有文字、人物、背景、构图、色调和未被替换的物品':'除说明明确点名的目标外，保留原图全部原有文字、所有未点名区域、人物、构图和色调';
   const negative=tab==='ENTITY'
     ?replacements.some(item=>item.referenceMode==='APPEARANCE')
@@ -361,7 +361,7 @@ export function StandaloneImageEditor({taskId,runId,copyRevisionId,asset,assets,
     }
     if(tab==='TEXT_REPAIR'){const issue=textRepairIssue(textRepairs);if(issue)return issue;}
     if(tab==='PROMPT'&&!instruction.trim())return '请先填写局部修改说明，并同时写清修改位置和内容。';
-    if(!draft&&usesBillableModel&&!confirmed)return '请先勾选费用确认，再保存并提交生图。';
+    if(!draft&&usesBillableModel&&!confirmed)return tab==='TEXT_REPAIR'?'请先勾选定位、背景清理和视觉校验的模型费用确认，再保存并修正错字。':'请先勾选费用确认，再保存并提交生图。';
     return '';
   }
   function submit(draft=false) {
@@ -559,7 +559,7 @@ export function StandaloneImageEditor({taskId,runId,copyRevisionId,asset,assets,
   }
   function regenerateTextReference(edit:Edit,text:string) {
     return act(()=>trackedPost(`/v1/image-edits/${edit.id}/regenerate-reference`,{requestId:createRequestId(),version:edit.version,text,
-      reason:'参考字形需要重新生成',confirmation:'LIVE_IMAGE_COST_ACCEPTED'}),'正在重新生成参考并重做关联位置…','参考重新生成已提交。');
+      reason:'参考字形需要重新排字',confirmation:'LIVE_IMAGE_COST_ACCEPTED'}),'正在重新排字并重做关联位置…','重新排字已提交。');
   }
   function startTargetSelection(event:ReactPointerEvent<HTMLDivElement>) {
     if(readOnly||event.button!==0)return;
@@ -756,7 +756,7 @@ export function StandaloneImageEditor({taskId,runId,copyRevisionId,asset,assets,
                   <div className={styles.quickRequirements} aria-label="快捷补充要求">{quickRequirements.map(item=><Button unstyled type="button" key={item} onClick={()=>appendRequirement(item)}>＋ {item}</Button>)}</div>
                   <p>系统会将原图和修改说明直接交给图片编辑模型，生成后检查修改结果及文字。请查看预览后再采用。</p>
                  </>}
-                {usesBillableModel?<label className={styles.feeConfirmation}><input className={styles.feeCheckboxInput} type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/><span className={styles.feeCheckboxVisual} data-fee-checkbox aria-hidden="true"/><span>{tab==='TEXT_REPAIR'?'确认生成文字参考图、修正图片并进行视觉校验会调用模型并产生费用；完成后检查参考图和修改预览再采用。':tab==='TEXT'?`确认对已选 ${disclosurePages.length} 张图片调用图片编辑与视觉验收模型，会产生费用；结果需查看并采用后才会替换对应图片。`:'确认调用图片编辑与视觉验收模型，会产生费用；生成结果需查看并采用后才会替换当前图片。'}</span></label>:<p>本次对已选 {disclosurePages.length} 张图片生成程序标识，不调用模型，无需费用确认。</p>}
+                {usesBillableModel?<label className={styles.feeConfirmation}><input className={styles.feeCheckboxInput} type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/><span className={styles.feeCheckboxVisual} data-fee-checkbox aria-hidden="true"/><span>{tab==='TEXT_REPAIR'?'确认错字定位、复杂背景清理和视觉校验会调用模型并产生费用；参考字形与最终文字由标准字体绘制并由程序合成，完成后检查预览再采用。':tab==='TEXT'?`确认对已选 ${disclosurePages.length} 张图片调用图片编辑与视觉验收模型，会产生费用；结果需查看并采用后才会替换对应图片。`:'确认调用图片编辑与视觉验收模型，会产生费用；生成结果需查看并采用后才会替换当前图片。'}</span></label>:<p>本次对已选 {disclosurePages.length} 张图片生成程序标识，不调用模型，无需费用确认。</p>}
               </fieldset></section>
 
             </>:<section className={styles.panelBody} aria-label="编辑记录">
@@ -787,7 +787,7 @@ export function StandaloneImageEditor({taskId,runId,copyRevisionId,asset,assets,
                     <span>{suggestion?'选择方案后点击下方“采用建议并修改”，结果仍需确认。':'选择方案后将直接生成修改预览，再进行结果验收。'}</span>
                   </section>}
                   {preflightWarnings.length>0&&<details className={styles.preflightWarningCard} aria-label="执行前提醒"><summary>执行前提醒（未阻止生成） · {preflightWarnings.length} 项</summary><ul>{preflightWarnings.map((warning,index)=><li key={index}>{warning}</li>)}</ul><span>系统已继续调用图片模型，是否采用仍以生成后的验收结果为准。</span></details>}
-                  {rejectedPreview&&<section className={styles.rejectedResultCard} aria-label="自动验收未通过的结果"><strong>图片已生成，自动验收未通过</strong><p>{failedPreviewReason(e)}</p>{e.status==='ACCEPTED'?<span>该结果已由用户明确采用，系统保留自动校验记录和人工采用原因。</span>:e.operation==='AI_TEXT_REPAIR'?<span>请对照原图、参考图和逐处修改检查结果。即使自动校验未通过，也可以选择“仍采用此结果”并填写原因；或者重试未通过的位置、重新生成参考图。</span>:e.operation==='SVG_DISCLOSURE'?<span>请检查标识样式、文字或位置，调整后重试程序处理；重试不调用模型。</span>:repairRecommendation?<><span>系统可以上一张失败图为起点，仅处理以下未完成部分：</span><blockquote>{repairRecommendation.repairInstruction}</blockquote><span>定向修复会再次调用图片模型并产生费用，只有确认后才会执行；修复结果仍由你决定是否采用。</span></>:<span>这是一张可查看的失败预览。当前问题不适合安全局部补救，你可以仍然采用，也可以调整说明后从原图重试；重试可能再次产生模型费用。</span>}</section>}
+                  {rejectedPreview&&<section className={styles.rejectedResultCard} aria-label="自动验收未通过的结果"><strong>图片已生成，自动验收未通过</strong><p>{failedPreviewReason(e)}</p>{e.status==='ACCEPTED'?<span>该结果已由用户明确采用，系统保留自动校验记录和人工采用原因。</span>:e.operation==='AI_TEXT_REPAIR'?<span>请对照原图、参考图和逐处修改检查结果。即使自动校验未通过，也可以选择“仍采用此结果”并填写原因；或者重试未通过的位置、重新排字并重做关联位置。</span>:e.operation==='SVG_DISCLOSURE'?<span>请检查标识样式、文字或位置，调整后重试程序处理；重试不调用模型。</span>:repairRecommendation?<><span>系统可以上一张失败图为起点，仅处理以下未完成部分：</span><blockquote>{repairRecommendation.repairInstruction}</blockquote><span>定向修复会再次调用图片模型并产生费用，只有确认后才会执行；修复结果仍由你决定是否采用。</span></>:<span>这是一张可查看的失败预览。当前问题不适合安全局部补救，你可以仍然采用，也可以调整说明后从原图重试；重试可能再次产生模型费用。</span>}</section>}
                   {e.error&&<details><summary>查看失败原因</summary><p role="alert">{e.error}</p></details>}
                   {e.operation==='AI_TEXT_REPAIR'&&<TextRepairProgress key={e.id} state={e.textRepairState} items={e.config.textRepairs??[]} sourceUrl={path(`/v1/assets/${e.source_asset_id??asset.id}`)} assetUrl={path} status={e.status} attempts={e.attempts} disabled={readOnly||busy} onRegenerate={text=>void regenerateTextReference(e,text)}/>}
                   <div className={styles.historyActions}>{e.operation==='AI_TEXT_REPAIR'&&<Button variant="outline" size="sm" disabled={readOnly||busy} onClick={()=>reuseTextRepair(e)}>复用错字位置</Button>}{e.operation==='AI_LOCAL'&&<Button variant="outline" size="sm" disabled={readOnly} onClick={()=>reuseInstruction(e)}>复用说明并修改</Button>}{e.result&&<><Button size="sm" onClick={()=>{setComparisonId(e.id);setPreviewMode('COMPARE');setMobileView('PREVIEW');}}>在左侧对比</Button><a href={path(`/v1/assets/${e.result.asset_id}`)} target="_blank" rel="noreferrer">打开结果</a></>}{historyActions(e).map(action=><Button key={action} size="sm" variant={action==='cancel'?'outline':undefined} className={action==='cancel'?styles.deleteAction:undefined} disabled={readOnly||busy||action==='apply-suggestion'&&!selectedAlternative} onClick={()=>{setReason(action==='apply-suggestion'&&selectedAlternative?`采用「${selectedAlternative.title}」方案`:'');setHistoryCostConfirmed(false);setPendingBatchAccept(false);setPendingHistoryAction({editId:e.id,action});}}>{historyActionLabel(e,action)}</Button>)}</div>
@@ -797,9 +797,9 @@ export function StandaloneImageEditor({taskId,runId,copyRevisionId,asset,assets,
                 </li>;
               })}</ul>:<p className={styles.emptyHistory}>当前还没有图片修改记录。</p>}
             </section>}
-            <footer className={styles.actionBar} aria-label="图片编辑操作"><span>{running?(operation==='SVG_DISCLOSURE'?'程序处理中，仅支持查看':'生图中，仅支持查看'):usesBillableModel?'保存后由执行机处理图片':'程序标识不调用模型'}</span><div className={inlineStyles.footerButtons}>
+            <footer className={styles.actionBar} aria-label="图片编辑操作"><span>{running?(operation==='SVG_DISCLOSURE'?'程序处理中，仅支持查看':operation==='AI_TEXT_REPAIR'?'排字修正中，仅支持查看':'生图中，仅支持查看'):usesBillableModel?'保存后由执行机处理图片':'程序标识不调用模型'}</span><div className={inlineStyles.footerButtons}>
               {downloadEdit?.result&&<Button asChild variant="outline"><a href={path(`/v1/assets/${downloadEdit.result.asset_id}?download=true`)} download>下载图片</a></Button>}
-              <Button disabled={readOnly||busy||tab==='TEXT'&&(disclosurePages.length===0||!disclosureColorValid)} onClick={()=>void (tab==='TEXT'&&disclosurePages.length>1?submitDisclosureBatch():submit())}>{busy?'正在保存…':tab==='TEXT_REPAIR'?'保存并修正错字':tab==='TEXT'&&imageAssets.length>1?`生成已选 ${disclosurePages.length} 张${disclosureMethod==='SVG'?'程序':'模型'}标识预览`:'保存并提交生图'}</Button>
+              <Button disabled={readOnly||busy||tab==='TEXT'&&(disclosurePages.length===0||!disclosureColorValid)} onClick={()=>void (tab==='TEXT'&&disclosurePages.length>1?submitDisclosureBatch():submit())}>{busy?'正在保存…':tab==='TEXT_REPAIR'?'保存并排字修正':tab==='TEXT'&&imageAssets.length>1?`生成已选 ${disclosurePages.length} 张${disclosureMethod==='SVG'?'程序':'模型'}标识预览`:'保存并提交生图'}</Button>
             </div></footer>
           </section>
         </div>

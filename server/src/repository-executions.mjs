@@ -200,7 +200,7 @@ export class ExecutionRepository extends TaskWriteRepository {
             JOIN tasks edit_task ON edit_task.id = edit.task_id
             WHERE edit.operation <> 'SVG_DISCLOSURE'
               AND $5::integer >= CASE
-                WHEN edit.operation = 'AI_TEXT_REPAIR' THEN 14
+                WHEN edit.operation = 'AI_TEXT_REPAIR' THEN 15
                 WHEN edit_task.task_kind = 'STANDALONE_IMAGE_EDIT' THEN 13
                 WHEN edit.operation = 'AI_FUSION' THEN 12
                 WHEN edit.operation = 'AI_LOCAL' THEN 9

@@ -148,7 +148,7 @@
 
 ## 维护约定
 
-图片错字修正增加五项只读协议：`INTERNAL_TEXT_REPAIR_REFERENCE` 生成正确文字参考图或根据旧参考与失败原因定向修正，`INTERNAL_TEXT_REPAIR_LOCALIZE` 在用户框选句段内定位实际错字，`INTERNAL_TEXT_REPAIR_REPLACE` 按参考修正局部字形，`INTERNAL_TEXT_REPAIR_VERIFY` 核对参考、逐处结果和完整图片，`INTERNAL_CODEX_IMAGE_CROP_EXECUTION` 保持字形参考或局部图块的指定宽高。参考生成及参考校验独立于海报编辑规则，避免白底、配色及页面比例冲突；定位、替换和最终检查与本次冻结的图片编辑规则组合。重试附带的检查结果和旧参考仍视为不可信数据。流程详见 [图片错字修正](image-text-repair.md)。
+图片错字修正使用固定中文字库直接绘制参考图和最终文字，并检查字体文件哈希、Unicode 覆盖和禁止字体回退。`INTERNAL_TEXT_REPAIR_LOCALIZE` 在用户框选句段内定位实际错字；`INTERNAL_TEXT_REPAIR_REPLACE` 仅用于复杂背景擦字，不绘制新文字，且独立于海报编辑规则；平整背景由程序修补。`INTERNAL_TEXT_REPAIR_VERIFY` 核对实际合成的逐处结果和完整图片；定位、最终检查沿用本次冻结的图片编辑规则。`INTERNAL_CODEX_IMAGE_CROP_EXECUTION` 保持复杂背景图块的指定宽高。旧 `INTERNAL_TEXT_REPAIR_REFERENCE` 保留用于历史协议说明，当前流程不调用参考生成模型。流程详见 [图片错字修正](image-text-repair.md)。
 
 - 业务规则放在 prompts/business 或 server/prompts；补充规则及程序协议放在 prompts/internal。prompts/post.md 是完整文案输出协议。
 - 新增模型指令必须登记 src/prompt-catalog.mjs 或 src/internal-prompt-catalog.mjs，写明用途、调用位置和变量。不要在模型调用处重新写一套隐藏规则。

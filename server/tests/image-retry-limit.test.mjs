@@ -152,16 +152,26 @@ test('exhausted image work cannot bypass human review through the retry endpoint
 });
 
 test('exhausted image work requires an actual rework before approval', async () => {
+  const queries = [];
+  const content = {
+    copy: { title: '桌面整理', body: '先清空再分类，按使用频率摆放物品。'.repeat(30), tags: ['#桌面整理', '#分类收纳', '#每日归位'] },
+    imagePlan: ['hero', 'steps', 'summary'].map((kind, index) => ({
+      kind, headline: ['整理前后总览', '按频率分类', '每天及时归位'][index], subtitle: '',
+      bullets: ['保留常用物品', '固定收纳位置'], prompt: '清晰呈现桌面整理步骤与物品分类收纳位置。',
+    })),
+  };
+  const originalContent = structuredClone(content);
   const client = {
     release() {},
     async query(sql, values) {
+      queries.push(sql);
       if (sql.includes('INSERT INTO human_quality_review_submissions')) return { rows: [{ review_session_id: values[0] }] };
       if (sql.includes('SELECT * FROM tasks WHERE id')) return { rows: [{
         id: 41, state: 'COPY_REVIEW_PENDING', current_stage: 'IMAGE_RETRY_EXHAUSTED', current_copy_revision_id: 12,
         assigned_to_user_id: 'alice', production_batch_id: null, mandatory_copy_qc: false,
         ai_disclosure_enabled: true,
       }] };
-      if (sql.includes('SELECT * FROM copy_revisions')) return { rows: [{ id: 12, content: {} }] };
+      if (sql.includes('SELECT * FROM copy_revisions')) return { rows: [{ id: 12, content }] };
       if (sql.includes('SELECT id FROM executor_nodes')) return { rows: [{ id: 'reviewer' }] };
       return { rows: [] };
     },
@@ -173,7 +183,13 @@ test('exhausted image work requires an actual rework before approval', async () 
     decision: 'APPROVE',
     originalScore: 3,
     reviewSessionId: '77777777-7777-4777-8777-777777777777',
-  }, { reviewerUserId: 'reviewer' }), { code: 'COPY_REWORK_NOT_SATISFIED' });
+  }, { reviewerUserId: 'reviewer' }), {
+    code: 'COPY_REWORK_NOT_SATISFIED', message: /返工稿尚未发生实际修改/u,
+  });
+  assert.equal(queries.at(-1), 'ROLLBACK');
+  assert.equal(queries.some(sql => /^\s*UPDATE\b/u.test(sql)
+    || /^\s*INSERT INTO (copy_revisions|copy_approval_events)\b/u.test(sql)), false);
+  assert.deepEqual(content, originalContent, 'rejecting unchanged work must not alter its copy or valid image planning');
 });
 
 test('edited copy after image retry exhaustion creates a new isolated mandatory QA round', async () => {
