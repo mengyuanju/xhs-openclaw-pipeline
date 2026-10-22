@@ -1,26 +1,43 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
 import { copyFile, lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
-import { constants as fsConstants } from 'node:fs';
-import { join, relative, resolve, sep } from 'node:path';
+import { constants as fsConstants, lstatSync } from 'node:fs';
+import { isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
 
-import { canonicalStoragePath, databaseIdentity } from './start-development.mjs';
+import { assertStorageSeparated, canonicalStoragePath, databaseIdentity } from './start-development.mjs';
 import { exportDatabase } from '../server/scripts/export-database.mjs';
-import { hashFile, isMain, loadConfiguration, pgTool, readBackup, safeError } from '../server/scripts/database-common.mjs';
+import { hashFile, isMain, loadConfiguration, pgTool, readBackup, safeError, SERVER_ROOT } from '../server/scripts/database-common.mjs';
 
 const BACKUP_PARENT = resolve('D:/auto-claw/backups');
-const PRODUCTION_STORAGE = resolve('D:/auto-claw/images_storage_prod');
 
-function productionConfiguration() {
-  const environment = { ...process.env };
-  delete environment.DATABASE_URL;
-  const production = loadConfiguration({ profile: 'production', environment });
-  const development = loadConfiguration({ profile: 'development', environment });
+function comparisonPath(path) {
+  return process.platform === 'win32' ? path.toLowerCase() : path;
+}
+
+function validatedStorageRoot(value) {
+  assert.ok(typeof value === 'string' && isAbsolute(value.trim()), 'Production storage must be an explicit absolute directory');
+  const storageRoot = canonicalStoragePath(value.trim());
+  assert.notEqual(comparisonPath(storageRoot), comparisonPath(parse(storageRoot).root), 'Production storage cannot be a volume root');
+  const stat = lstatSync(storageRoot);
+  assert.ok(stat.isDirectory() && !stat.isSymbolicLink(), 'Production storage must be an existing real directory');
+  return storageRoot;
+}
+
+export function productionConfiguration({ environment = process.env, serverRoot = SERVER_ROOT } = {}) {
+  const inherited = { ...environment };
+  delete inherited.DATABASE_URL;
+  delete inherited.CONTROL_PLANE_STORAGE_ROOT;
+  const production = loadConfiguration({ profile: 'production', environment: inherited, serverRoot });
+  const development = loadConfiguration({ profile: 'development', environment: inherited, serverRoot });
   assert.equal(production.database, 'xhs_control_prod');
   assert.notDeepEqual(databaseIdentity(production.connectionString), databaseIdentity(development.connectionString));
-  assert.equal(canonicalStoragePath(production.environment.CONTROL_PLANE_STORAGE_ROOT).toLowerCase(), PRODUCTION_STORAGE.toLowerCase());
-  return production;
+  const storageRoot = validatedStorageRoot(production.environment.XHS_PRODUCTION_STORAGE_ROOT);
+  assert.equal(comparisonPath(canonicalStoragePath(production.environment.CONTROL_PLANE_STORAGE_ROOT)), comparisonPath(storageRoot));
+  assertStorageSeparated(development.environment.CONTROL_PLANE_STORAGE_ROOT || 'server-storage', storageRoot, {
+    cwd: serverRoot, label: 'Development and production storage directories',
+  });
+  return { ...production, storageRoot };
 }
 
 function checkedChild(root, path) {
@@ -103,8 +120,9 @@ export async function backupProductionDatabase(config, folder, report) {
   return metadata;
 }
 
-export async function backupProductionStorage(folder, report) {
-  const source = PRODUCTION_STORAGE;
+export async function backupProductionStorage(folder, report, { storageRoot } = {}) {
+  const source = validatedStorageRoot(storageRoot);
+  assertStorageSeparated(source, folder, { label: 'Production storage and backup directories' });
   const destination = checkedChild(folder, 'storage');
   await mkdir(destination);
   const snapshot = await snapshotFiles(source);
@@ -171,7 +189,8 @@ export async function main(argv = process.argv.slice(2)) {
   assert.equal(plan.writeGate?.verifiedBy, 'root', 'Production write gate must be verified before backup');
   const config = productionConfiguration();
   assert.equal(plan.productionDatabase, config.display);
-  assert.equal(resolve(plan.productionStorage).toLowerCase(), PRODUCTION_STORAGE.toLowerCase());
+  assert.equal(comparisonPath(validatedStorageRoot(plan.productionStorage)), comparisonPath(config.storageRoot),
+    'Prepared storage path must match the current production profile');
   const report = { format: 'xhs-production-pre-upgrade-backup-report', version: 1,
     startedAt: new Date().toISOString(), folder, profile: 'production', productionDatabase: config.display,
     developmentDataIncluded: false, sqliteIncluded: false, productionWrites: false,
@@ -179,7 +198,7 @@ export async function main(argv = process.argv.slice(2)) {
   await saveJson(join(folder, 'backup-report.json'), report, { flag: 'wx' });
   try {
     await backupProductionDatabase(config, folder, report);
-    await backupProductionStorage(folder, report);
+    await backupProductionStorage(folder, report, { storageRoot: config.storageRoot });
   } catch (error) {
     report.status = 'FAILED';
     report.failedAt = new Date().toISOString();

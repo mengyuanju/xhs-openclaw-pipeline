@@ -1,7 +1,7 @@
 import { requestActor, requireJson, assertOperatorDeliveryTaskAccess, assertCurrentActorIdentity, json } from './http-route-common.mjs';
-import { normalizeDeliveryExportRequest, resolveDeliveryExportTaskIds, assertDeliveryBindingsReady } from './delivery-export.mjs';
+import { normalizeDeliveryExportRequest, resolveDeliveryExportTaskIds, assertDeliveryBindingsReady, DELIVERY_DOWNLOAD_IDLE_TIMEOUT_MS } from './delivery-export.mjs';
 import { ControlPlaneAuthorizationError, ControlPlaneConflictError } from './domain.mjs';
-import { recordDeliveryBatchDownload, stageDeliveryPoolArchive, persistDeliveryBatchArchive, assertDeliveryExportArtifact, storedDeliveryBatchArtifact, stageDeliveryBatchSpreadsheet, stageDeliveryPoolSpreadsheet } from './http-delivery-artifacts.mjs';
+import { recordDeliveryBatchDownload, stageDeliveryPoolArchive, persistDeliveryBatchSnapshot, assertDeliveryExportArtifact, storedDeliveryBatchArtifact, stageStoredDeliveryBatchArtifact, stageDeliveryBatchSpreadsheet, stageDeliveryPoolSpreadsheet } from './http-delivery-artifacts.mjs';
 import { randomUUID } from 'node:crypto';
 import { deliveryBatchCode } from './delivery-batches.mjs';
 import { queryPackageFileNameSegment } from './task-archive.mjs';
@@ -64,7 +64,7 @@ export function installDeliveryRoutes({
       const fileName = batchCode ? `${batchCode}-${sourceFileName}` : sourceFileName;
       let deliveryBatch = null;
       if (batchPublicId) {
-        const persisted = await persistDeliveryBatchArchive(storageRoot, staged, batchPublicId);
+        const persisted = await persistDeliveryBatchSnapshot(storageRoot, staged, batchPublicId, { signal: controller.signal });
         staged = null;
         try {
           deliveryBatch = await repository.createDeliveryBatch({
@@ -79,7 +79,8 @@ export function installDeliveryRoutes({
             fileName,
             byteSize: persisted.byteSize,
             sha256: persisted.sha256,
-            bindings: persisted.bindings
+            bindings: persisted.bindings,
+            snapshotAssets: persisted.snapshotAssets,
           }, {
             actor
           });
@@ -177,28 +178,61 @@ export function installDeliveryRoutes({
     ctx.set('Content-Disposition', `attachment; filename="delivery-pool.zip"; filename*=UTF-8''${encodeURIComponent(record.fileName)}`);
     ctx.body = content;
   });
-  router.head('/v1/delivery-batches/:batchId/archive', async ctx => {
+  async function downloadHistoricalBatch(ctx, { headOnly = false } = {}) {
     const actor = requestActor(ctx, ['ADMIN', 'USER']);
-    const batch = await storedDeliveryBatchArtifact(repository, storageRoot, ctx.params.batchId, actor);
-    await assertCurrentActorIdentity(repository, actor);
-    ctx.status = 200;
-    ctx.type = 'application/zip';
-    ctx.length = batch.byteSize;
-    ctx.set('X-Delivery-Task-Count', String(batch.taskCount));
-    ctx.set('Content-Disposition', `attachment; filename="delivery-batch.zip"; filename*=UTF-8''${encodeURIComponent(batch.fileName)}`);
-  });
-  router.get('/v1/delivery-batches/:batchId/archive', async ctx => {
-    const actor = requestActor(ctx, ['ADMIN', 'USER']);
-    const batch = await storedDeliveryBatchArtifact(repository, storageRoot, ctx.params.batchId, actor);
-    await assertCurrentActorIdentity(repository, actor);
-    ctx.res.once('finish', () => recordDeliveryBatchDownload(repository, batch.publicId, actor));
-    ctx.status = 200;
-    ctx.type = 'application/zip';
-    ctx.length = batch.byteSize;
-    ctx.set('X-Delivery-Task-Count', String(batch.taskCount));
-    ctx.set('Content-Disposition', `attachment; filename="delivery-batch.zip"; filename*=UTF-8''${encodeURIComponent(batch.fileName)}`);
-    ctx.body = createReadStream(batch.archivePath);
-  });
+    if (headOnly) {
+      const batch = await storedDeliveryBatchArtifact(repository, storageRoot, ctx.params.batchId, actor);
+      await assertCurrentActorIdentity(repository, actor);
+      ctx.status = 200; ctx.type = 'application/zip';
+      ctx.set('X-Delivery-Task-Count', String(batch.taskCount));
+      ctx.set('Content-Disposition', `attachment; filename="delivery-batch.zip"; filename*=UTF-8''${encodeURIComponent(batch.fileName)}`);
+      return;
+    }
+    const controller = new AbortController();
+    const cancel = () => controller.abort(new DOMException('delivery batch client disconnected', 'AbortError'));
+    const onClose = () => { if (!ctx.res.writableEnded) cancel(); };
+    ctx.req.once('aborted', cancel);
+    ctx.res.once('close', onClose);
+    let release = () => {};
+    let staged;
+    let streamOwnsCleanup = false;
+    let cleaned = false;
+    let idleTimer;
+    const touch = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => controller.abort(new DOMException('delivery download timed out', 'AbortError')), DELIVERY_DOWNLOAD_IDLE_TIMEOUT_MS);
+      idleTimer.unref?.();
+    };
+    const cleanup = async () => {
+      if (cleaned) return;
+      cleaned = true;
+      clearTimeout(idleTimer);
+      ctx.req.off('aborted', cancel);
+      ctx.res.off('close', onClose);
+      try { await staged?.cleanup(); } finally { release(); }
+    };
+    try {
+      release = deliveryExportRegistry.beginPreparation(actor, reason => controller.abort(reason));
+      staged = await stageStoredDeliveryBatchArtifact(repository, storageRoot, ctx.params.batchId, actor, { signal: controller.signal });
+      await assertCurrentActorIdentity(repository, actor);
+      controller.signal.throwIfAborted();
+      ctx.status = 200;
+      ctx.type = 'application/zip';
+      ctx.length = staged.byteSize;
+      ctx.set('X-Delivery-Task-Count', String(staged.taskCount));
+      ctx.set('Content-Disposition', `attachment; filename="delivery-batch.zip"; filename*=UTF-8''${encodeURIComponent(staged.fileName)}`);
+      const source = createReadStream(staged.archivePath, { signal: controller.signal });
+      touch(); source.on('data', touch);
+      source.once('close', () => { void cleanup().catch(error => console.error('delivery batch cleanup:', error.message)); });
+      ctx.res.once('finish', () => recordDeliveryBatchDownload(repository, staged.publicId, actor));
+      ctx.body = source;
+      streamOwnsCleanup = true;
+    } finally {
+      if (!streamOwnsCleanup) await cleanup();
+    }
+  }
+  router.head('/v1/delivery-batches/:batchId/archive', ctx => downloadHistoricalBatch(ctx, { headOnly: true }));
+  router.get('/v1/delivery-batches/:batchId/archive', ctx => downloadHistoricalBatch(ctx));
   router.post('/v1/delivery-batches/:batchId/xlsx', async ctx => {
     const actor = requestActor(ctx, ['ADMIN', 'USER']);
     const controller = new AbortController();

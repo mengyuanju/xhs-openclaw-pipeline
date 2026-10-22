@@ -5,6 +5,7 @@ import { ControlPlaneAuthorizationError, ControlPlaneConflictError, ControlPlane
 import { withdrawReadyDeliveryEntries } from './final-delivery.mjs';
 import { releaseEscalatedCopyFreezes } from './copy-quality-control.mjs';
 import { releaseEscalatedImageFreezes } from './image-quality-control.mjs';
+import { protectedDeliverySnapshotPaths } from './delivery-snapshot-assets.mjs';
 
 const configs = Object.freeze({ COPY: { prefix: 'copy', owner: 'final_approver_account_id', username: 'final_approver_username', state: 'COPY_QC_PENDING' },
   IMAGE: { prefix: 'image', owner: 'submitter_account_id', username: 'submitter_username', state: 'IMAGE_QC_PENDING' } });
@@ -87,14 +88,19 @@ async function resetContent(c, task, record, storageRoot) {
   if(shared) {
     await c.query("UPDATE task_reassignment_cases SET reset_status='BLOCKED',reset_error='旧资产仍被其他任务引用，请处理共享引用后重试还原' WHERE id=$1",[record.id]);return;
   }
-  // All historical facts are materialized before clearing any payload. Shell IDs
-  // keep QA/approval/batch foreign keys valid; no prior editable content survives.
+  // All historical facts are materialized before clearing editable payloads.
+  // Issued versions and snapshot-referenced originals remain immutable history.
   await c.query('SELECT capture_operator_facts($1)',[task.id]);
+  const candidates = (await c.query(`SELECT id,storage_path,sha256 FROM assets
+    WHERE task_id=$1 AND NOT(id=ANY($2::bigint[])) AND content_cleared_at IS NULL ORDER BY id`,
+  [task.id,baseline.asset_ids])).rows;
+  const protectedPaths = await protectedDeliverySnapshotPaths(c,candidates.map(asset=>asset.storage_path));
+  const disposableAssets = candidates.filter(asset=>!protectedPaths.has(asset.storage_path));
+  const disposableIds = disposableAssets.map(asset=>asset.id);
   await c.query(`INSERT INTO task_reassignment_cleanup(case_id,task_id,storage_path)
-    SELECT $1,task_id,storage_path FROM assets WHERE task_id=$2 AND NOT(id=ANY($3::bigint[])) AND content_cleared_at IS NULL ON CONFLICT DO NOTHING`,[record.id,task.id,baseline.asset_ids]);
+    SELECT $1,task_id,storage_path FROM assets WHERE task_id=$2 AND id=ANY($3::bigint[]) AND content_cleared_at IS NULL ON CONFLICT DO NOTHING`,[record.id,task.id,disposableIds]);
   if(storageRoot) {
-    const assets=(await c.query('SELECT id,sha256 FROM assets WHERE task_id=$1 AND NOT(id=ANY($2::bigint[])) AND content_cleared_at IS NULL',[task.id,baseline.asset_ids])).rows;
-    for(const asset of assets)await c.query(`INSERT INTO task_reassignment_cleanup(case_id,task_id,storage_path) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`,
+    for(const asset of disposableAssets)await c.query(`INSERT INTO task_reassignment_cleanup(case_id,task_id,storage_path) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`,
       [record.id,task.id,join(storageRoot,'thumbnails',String(task.id),`${asset.id}-${asset.sha256}-thumb-480-v1.webp`)]);
   }
   await withdrawReadyDeliveryEntries(c,Number(task.id),'SECOND_ASSIGNMENT_RESET');
@@ -111,12 +117,16 @@ async function resetContent(c, task, record, storageRoot) {
     snapshot='{}',snapshot_prompts_hash=NULL,snapshot_knowledge_hash=NULL,snapshot_production_settings_hash=NULL,
     progress_details='{}',error=NULL,progress_message='旧标注数据已清理',content_cleared_at=clock_timestamp()
     WHERE task_id=$1 AND id IS DISTINCT FROM (SELECT execution_id FROM copy_revisions WHERE id=$2)`,[task.id,baseline.source_revision_id]);
-  await c.query(`UPDATE assets SET active=false,edit_metadata='{}',content_cleared_at=clock_timestamp()
+  await c.query(`UPDATE assets SET active=false
     WHERE task_id=$1 AND NOT(id=ANY($2::bigint[])) AND content_cleared_at IS NULL`,[task.id,baseline.asset_ids]);
+  await c.query(`UPDATE assets SET edit_metadata='{}',content_cleared_at=clock_timestamp()
+    WHERE task_id=$1 AND id=ANY($2::bigint[]) AND content_cleared_at IS NULL`,[task.id,disposableIds]);
   await c.query(`UPDATE image_runs SET result=NULL,content_cleared_at=clock_timestamp(),
-    status=CASE WHEN status='RUNNING' THEN 'ABANDONED' ELSE status END WHERE task_id=$1 AND content_cleared_at IS NULL`,[task.id]);
+    status=CASE WHEN status='RUNNING' THEN 'ABANDONED' ELSE status END WHERE task_id=$1 AND content_cleared_at IS NULL
+    AND NOT EXISTS(SELECT 1 FROM delivery_batch_items item WHERE item.image_run_id=image_runs.id)`,[task.id]);
   await c.query(`UPDATE copy_revisions SET content='{}',content_cleared_at=clock_timestamp()
-    WHERE task_id=$1 AND id<>$2 AND content_cleared_at IS NULL`,[task.id,baseline.source_revision_id]);
+    WHERE task_id=$1 AND id<>$2 AND content_cleared_at IS NULL
+    AND NOT EXISTS(SELECT 1 FROM delivery_batch_items item WHERE item.copy_revision_id=copy_revisions.id)`,[task.id,baseline.source_revision_id]);
   const revision=(await c.query(`INSERT INTO copy_revisions(task_id,revision,content,parent_revision_id,revision_origin)
     SELECT $1,COALESCE(max(revision),0)+1,$2,$3,'SECOND_ASSIGNMENT_RESET' FROM copy_revisions WHERE task_id=$1 RETURNING id`,
   [task.id,baseline.content,baseline.source_revision_id])).rows[0];
@@ -226,26 +236,40 @@ export async function escalateNewCopyQaReturn(client,task,member,actor,{note,rea
 }
 
 export async function cleanReassignmentFiles(pool,caseId,storageRoot) {
+  const thumbnailSources=new Map();
   if(storageRoot) {
-    const sources=(await pool.query(`SELECT DISTINCT a.id,a.task_id,a.sha256 FROM assets a
+    const sources=(await pool.query(`SELECT DISTINCT a.id,a.task_id,a.sha256,a.storage_path FROM assets a
       JOIN task_reassignment_cleanup f ON f.storage_path=a.storage_path AND f.case_id=$1`,[caseId])).rows;
-    for(const asset of sources)await pool.query(`INSERT INTO task_reassignment_cleanup(case_id,task_id,storage_path) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`,
-      [caseId,asset.task_id,join(storageRoot,'thumbnails',String(asset.task_id),`${asset.id}-${asset.sha256}-thumb-480-v1.webp`)]);
+    for(const asset of sources) {
+      const thumbnail=join(storageRoot,'thumbnails',String(asset.task_id),`${asset.id}-${asset.sha256}-thumb-480-v1.webp`);
+      thumbnailSources.set(thumbnail,asset.storage_path);
+      await pool.query(`INSERT INTO task_reassignment_cleanup(case_id,task_id,storage_path) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`,
+        [caseId,asset.task_id,thumbnail]);
+    }
   }
   const files=(await pool.query('SELECT * FROM task_reassignment_cleanup WHERE case_id=$1 AND cleaned_at IS NULL ORDER BY id',[caseId])).rows;
   if(files.length && !storageRoot)return;
   for(const file of files) {
     try {
-      const lexicalRoot=resolve(storageRoot),root=await realpath(lexicalRoot),path=resolve(file.storage_path),rel=relative(lexicalRoot,path);
-      if(!rel || rel==='..' || rel.startsWith(`..\\`) || rel.startsWith('../') || isAbsolute(rel))throw Error('清理文件不在任务存储目录内');
-      // Resolve the parent as well: a symlink must not turn a validated lexical path into an external delete.
-      const parent=await realpath(dirname(path)).catch(error=>{if(error.code==='ENOENT')return null;throw error;});
-      if(parent) {
-        const parentRel=relative(root,parent);
-        if(parentRel==='..'||parentRel.startsWith('..\\')||parentRel.startsWith('../')||isAbsolute(parentRel))throw Error('清理文件的真实目录越界');
-        await rm(path,{force:true});
-      }
-      await pool.query('UPDATE task_reassignment_cleanup SET cleaned_at=clock_timestamp(),error=NULL WHERE id=$1',[file.id]);
+      await transaction(pool,async c=>{
+        await c.query('SELECT id FROM tasks WHERE id=$1 FOR UPDATE',[file.task_id]);
+        const pending=(await c.query('SELECT id FROM task_reassignment_cleanup WHERE id=$1 AND cleaned_at IS NULL FOR UPDATE',[file.id])).rows[0];
+        if(!pending)return;
+        const paths=[file.storage_path,thumbnailSources.get(file.storage_path)].filter(Boolean);
+        const protectedPaths=await protectedDeliverySnapshotPaths(c,paths);
+        if(!protectedPaths.size) {
+          const lexicalRoot=resolve(storageRoot),root=await realpath(lexicalRoot),path=resolve(file.storage_path),rel=relative(lexicalRoot,path);
+          if(!rel || rel==='..' || rel.startsWith(`..\\`) || rel.startsWith('../') || isAbsolute(rel))throw Error('清理文件不在任务存储目录内');
+          // Resolve the parent as well: a symlink must not turn a validated lexical path into an external delete.
+          const parent=await realpath(dirname(path)).catch(error=>{if(error.code==='ENOENT')return null;throw error;});
+          if(parent) {
+            const parentRel=relative(root,parent);
+            if(parentRel==='..'||parentRel.startsWith('..\\')||parentRel.startsWith('../')||isAbsolute(parentRel))throw Error('清理文件的真实目录越界');
+            await rm(path,{force:true});
+          }
+        }
+        await c.query('UPDATE task_reassignment_cleanup SET cleaned_at=clock_timestamp(),error=NULL WHERE id=$1',[file.id]);
+      });
     } catch(error) {await pool.query('UPDATE task_reassignment_cleanup SET error=$2 WHERE id=$1',[file.id,String(error.message).slice(0,500)]);}
   }
   await pool.query(`UPDATE task_reassignment_cases SET cleanup_status=CASE

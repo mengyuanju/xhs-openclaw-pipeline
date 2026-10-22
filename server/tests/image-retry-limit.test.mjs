@@ -152,6 +152,11 @@ test('exhausted image work cannot bypass human review through the retry endpoint
 });
 
 test('exhausted image work requires an actual rework before approval', async () => {
+  const imagePlan = [
+    { kind: 'hero', headline: '封面', subtitle: '', bullets: ['主题', '亮点'], prompt: '展示主题与主要亮点，保持画面清晰' },
+    { kind: 'steps', headline: '步骤', subtitle: '', bullets: ['第一步', '第二步'], prompt: '按顺序展示两个步骤，保持画面清晰' },
+    { kind: 'summary', headline: '总结', subtitle: '', bullets: ['重点', '结论'], prompt: '展示重点与结论，保持画面清晰' },
+  ];
   const client = {
     release() {},
     async query(sql, values) {
@@ -161,7 +166,7 @@ test('exhausted image work requires an actual rework before approval', async () 
         assigned_to_user_id: 'alice', production_batch_id: null, mandatory_copy_qc: false,
         ai_disclosure_enabled: true,
       }] };
-      if (sql.includes('SELECT * FROM copy_revisions')) return { rows: [{ id: 12, content: {} }] };
+      if (sql.includes('SELECT * FROM copy_revisions')) return { rows: [{ id: 12, content: { imagePlan } }] };
       if (sql.includes('SELECT id FROM executor_nodes')) return { rows: [{ id: 'reviewer' }] };
       return { rows: [] };
     },

@@ -109,7 +109,11 @@ Windows 计划任务 `XhsOpenClawDailyDatabaseBackup` 每天北京时间 **02:15
 npm run db:backup:production
 ```
 
-可以使用 `--out=PATH` 指定目录。备份清单会记录实际数据库名。数据库备份不包含图片、缩略图和交付 ZIP；生产文件目录 `D:\auto-claw\images_storage_prod` 需要另行备份。
+可以使用 `--out=PATH` 指定目录。备份清单会记录实际数据库名。数据库备份不包含图片、缩略图或交付快照 JSON；`server/.env` 中 `XHS_PRODUCTION_STORAGE_ROOT` 指定的生产文件目录需要另行备份。历史交付恢复必须配套恢复 `.delivery-snapshots` 与全部被引用的本地原图。升级全量备份脚本 `scripts/backup-production-upgrade.mjs` 从生产配置读取该目录，并校验它与开发目录、备份目录互不包含；已准备的备份计划也必须指向当前生产目录。
+
+迁移生产文件目录时，需要暂停生产写入，完整复制并校验文件，再同步更新生产库保存的文件绝对路径与 `XHS_PRODUCTION_STORAGE_ROOT`，最后重启生产中心和程序改图进程。仅修改配置不能让历史文件自动改址；开发目录和 PostgreSQL 数据目录不随图片目录迁移。中心地址不变时，Web 继续通过中心读取图片，无需因文件目录切换而重启。具体存储条件见[程序生成 AI 标识](docs/programmatic-image-disclosure.md#生产文件目录迁移)。
+
+交付只长期保存冻结快照和本地图片引用。ZIP 按需临时生成，完成使用、断连或取消后清理；历史下载按快照重新生成，缺图或哈希不符会拒绝下载，不使用当前版本替代。升级需应用 `0120_delivery_snapshot_assets.sql`，并使用 `scripts/migrate-delivery-snapshots.mjs` 迁移旧批次。该工具默认只检查，`--apply` 才写入，额外指定 `--remove-archives` 才删除已校验的旧 ZIP；未完成迁移前保留旧包及备份。详见[共享交付与汇总保存](docs/shared-delivery.md)。
 
 ```powershell
 npm run build

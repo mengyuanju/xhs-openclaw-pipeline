@@ -1509,7 +1509,7 @@ test('a cancelled queued task returns to its original queue exactly once', async
 
 test('permanent deletion rejects active work and only deletes inactive tasks after preparation', async () => {
   const passwordHash = await hashUserPassword('delete-secret');
-  async function run(state, { cancelledFromState = null, cancellationReady = true } = {}) {
+  async function run(state, { cancelledFromState = null, cancellationReady = true, snapshotReferenced = false } = {}) {
     const queries = [];
     const client = {
       async query(sql) {
@@ -1523,6 +1523,7 @@ test('permanent deletion rejects active work and only deletes inactive tasks aft
         if (source.includes("updated_at <= now() - interval '3 minutes'")) {
           return { rows: [{ ready: cancellationReady }] };
         }
+        if (source.includes('FROM delivery_snapshot_assets')) return { rows: snapshotReferenced ? [{ exists: 1 }] : [] };
         return { rows: [] };
       },
       release() {},
@@ -1560,6 +1561,12 @@ test('permanent deletion rejects active work and only deletes inactive tasks aft
   assert.deepEqual(await cancelled.operation, { id: 41 });
   assert.equal(cancelled.prepared(), true);
   assert.equal(cancelled.queries.some(sql => sql.includes('DELETE FROM tasks')), true);
+
+  const referenced = await run('REVIEWED', { snapshotReferenced: true });
+  await assert.rejects(referenced.operation, { code: 'DELIVERY_SNAPSHOT_ASSET_REFERENCED' });
+  assert.equal(referenced.prepared(), false, 'referenced images must not enter the filesystem deletion callback');
+  assert.equal(referenced.queries.some(sql => sql.includes('DELETE FROM tasks')), false);
+  assert.equal(referenced.queries.at(-1), 'ROLLBACK');
 });
 
 test('permanent deletion rejects a stale administrator before task or file mutation', async () => {
@@ -1592,6 +1599,7 @@ test('batch permanent deletion verifies the administrator once and deletes eligi
     [41, taskRow({ state: 'REVIEWED' })],
     [42, taskRow({ state: 'IMAGE_RUNNING' })],
     [44, taskRow({ state: 'CANCELLED', cancelled_from_state: 'COPY_RUNNING' })],
+    [45, taskRow({ state: 'REVIEWED' })],
   ]);
   const client = {
     async query(sql, values = []) {
@@ -1606,6 +1614,7 @@ test('batch permanent deletion verifies the administrator once and deletes eligi
         return { rows: task ? [task] : [] };
       }
       if (source.includes("updated_at <= now() - interval '3 minutes'")) return { rows: [{ ready: false }] };
+      if (source.includes('FROM delivery_snapshot_assets')) return { rows: Number(values[0]) === 45 ? [{ exists: 1 }] : [] };
       if (source.includes('DELETE FROM tasks WHERE id')) {
         deleted.push(Number(values[0]));
         return { rows: [] };
@@ -1617,7 +1626,7 @@ test('batch permanent deletion verifies the administrator once and deletes eligi
   const repository = new PostgresControlPlaneRepository({ pool: { connect: async () => client } });
   const prepared = [];
 
-  const result = await repository.permanentlyDeleteTasks([41, 42, 43, 44, 41], {
+  const result = await repository.permanentlyDeleteTasks([41, 42, 43, 44, 41, 45], {
     actorUsername: 'admin',
     deletionPassword: 'delete-secret',
     beforeDelete: async (taskId) => { prepared.push(taskId); },
@@ -1629,6 +1638,7 @@ test('batch permanent deletion verifies the administrator once and deletes eligi
       { id: 42, code: 'TASK_MUST_BE_INACTIVE', message: '请先废弃排队任务或等待任务结束，再永久删除' },
       { id: 43, code: 'NOT_FOUND', message: 'task not found' },
       { id: 44, code: 'TASK_CANCELLATION_SETTLING', message: '执行机仍在确认取消，请在取消后等待3分钟再永久删除' },
+      { id: 45, code: 'DELIVERY_SNAPSHOT_ASSET_REFERENCED', message: '该任务的图片仍被历史交付快照引用，无法永久删除' },
     ],
   });
   assert.equal(queries.filter(({ sql }) => sql.includes('SELECT * FROM app_users')).length, 1);

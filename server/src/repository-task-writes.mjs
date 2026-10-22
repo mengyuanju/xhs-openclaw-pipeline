@@ -1284,6 +1284,32 @@ export class TaskWriteRepository extends TaskReadRepository {
     });
   }
 
+  async returnFailedImagesToCopyReview(rawTaskId, { actor: rawActor } = {}) {
+    const taskId = normalizeTaskId(rawTaskId);
+    const actor = normalizedActorIdentity(rawActor);
+    if (!['ADMIN', 'USER'].includes(actor.role)) {
+      throw new ControlPlaneAuthorizationError('只有管理员或任务负责人可以退回文案审核');
+    }
+    return transaction(this.pool, async (client) => {
+      const { task } = await lockTaskForActor(client, taskId, actor, {
+        ownerOnly: actor.role !== 'ADMIN',
+      });
+      if (task.state !== 'IMAGE_FAILED' || task.current_execution_id || !task.current_copy_revision_id) {
+        throw new ControlPlaneConflictError('IMAGE_COPY_RETURN_UNAVAILABLE', '只有已停止的生图失败任务可以退回文案审核，请刷新列表');
+      }
+      await withdrawReadyDeliveryEntries(client, taskId, 'IMAGE_FAILURE_COPY_RETURN');
+      const updated = await client.query(`
+        UPDATE tasks SET state = 'COPY_REVIEW_PENDING', current_stage = 'IMAGE_RETRY_EXHAUSTED',
+          mandatory_copy_qc = true, mandatory_copy_qc_origin = 'IMAGE_RETRY_REVIEW',
+          pending_snapshot = NULL, requeue_reason = 'MANUAL_RETRY',
+          progress_message = '已退回文案审核，请修改标题或内容后提交强制复检',
+          error = NULL, last_activity_at = now(), updated_at = now()
+        WHERE id = $1 RETURNING *
+      `, [taskId]);
+      return taskFrom(updated.rows[0]);
+    });
+  }
+
   async requeueImageTask(rawTaskId, { retryOnly = false, actor: rawActor = null } = {}) {
     const taskId = normalizeTaskId(rawTaskId);
     const actorIdentity = rawActor === null ? null : normalizedActorIdentity(rawActor);
@@ -1485,6 +1511,10 @@ export class TaskWriteRepository extends TaskReadRepository {
     return transaction(this.pool, async (client) => {
       await assertPermanentDeletionActor(client, actor, deletionPassword);
       const task = await assertPermanentlyDeletableTask(client, taskId);
+      const snapshot = await client.query('SELECT 1 FROM delivery_snapshot_assets WHERE task_id = $1 LIMIT 1', [taskId]);
+      if (snapshot.rows.length) {
+        throw new ControlPlaneConflictError('DELIVERY_SNAPSHOT_ASSET_REFERENCED', '该任务的图片仍被历史交付快照引用，无法永久删除');
+      }
       if (beforeDelete) await beforeDelete(taskId);
       await withdrawReadyDeliveryEntries(client, taskId, 'TASK_PERMANENTLY_DELETED');
       await client.query('DELETE FROM tasks WHERE id = $1', [taskId]);
@@ -1513,6 +1543,10 @@ export class TaskWriteRepository extends TaskReadRepository {
       for (const taskId of taskIds) {
         try {
           const task = await assertPermanentlyDeletableTask(client, taskId);
+          const snapshot = await client.query('SELECT 1 FROM delivery_snapshot_assets WHERE task_id = $1 LIMIT 1', [taskId]);
+          if (snapshot.rows.length) {
+            throw new ControlPlaneConflictError('DELIVERY_SNAPSHOT_ASSET_REFERENCED', '该任务的图片仍被历史交付快照引用，无法永久删除');
+          }
           eligible.push(taskId);
           if (task.production_batch_id !== null && task.production_batch_id !== undefined) {
             productionBatchIds.add(Number(task.production_batch_id));

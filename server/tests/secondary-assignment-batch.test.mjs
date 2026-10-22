@@ -15,7 +15,7 @@ const requestOf = (operation, items, extra = {}) => ({ operation, items,
   ...(operation === 'RESET' ? {} : { note: '批量处理原因' }),
   ...(operation === 'REASSIGN' ? { targetAccountId: target.id } : {}), ...extra });
 
-function fixture({ blocked = [], closed = [], taskErrors = {}, onCommit } = {}) {
+function fixture({ blocked = [], closed = [], taskErrors = {}, protectedPaths = [], onCommit } = {}) {
   const cases = [1, 2, 3].map(id => ({ id, task_id: id + 10, stage: 'COPY', version: 1,
     status: closed.includes(id) ? 'DISCARDED' : 'PENDING',
     reset_status: blocked.includes(id) ? 'BLOCKED' : 'READY', cleanup_status: 'COMPLETE',
@@ -29,6 +29,15 @@ function fixture({ blocked = [], closed = [], taskErrors = {}, onCommit } = {}) 
     const q = sql.replace(/\s+/gu, ' ').trim();
     calls.push({ sql: q, values });
     if (q.startsWith('SELECT set_config') || q.startsWith('SELECT pg_advisory_xact_lock')) return empty;
+    if (q.startsWith('SELECT id FROM tasks WHERE id=$1 FOR UPDATE')) {
+      return resultOf(current.tasks.filter(row => row.id === values[0]));
+    }
+    if (q.startsWith('SELECT id FROM task_reassignment_cleanup WHERE id=$1')) {
+      return resultOf(current.files.filter(row => row.id === values[0] && !row.cleaned_at));
+    }
+    if (q.startsWith('SELECT DISTINCT storage_path FROM delivery_snapshot_assets')) {
+      return resultOf(protectedPaths.filter(path => values[0].includes(path)).map(storage_path => ({ storage_path })));
+    }
     if (q.startsWith('SELECT * FROM app_users WHERE id=$1 AND username=$2')) {
       return resultOf(current.activeActor && values[0] === actor.userId && values[1] === actor.username
         && values[2] === actor.role && values[3] === actor.credentialVersion ? [{ id: actor.userId, role: actor.role }] : []);
@@ -233,5 +242,20 @@ test('batch reset reuses trusted cleanup and reports the resulting assignability
     assert.equal(f.state.requests.length, 2);
     assert.equal((await batchReassignmentCases(f.pool, input, actor, { storageRoot })).succeeded, 2);
     assert.equal(f.state.requests.length, 2);
+  } finally { await rm(storageRoot, { recursive: true, force: true }); }
+});
+
+test('batch reset preserves local images referenced by historical delivery snapshots', async () => {
+  const storageRoot = await mkdtemp(join(tmpdir(), 'secondary-protected-'));
+  try {
+    const path = join(storageRoot, 'delivered-image.png');
+    await writeFile(path, 'frozen delivery image');
+    const f = fixture({ protectedPaths: [path] });
+    f.state.cases[0].cleanup_status = 'PENDING';
+    f.state.files.push({ id: 1, task_id: 11, case_id: 1, storage_path: path });
+    const result = await batchReassignmentCases(f.pool, requestOf('RESET', [itemOf(1)]), actor, { storageRoot });
+    assert.equal(result.results[0].item.cleanupStatus, 'COMPLETE');
+    assert.equal(await readFile(path, 'utf8'), 'frozen delivery image');
+    assert.ok(f.state.files[0].cleaned_at, 'protected work is resolved without retrying destructive cleanup');
   } finally { await rm(storageRoot, { recursive: true, force: true }); }
 });

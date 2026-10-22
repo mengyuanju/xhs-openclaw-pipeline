@@ -1,4 +1,4 @@
-export const IMAGE_RETRY_EXHAUSTED_LABEL = '生图3次失败';
+export const IMAGE_RETRY_EXHAUSTED_LABEL = '生图失败待处理';
 
 /** @param {{ state: string, currentStage: string | null }} task */
 export function isImageRetryExhausted(task) {

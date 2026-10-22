@@ -19,7 +19,7 @@ npm start
 DATABASE_URL=postgresql://xhs_control:替换为数据库密码@127.0.0.1:5432/xhs_control
 # 可选：同一份 env 中配置正式库，使用 production 环境时自动替换 DATABASE_URL。
 XHS_PRODUCTION_DATABASE_URL=postgresql://xhs_control_prod:替换为正式库密码@127.0.0.1:5432/xhs_control_prod
-XHS_PRODUCTION_STORAGE_ROOT=D:\auto-claw\images_storage_prod
+XHS_PRODUCTION_STORAGE_ROOT=E:\auto-claw\images_storage_prod
 CONTROL_PLANE_HOST=0.0.0.0
 CONTROL_PLANE_PORT=4310
 CONTROL_PLANE_STORAGE_ROOT=server-storage

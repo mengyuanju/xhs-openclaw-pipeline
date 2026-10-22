@@ -54,7 +54,7 @@ test('aggregate extracts selected task files from new batch folders with unchang
   for (const file of files) expectedBytes += (await file.async('nodebuffer')).length;
   assert.equal(totalBytes, expectedBytes);
   const artifacts = await writeDeliveryAggregate(root, job(), members);
-  const result = await JSZip.loadAsync(await readFile(join(root, '.delivery-archives', '1', artifacts[0].file)));
+  const result = await JSZip.loadAsync(await readFile(artifacts[0].path));
   assert.equal(Object.keys(result.files).some(name => name.endsWith('.zip')), false);
   assert.deepEqual(Object.values(result.files).filter(file => !file.dir).map(file => file.name).sort(), files.filter(file => !file.dir).map(file => file.name).sort(),
     'selected files retain the original batch/task paths, with no added files or version directories');
@@ -64,6 +64,8 @@ test('aggregate extracts selected task files from new batch folders with unchang
     assert.deepEqual(await result.file(file.name).async('nodebuffer'),
       await file.async('nodebuffer'));
   }
+  await artifacts[0].cleanup();
+  assert.deepEqual(await readdir(join(root,'.delivery-exports')),[]);
 });
 
 test('aggregate flattens legacy task ZIPs and keeps versions separate across batches', async t => {
@@ -82,7 +84,7 @@ test('aggregate flattens legacy task ZIPs and keeps versions separate across bat
   const { members, totalBytes } = await inspectDeliverySources(root, rows);
   assert.equal(totalBytes, Buffer.byteLength('冻结正文1冻结正文2') + 6);
   const artifacts = await writeDeliveryAggregate(root, job(), members);
-  const result = await JSZip.loadAsync(await readFile(join(root, '.delivery-archives', '1', artifacts[0].file)));
+  const result = await JSZip.loadAsync(await readFile(artifacts[0].path));
   assert.equal(Object.keys(result.files).some(name => name.endsWith('.zip')), false);
   for (const [index, row] of rows.entries()) {
     const directory=`旧词包/任务-1-资源包${index ? '-2' : ''}`;
@@ -90,6 +92,7 @@ test('aggregate flattens legacy task ZIPs and keeps versions separate across bat
     assert.deepEqual(await result.file(`${directory}/01-图片.png`).async('nodebuffer'), Buffer.from([0, 255, index + 1]));
     assert.equal(directory.split('/').length,2,'historical versions must not add directory levels');
   }
+  await artifacts[0].cleanup();
 });
 
 test('source inspection rejects ambiguous task folders and mixed legacy and new members', async t => {
@@ -128,7 +131,7 @@ test('aggregate removes partial output when a frozen file disappears after inspe
   zip.remove('批次/任务-1-资源包/01.png');
   await writeFile(members[0].path, await zip.generateAsync({ type: 'nodebuffer' }));
   await assert.rejects(writeDeliveryAggregate(root, job(), members), /冻结成员丢失/u);
-  assert.deepEqual(await readdir(join(root, '.delivery-archives', '1')), []);
+  assert.deepEqual(await readdir(join(root, '.delivery-exports')), []);
 });
 
 for (const legacy of [false, true]) {
@@ -154,7 +157,7 @@ for (const legacy of [false, true]) {
       row.query='历史 Query';row.issued_query=scenario.issued;
       const {members}=await inspectDeliverySources(root,[row]);
       const artifacts=await writeDeliveryAggregate(root,{...job(),kind:legacy?'ARCHIVE':'DOWNLOAD'},members);
-      const zip=await JSZip.loadAsync(await readFile(join(root,'.delivery-archives','1',artifacts[0].file)));
+      const zip=await JSZip.loadAsync(await readFile(artifacts[0].path));
       assert.deepEqual(Object.values(zip.files).filter(file=>!file.dir).map(file=>file.name).sort(),
         Object.keys(originalFiles).map(name=>directory+'/'+name).sort());
       const copy=await zip.file(directory+'/文案.txt').async('string');
@@ -162,6 +165,7 @@ for (const legacy of [false, true]) {
       assert.equal(await zip.file(directory+'/小红书链接.txt').async('string'),links);
       assert.deepEqual(await zip.file(directory+'/01-封面.png').async('nodebuffer'),picture);
       assert.deepEqual(await readFile(members[0].path),sourceBytes,'source ZIP must remain unchanged');
+      await artifacts[0].cleanup();
     }
   });
 }

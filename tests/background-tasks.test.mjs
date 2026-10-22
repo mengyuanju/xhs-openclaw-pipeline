@@ -188,6 +188,22 @@ test('restored planning results match the exact source revision and copy regardl
   assert.equal(isPlanSourceCurrent(job, 20, { ...copy, tags: ['#新标签'] }), false);
 });
 
+test('planning source comparison matches server whitespace normalization without accepting changed content', () => {
+  const copy = { title: '标题', body: '第一段\n第二段', tags: ['#桌面', '#整理', '#收纳'] };
+  const job = { copyRevisionId: 20, copy };
+  const draft = { title: ' 标题\r\n', body: '\r\n第一段\r\n第二段 \r\n', tags: [' #桌面 ', '#整理\r\n', '#收纳'] };
+  assert.equal(isPlanSourceCurrent(job, 20, draft), true);
+  assert.equal(isPlanSourceCurrent({ ...job, copy: draft }, 20, copy), true);
+  assert.equal(isPlanSourceCurrent(job, 21, draft), false, 'a newer revision still requires a new plan');
+  assert.equal(isPlanSourceCurrent(job, 20, { ...draft, title: '新标题' }), false);
+  assert.equal(isPlanSourceCurrent(job, 20, { ...draft, body: '第一段\n新的第二段' }), false);
+  assert.equal(isPlanSourceCurrent(job, 20, { ...draft, body: '第一段\n\n第二段' }), false, 'internal whitespace remains significant');
+  assert.equal(isPlanSourceCurrent(job, 20, { ...draft, tags: [...draft.tags].reverse() }), false);
+  assert.equal(isPlanSourceCurrent(job, 20, { ...draft, tags: [...draft.tags, '#额外'] }), false);
+  assert.equal(isPlanSourceCurrent({ copyRevisionId: 20 }, 20, draft), false, 'missing source data cannot be adopted');
+  assert.equal(isPlanSourceCurrent({ ...job, copy: { ...copy, body: null } }, 20, draft), false);
+});
+
 
 test('standalone edit notifications poll their own API and persist without becoming business tasks',async()=>{
   const paths=[];

@@ -1,6 +1,7 @@
 import { realpath, unlink } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, relative, resolve } from 'node:path';
 import { ControlPlaneConflictError, ControlPlaneNotFoundError, normalizeTaskId, normalizeUuid } from './domain.mjs';
+import { protectedDeliverySnapshotPaths } from './delivery-snapshot-assets.mjs';
 
 const IN_USE_STATUSES = ['DRAFT', 'QUEUED', 'RUNNING', 'FAILED'];
 const REFERENCE_FILE_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.png$/iu;
@@ -46,9 +47,13 @@ async function scheduleAssets(client, taskId, assetIds, { rejectInUse = false, i
   if (rejectInUse && rows.some(row => row.in_use && !row.content_cleared_at)) {
     throw new ControlPlaneConflictError('IMAGE_REFERENCE_IN_USE', '参考图仍被草稿、执行中或可重试的图片修改使用，请先取消相关请求');
   }
+  const protectedPaths = await protectedDeliverySnapshotPaths(client, rows.map(row => row.storage_path));
+  if (rejectInUse && rows.some(row => protectedPaths.has(row.storage_path))) {
+    throw new ControlPlaneConflictError('DELIVERY_SNAPSHOT_ASSET_IN_USE', '图片已被交付快照引用，不能删除');
+  }
   let scheduled = 0;
   for (const row of rows) {
-    if (row.in_use || row.content_cleared_at) continue;
+    if (row.in_use || row.content_cleared_at || protectedPaths.has(row.storage_path)) continue;
     await client.query(`
       INSERT INTO image_reference_cleanup_jobs(asset_id,task_id,storage_path,sha256)
       VALUES($1,$2,$3,$4)
@@ -195,7 +200,8 @@ export async function drainReferenceCleanup(pool, storageRoot, { taskId, assetId
       `, [normalizedTaskId, normalizedAssetId, candidate.asset_id])).rows[0];
       if (!job) return 'skip';
       try {
-        await deleteJobFiles(storageRoot, job);
+        const protectedPaths = await protectedDeliverySnapshotPaths(client, [job.storage_path]);
+        if (!protectedPaths.has(job.storage_path)) await deleteJobFiles(storageRoot, job);
         await client.query('DELETE FROM image_reference_cleanup_jobs WHERE asset_id=$1', [job.asset_id]);
         return true;
       } catch (error) {
@@ -219,6 +225,7 @@ export async function backfillEligibleReferenceCleanup(pool, { limitTasks = 100 
   const tasks = (await pool.query(`
     SELECT DISTINCT a.task_id FROM assets a
     WHERE a.asset_role='REFERENCE' AND a.content_cleared_at IS NULL
+      AND NOT EXISTS (SELECT 1 FROM delivery_snapshot_assets snapshot WHERE snapshot.storage_path=a.storage_path)
       AND (
         EXISTS (SELECT 1 FROM delivery_entries d WHERE d.task_id=a.task_id AND (
           (d.reference_asset_id_cutoff IS NOT NULL AND a.id<=d.reference_asset_id_cutoff)

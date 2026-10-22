@@ -495,6 +495,15 @@ export function installTasksRoutes({
     });
     json(ctx, 200, actor.role === 'USER' ? userVisibleTask(task) : task);
   });
+  router.post('/v1/tasks/:taskId/return-to-copy-review', async ctx => {
+    const actor = requestActor(ctx, ['ADMIN', 'USER']);
+    await assertTaskAccess(ctx, repository, {
+      summaryOnly: true,
+      ownerOnly: actor.role !== 'ADMIN'
+    });
+    const task = await repository.returnFailedImagesToCopyReview(ctx.params.taskId, { actor });
+    json(ctx, 200, actor.role === 'USER' ? userVisibleTask(task) : task);
+  });
   router.post('/v1/tasks/:taskId/retry-image', async ctx => {
     const actor = requestActor(ctx);
     await assertTaskAccess(ctx, repository, {

@@ -39,8 +39,16 @@ export function backgroundTaskStatus(task: BackgroundTask) {
 export function isPlanSourceCurrent(job: { copyRevisionId: number; copy?: { title: string; body: string; tags: string[] } },
   revisionId: number | undefined, copy: { title: string; body: string; tags: string[] } | undefined) {
   return job.copyRevisionId === revisionId && Boolean(job.copy && copy
-    && job.copy.title === copy.title && job.copy.body === copy.body
-    && JSON.stringify(job.copy.tags) === JSON.stringify(copy.tags));
+    && samePlanSourceText(job.copy.title, copy.title) && samePlanSourceText(job.copy.body, copy.body)
+    && Array.isArray(job.copy.tags) && Array.isArray(copy.tags)
+    && job.copy.tags.length === copy.tags.length
+    && job.copy.tags.every((tag, index) => samePlanSourceText(tag, copy.tags[index])));
+}
+
+function samePlanSourceText(source: unknown, current: unknown) {
+  // Match normalizedReviewText on the server when the planning job is created.
+  return typeof source === 'string' && typeof current === 'string'
+    && source.replace(/\r\n?/gu, '\n').trim() === current.replace(/\r\n?/gu, '\n').trim();
 }
 
 export function backgroundTaskTitle(task: BackgroundTask) {

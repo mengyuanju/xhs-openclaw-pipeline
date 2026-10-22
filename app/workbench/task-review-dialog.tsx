@@ -45,7 +45,7 @@ export function TaskReviewDialog(props: Parameters<typeof useTaskReviewControlle
     canReviewImages, resultImageByAssetId, imageSetComplete, imageReworkTarget, imageConfigurationChanged, continueImageReviewRef,
     setPendingEditsOpen, imagePlanComparison, imagePlanChanged, error, revealImagePlanLocation, approveCopyBlockReason,
     hasUnsavedChanges, imageManualNoteChanged, submittingImagePlan, canRetryCopy, retryCopy, canRetryExhaustedImages,
-    retryExhaustedImages, canResumeImages, resumeImages, canDiscardImages, setSubmitting, onOpenChange,
+    retryExhaustedImages, canReturnToCopyReview, returnToCopyReview, canResumeImages, resumeImages, canDiscardImages, setSubmitting, onOpenChange,
     canSubmitImageSelfReview, submitImageSelfReview, imageRatingComplete, submitImageReview, setImageReworkTarget, canApproveImages,
     copyActionBusyReason, saveImagePlan, canDiscardReturnedCopy, discardReturnedCopy, copyRatingBlockReason, copyRatingComplete,
     submitCopyDecision, saveCopyBlockReason, draftChanged, pendingEditsOpen, setPendingImageEdits,
@@ -233,6 +233,7 @@ export function TaskReviewDialog(props: Parameters<typeof useTaskReviewControlle
                 onClick={() => { if (copyReviewDraftContent && currentDraftFingerprint) void persistCopyReviewDraft(copyReviewDraftContent, currentDraftFingerprint); }}><Save size={15} />保存草稿</Button>}
               {canModifyImages && <Button unstyled className="button primary" type="button" disabled={submitting} onClick={() => void reviseImages('REGENERATE')}><RotateCcw size={15} />重新生成图片</Button>}
               {canRetryCopy && <Button unstyled className="button primary" type="button" disabled={submitting || loading} onClick={() => { void retryCopy(); }}><RotateCcw size={15} />重试文案</Button>}
+              {canReturnToCopyReview && <Button unstyled className="button" type="button" disabled={submitting || loading} onClick={() => { void returnToCopyReview(); }}>退回文案审核</Button>}
               {canRetryExhaustedImages && <Button unstyled className="button primary" type="button" disabled={submitting || loading || draftSaveStatus === 'saving'} onClick={() => { void retryExhaustedImages(); }}><RotateCcw size={15} />重试生图</Button>}
               {role === 'ADMIN' && detail.state === 'COPY_QC_PENDING'
                 && <a className="button primary" href="/copy-qa">进入质检批次</a>}

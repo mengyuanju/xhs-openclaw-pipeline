@@ -1732,3 +1732,17 @@ test('Koa JSON middleware leaves JSON execution assets as raw upload bytes', asy
     await rm(storageRoot, { recursive: true, force: true });
   }
 });
+
+
+test('failed image return route forwards authenticated actor', async () => {
+  let received;
+  await withServer({ returnFailedImagesToCopyReview: async (id, options) => {
+    received = { id, actor: options.actor };
+    return { id: Number(id), state: 'COPY_REVIEW_PENDING' };
+  } }, async root => {
+    const response = await fetch(`${root}/v1/tasks/9/return-to-copy-review`, { method: 'POST' });
+    assert.equal(response.status, 200);
+    assert.equal(received.id, '9');
+    assert.equal(received.actor.role, 'ADMIN');
+  });
+});

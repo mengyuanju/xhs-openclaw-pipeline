@@ -15,6 +15,8 @@
 .personnelSummary { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; padding: 13px 16px; border: 1px solid #bed8cc; border-radius: 10px; background: #f1faf6; font-size: 13px; }
 .personnelSummary > div:first-child { display: grid; gap: 4px; }
 .personnelSummary span { color: var(--muted, #64748b); }
+.selectionNotice { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 13px 16px; border: 1px solid #bed8cc; border-radius: 10px; background: #f1faf6; font-size: 13px; line-height: 1.7; }
+.selectionNotice span { color: var(--muted, #64748b); }
 .hint { margin: 0; line-height: 1.7; }
 .meta { display: block; margin-top: 5px; overflow-wrap: anywhere; }
 .warning { display: block; color: #a54a12; margin-top: 6px; font-size: 12px; }

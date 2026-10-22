@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, access, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { startTemporaryPostgres18 } from './helpers/personal-postgres.mjs';
 import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 import { applyMigrations, loadMigrations } from '../src/database-migrations.mjs';
@@ -12,6 +12,7 @@ import { readAccountQualityFacts } from '../src/account-quality-statistics.mjs';
 import { summarizeAccountQuality } from '../../src/account-quality-statistics.mjs';
 import { PERFORMANCE_VERSION } from '../../src/operator-performance.mjs';
 import { hydrateExecutionSnapshots, storeExecutionSnapshot } from '../src/execution-snapshot-storage.mjs';
+import { registerDeliverySnapshotAssets } from '../src/delivery-snapshot-assets.mjs';
 
 test('secondary assignment migrates existing states and preserves QA subjects while resetting content', {
   skip:process.env.RUN_SECONDARY_ASSIGNMENT_POSTGRES!=='1', timeout:180000,
@@ -248,5 +249,46 @@ test('secondary assignment migrates existing states and preserves QA subjects wh
     assert.equal(concurrent.filter(result=>result.status==='fulfilled').length,1,'only one concurrent disposition succeeds');
     assert.equal(concurrent.filter(result=>result.status==='rejected').length,1);
     assert.equal((await db.query('SELECT count(*) FROM task_assignment_records WHERE task_id=$1 AND ended_at IS NULL',[toRegenerate.task])).rows[0].count,'1');
+    // Reset may clear new editable work, but must preserve the original bytes
+    // and the frozen JSON of versions already issued in a delivery batch.
+    const delivered=await fixture(),snapshotId=randomUUID();
+    const issuedContent=(await db.query('SELECT content FROM copy_revisions WHERE id=$1',[delivered.revision])).rows[0].content;
+    const savedAssets=[];
+    for(const [index,label] of ['issued','disposable'].entries()) {
+      const imageRunId=randomUUID(),path=join(storage,'tasks',String(delivered.task),`${label}.png`),bytes=Buffer.from(label);
+      await mkdir(join(storage,'tasks',String(delivered.task)),{recursive:true});
+      await writeFile(path,bytes);
+      const sha=createHash('sha256').update(bytes).digest('hex');
+      await db.query(`INSERT INTO image_runs(id,task_id,copy_revision_id,status,result,image_production_chain_id)
+        VALUES($1,$2,$3,'COMPLETED','{}',$1)`,[imageRunId,delivered.task,delivered.revision]);
+      const assetId=Number((await db.query(`INSERT INTO assets(task_id,image_run_id,media_type,byte_size,sha256,
+        storage_path,image_production_chain_id,origin_image_run_id,artifact_key)
+        VALUES($1,$2,'image/png',$3,$4,$5,$2,$2,$6) RETURNING id`,
+      [delivered.task,imageRunId,bytes.length,sha,path,`snapshot-${index}`])).rows[0].id);
+      await db.query('UPDATE image_runs SET result=$2 WHERE id=$1',[imageRunId,{images:[{assetId}]}]);
+      savedAssets.push({imageRunId,assetId,storagePath:path,sha256:sha,byteSize:bytes.length,taskId:delivered.task});
+    }
+    const [issued,disposable]=savedAssets;
+    const publishing=await db.connect();
+    try {
+      await publishing.query('BEGIN');
+      await registerDeliverySnapshotAssets(publishing,snapshotId,[issued]);
+      const batchId=(await publishing.query(`INSERT INTO delivery_batches(public_id,code,scope,archive_file_name,
+        archive_byte_size,archive_sha256,task_count,created_by_account_id,created_by_username)
+        VALUES($1,'JF-01020304','SELECTED','snapshot.zip',1,$2,1,$3,$4) RETURNING id`,
+      [snapshotId,'a'.repeat(64),admin.userId,admin.username])).rows[0].id;
+      await publishing.query(`INSERT INTO delivery_batch_items(delivery_batch_id,ordinal,task_id,copy_revision_id,image_run_id,query_snapshot)
+        VALUES($1,1,$2,$3,$4,'frozen query')`,[batchId,delivered.task,delivered.revision,issued.imageRunId]);
+      await publishing.query('COMMIT');
+    } catch(error) {await publishing.query('ROLLBACK');throw error;} finally {publishing.release();}
+    await repo.escalateQualityToAdmin('COPY',delivered.item.public_id,
+      {...escalateInput,requestId:randomUUID()},{actor:admin,storageRoot:storage});
+    await access(issued.storagePath);
+    await assert.rejects(access(disposable.storagePath),{code:'ENOENT'});
+    assert.equal((await db.query('SELECT content_cleared_at FROM assets WHERE id=$1',[issued.assetId])).rows[0].content_cleared_at,null);
+    assert.ok((await db.query('SELECT content_cleared_at FROM assets WHERE id=$1',[disposable.assetId])).rows[0].content_cleared_at);
+    assert.equal((await db.query('SELECT count(*) FROM task_reassignment_cleanup WHERE storage_path=$1',[issued.storagePath])).rows[0].count,'0');
+    assert.deepEqual((await db.query('SELECT result FROM image_runs WHERE id=$1',[issued.imageRunId])).rows[0].result,{images:[{assetId:issued.assetId}]});
+    assert.deepEqual((await db.query('SELECT content FROM copy_revisions WHERE id=$1',[delivered.revision])).rows[0].content,issuedContent);
   } finally {await db.end();await database.stop();assert.ok(resolve(storage).startsWith(resolve(tmpdir())+'\\xhs-secondary-assets-') || resolve(storage).startsWith(resolve(tmpdir())+'/xhs-secondary-assets-'));await rm(storage,{recursive:true,force:true});}
 });

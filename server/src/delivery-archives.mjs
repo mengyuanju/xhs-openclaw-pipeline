@@ -12,6 +12,8 @@ import { withOriginalDeliveryQuery } from './delivery-copy-query.mjs';
 import { ControlPlaneConflictError, ControlPlaneNotFoundError, normalizeTaskId, normalizeUuid } from './domain.mjs';
 import { deliveryActor, inDeliveryTransaction, selectDeliveryArchiveItems } from './delivery-ledger.mjs';
 import { normalizeListPagination } from './list-pagination.mjs';
+import { appendSnapshotMember, inspectSnapshotSources } from './delivery-snapshots.mjs';
+import { derivedDirectory } from './derived-storage-paths.mjs';
 
 const MAX_PART_BYTES = 1024 ** 3;
 const MAX_PART_ITEMS = 200;
@@ -165,9 +167,12 @@ async function appendOriginalMember(archive, member, signal) {
   },signal);
 }
 
-export async function writeDeliveryAggregate(root, job, members, {signal}={signal:new AbortController().signal}) {
-  const directory=join(root,'.delivery-archives',String(normalizeTaskId(job.id)));
-  await mkdir(directory,{recursive:true});
+export async function writeDeliveryAggregate(root, job, members, {
+  signal = new AbortController().signal, selectedPart,
+} = {}) {
+  normalizeTaskId(job.id);
+  signal.throwIfAborted();
+  if(!Array.isArray(members)||!members.length)throw new RangeError('汇总内容为空');
   const parts=[];
   let group=[],bytes=0;
   const usedDirectories=new Set();
@@ -182,24 +187,38 @@ export async function writeDeliveryAggregate(root, job, members, {signal}={signa
     group.push(member); bytes+=member.byteSize;
   }
   if (group.length) parts.push(group);
+  if (selectedPart !== undefined && (!Number.isSafeInteger(selectedPart) || !parts[selectedPart - 1])) {
+    throw new ControlPlaneNotFoundError('汇总分卷不存在');
+  }
+  await mkdir(root,{recursive:true});
+  const temporaryRoot=await derivedDirectory(root,'.delivery-exports');
+  const directory=await derivedDirectory(temporaryRoot,randomUUID());
+  let cleanupFlight;
+  const cleanup=()=>cleanupFlight??=rm(directory,{recursive:true,force:true,maxRetries:5,retryDelay:100});
   const artifacts=[];
-  for (const [index,part] of parts.entries()) {
+  try { for (const [index,part] of parts.entries()) {
+    if(selectedPart !== undefined && index + 1 !== selectedPart)continue;
     signal.throwIfAborted();
-    const base=`${normalizeUuid(job.run_token,'runToken')}-${index+1}.zip`,path=join(directory,base),temporary=`${path}.tmp`;
+    const base=`${index+1}.zip`,path=join(directory,base),temporary=`${path}.tmp`;
     const output=createWriteStream(temporary,{flags:'wx'}),archive=new ZipArchive({forceZip64:true,zlib:{level:6}});
     let transferError;
     const transfer=pipeline(archive,output,{signal}).catch(error=>{transferError=error;});
     try {
-      for (const member of part) { if (transferError) throw transferError; await appendOriginalMember(archive,member,signal); }
-      await archive.finalize();await transfer;if (transferError) throw transferError;
+      for (const member of part) {
+        if (transferError) throw transferError;
+        await (member.snapshot ? appendSnapshotMember : appendOriginalMember)(archive,member,signal);
+      }
+      await Promise.race([archive.finalize(),transfer.then(()=>{if(transferError)throw transferError;})]);
+      await transfer;if (transferError) throw transferError;
+      signal.throwIfAborted();
       await rename(temporary,path);
-      artifacts.push({part:index+1,file:base,fileName:`HG-${job.id}-${index+1}-交付内容.zip`,byteSize:(await stat(path)).size,sha256:await deliveryFileHash(path),itemIds:part.map(member=>Number(member.row.item_id))});
+      artifacts.push({part:index+1,path,cleanup,fileName:`HG-${job.id}-${index+1}-交付内容.zip`,byteSize:(await stat(path)).size,sha256:await deliveryFileHash(path),itemIds:part.map(member=>Number(member.row.item_id))});
     } catch (error) {
       archive.abort();output.destroy(error);await transfer;
       await rm(temporary,{force:true}).catch(()=>{});
       throw error;
     }
-  }
+  }} catch(error) {await cleanup().catch(()=>{});throw error;}
   return artifacts;
 }
 
@@ -210,36 +229,52 @@ function publicJob(row) {
     artifacts:(row.artifacts??[]).map(({part,fileName,byteSize})=>({part,fileName,byteSize}))};
 }
 
-export function createDeliveryArchiveService({pool,storageRoot}) {
-  const previews=new Map(),running=new Map();
+export function createDeliveryArchiveService({pool,storageRoot,downloadTimeoutMs=10*60_000}) {
+  const previews=new Map(),running=new Map(),jobControllers=new Set(),downloads=new Set();
   let stopped=false,pumping=null;
+  async function archivedRows(jobId) {
+    // The selection (including the issued Query) is frozen when the job is created.
+    const result=await pool.query(`SELECT archived.snapshot,archived.item_id,source.issued_query
+      FROM delivery_archive_items archived
+      LEFT JOIN delivery_batch_items item ON item.id=archived.item_id
+      LEFT JOIN tasks task ON task.id=item.task_id
+      LEFT JOIN query_package_items source ON source.id=task.source_query_package_item_id
+      WHERE archived.job_id=$1 ORDER BY archived.item_id`,[jobId]);
+    // Keep the pre-existing source lookup for legacy rows that predate this field;
+    // delivery_archive_items is append-only and must not be rewritten here.
+    return result.rows.map(row=>Object.hasOwn(row.snapshot,'issued_query')
+      ? row.snapshot : {...row.snapshot,issued_query:row.issued_query??null});
+  }
+  function artifactMetadata({part,fileName,byteSize,sha256,itemIds}) {
+    return {part,fileName,byteSize,sha256,itemIds};
+  }
   async function expireLeases() {
     await pool.query(`UPDATE delivery_archive_jobs SET status='FAILED',error='文件生成中断，请重试',finished_at=now()
       WHERE status='RUNNING' AND lease_until<now()`);
   }
   async function run(job) {
     const controller=new AbortController();
+    jobControllers.add(controller);
+    let artifacts=[];
     const heartbeat=setInterval(()=>{void pool.query(`UPDATE delivery_archive_jobs SET lease_until=now()+interval '2 minutes'
       WHERE id=$1 AND run_token=$2 AND status='RUNNING' RETURNING id`,[job.id,job.run_token])
       .then(result=>{if(!result.rows.length)controller.abort(new Error('归档任务已失效'));})
       .catch(error=>controller.abort(error));},30_000);
     heartbeat.unref?.();
     try {
-      const rows=(await pool.query(`SELECT archived.snapshot,source.issued_query
-        FROM delivery_archive_items archived
-        LEFT JOIN delivery_batch_items item ON item.id=archived.item_id
-        LEFT JOIN tasks task ON task.id=item.task_id
-        LEFT JOIN query_package_items source ON source.id=task.source_query_package_item_id
-        WHERE archived.job_id=$1 ORDER BY archived.item_id`,[job.id])).rows
-        .map(row=>Object.hasOwn(row.snapshot,'issued_query') ? row.snapshot : {...row.snapshot,issued_query:row.issued_query});
-      const inspected=await inspectDeliverySources(storageRoot,rows);
-      const artifacts=await writeDeliveryAggregate(storageRoot,{...job,actor_account_id:Number(job.actor_account_id)},inspected.members,{signal:controller.signal});
+      const rows=await archivedRows(job.id);
+      const inspected=await inspectSnapshotSources(storageRoot,rows,{signal:controller.signal});
+      controller.signal.throwIfAborted();
+      artifacts=await writeDeliveryAggregate(storageRoot,job,inspected.members,{signal:controller.signal});
       await pool.query(`UPDATE delivery_archive_jobs SET status='SUCCEEDED',artifacts=$3,finished_at=now(),lease_until=NULL
-        WHERE id=$1 AND run_token=$2 AND status='RUNNING'`,[job.id,job.run_token,JSON.stringify(artifacts)]);
+        WHERE id=$1 AND run_token=$2 AND status='RUNNING'`,[job.id,job.run_token,JSON.stringify(artifacts.map(artifactMetadata))]);
     } catch (error) {
       await pool.query(`UPDATE delivery_archive_jobs SET status='FAILED',error=$3,finished_at=now(),lease_until=NULL
         WHERE id=$1 AND run_token=$2 AND status='RUNNING'`,[job.id,job.run_token,String(error.message).slice(0,1000)]).catch(()=>{});
-    } finally {clearInterval(heartbeat);}
+    } finally {
+      clearInterval(heartbeat);jobControllers.delete(controller);
+      await artifacts[0]?.cleanup();
+    }
   }
   function kick() {
     if(stopped || !pool || pumping) return pumping;
@@ -269,7 +304,7 @@ export function createDeliveryArchiveService({pool,storageRoot}) {
       for(const [key,value] of previews)if(value.expires<Date.now())previews.delete(key);
       if(previews.size>=100)throw new ControlPlaneConflictError('DELIVERY_BUSY','当前预检较多，请稍后重试');
       const selected=await inDeliveryTransaction(pool,client=>selectDeliveryArchiveItems(client,input,actor),{readOnly:true});
-      const {totalBytes}=await inspectDeliverySources(storageRoot,selected.rows);
+      const {totalBytes}=await inspectSnapshotSources(storageRoot,selected.rows);
       const token=randomUUID();
       previews.set(token,{actorId:actor.userId,expires:Date.now()+PREVIEW_TTL,selected,input,fingerprint:fingerprint(selected.rows)});
       return {token,itemCount:selected.rows.length,totalBytes,batchCount:new Set(selected.rows.map(row=>row.batch_id)).size,kind:selected.kind};
@@ -314,14 +349,58 @@ export function createDeliveryArchiveService({pool,storageRoot}) {
     },
     async get(id,actor){await expireLeases();void kick();return publicJob(await rawJob(id,actor));},
     async retry(id,actor){const row=await rawJob(id,actor);await pool.query("UPDATE delivery_archive_jobs SET status='QUEUED',error=NULL,finished_at=NULL WHERE id=$1 AND status='FAILED'",[row.id]);void kick();return publicJob(await rawJob(id,actor));},
-    async download(id,part,rawActor) {
-      const actor=deliveryActor(rawActor),row=await rawJob(id,actor),number=normalizeTaskId(part);
-      const artifact=row.artifacts.find(value=>value.part===number);
+    async describeDownload(id,part,actor) {
+      const row=await rawJob(id,actor),number=normalizeTaskId(part);
+      const artifact=row.artifacts?.find(value=>value.part===number);
       if(row.status!=='SUCCEEDED'||!artifact)throw new ControlPlaneConflictError('DELIVERY_ARCHIVE_NOT_READY','文件尚未生成成功');
-      const path=join(storageRoot,'.delivery-archives',String(row.id),`${normalizeUuid(row.run_token,'runToken')}-${number}.zip`);
-      const meta=await stat(path).catch(()=>null);
-      if(!meta?.isFile()||meta.size!==artifact.byteSize||await deliveryFileHash(path)!==artifact.sha256)throw new ControlPlaneConflictError('DELIVERY_ARCHIVE_MISSING','汇总文件缺失或校验失败');
-      return {path,...artifact,async record(){
+      return artifactMetadata(artifact);
+    },
+    async download(id,part,rawActor,{signal}={}) {
+      signal?.throwIfAborted();
+      if(stopped)throw new ControlPlaneConflictError('DELIVERY_STOPPING','文件服务正在关闭');
+      const actor=deliveryActor(rawActor),row=await rawJob(id,actor),number=normalizeTaskId(part);
+      if(stopped)throw new ControlPlaneConflictError('DELIVERY_STOPPING','文件服务正在关闭');
+      const stored=row.artifacts?.find(value=>value.part===number);
+      if(row.status!=='SUCCEEDED'||!stored)throw new ControlPlaneConflictError('DELIVERY_ARCHIVE_NOT_READY','文件尚未生成成功');
+      if(downloads.size>=4||[...downloads].filter(item=>item.actorId===actor.userId).length>=2) {
+        throw new ControlPlaneConflictError('DELIVERY_BUSY','已有文件正在下载，请稍后重试');
+      }
+      const controller=new AbortController();
+      const externalAbort=()=>controller.abort(signal.reason);
+      signal?.addEventListener('abort',externalAbort,{once:true});
+      if(signal?.aborted)externalAbort();
+      let generated,cleanupFlight;
+      const operation={actorId:actor.userId,cleanup:null};
+      const generation=Promise.resolve().then(async()=>{
+        controller.signal.throwIfAborted();
+        const inspected=await inspectSnapshotSources(storageRoot,await archivedRows(row.id),{signal:controller.signal});
+        controller.signal.throwIfAborted();
+        generated=await writeDeliveryAggregate(storageRoot,row,inspected.members,{signal:controller.signal,selectedPart:number});
+        const artifact=generated[0];
+        if(JSON.stringify(artifact.itemIds)!==JSON.stringify(stored.itemIds)) {
+          throw new ControlPlaneConflictError('DELIVERY_STATE_CHANGED','冻结分卷内容已变化，请重新生成汇总记录');
+        }
+        controller.signal.throwIfAborted();
+        return artifact;
+      });
+      const cleanup=()=>cleanupFlight??=Promise.resolve().then(async()=>{
+        controller.abort(new DOMException('delivery download disposed','AbortError'));
+        await generation.catch(()=>{});
+        try {await generated?.[0]?.cleanup();}
+        finally {
+          clearTimeout(timer);signal?.removeEventListener('abort',externalAbort);
+          controller.signal.removeEventListener('abort',onAbort);downloads.delete(operation);
+        }
+      });
+      operation.cleanup=cleanup;downloads.add(operation);
+      const onAbort=()=>{void cleanup().catch(error=>console.error('delivery temporary cleanup:',error.message));};
+      controller.signal.addEventListener('abort',onAbort,{once:true});
+      const timer=setTimeout(()=>controller.abort(new DOMException('delivery download timed out','TimeoutError')),downloadTimeoutMs);
+      timer.unref?.();
+      let artifact;
+      try {artifact=await generation;}
+      catch(error) {await cleanup();throw error;}
+      return {...artifact,cleanup,signal:controller.signal,async record(){
         await inDeliveryTransaction(pool,async client=>{
           await client.query('INSERT INTO delivery_archive_download_events(job_id,part,actor_account_id,actor_username) VALUES ($1,$2,$3,$4)',[row.id,number,actor.userId,actor.username]);
           await client.query(`INSERT INTO delivery_item_download_events(item_id,actor_account_id,actor_username)
@@ -329,6 +408,12 @@ export function createDeliveryArchiveService({pool,storageRoot}) {
         });
       }};
     },
-    async dispose(){stopped=true;await pumping;await Promise.allSettled([...running.values()]);},
+    async dispose(){
+      stopped=true;previews.clear();
+      for(const controller of jobControllers)controller.abort(new DOMException('delivery service stopped','AbortError'));
+      await pumping;
+      for(const controller of jobControllers)controller.abort(new DOMException('delivery service stopped','AbortError'));
+      await Promise.allSettled([...running.values(),...[...downloads].map(operation=>operation.cleanup())]);
+    },
   };
 }

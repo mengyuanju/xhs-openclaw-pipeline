@@ -34,6 +34,8 @@ type DownloadState = { job: Job; phase: 'WAITING' | 'STARTED' | 'FAILED'; error:
 type UserOption = { id: number; username: string; displayName?: string; role?: string; status?: string };
 const emptySummary: Summary = { total: 0, unpacked: 0, packed: 0, delivered: 0, updated: 0 };
 const labels = { UNPACKED: '待打包', PACKED: '已打包，待交付', DELIVERED: '已交付' };
+const selectionLimit = 200;
+const archiveSelectionLimit = 2000;
 const time = (value: string | null) => value ? new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '—';
 const key = (item: Item) => `${item.taskId}:${item.copyRevisionId}:${item.imageRunId}`;
 function initialFilters(history: boolean): Filters {
@@ -59,6 +61,8 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
   const [page, setPage] = useState(1), [pageSize, setPageSize] = useState(20);
   const [result, setResult] = useState<Page>({ items: [], total: 0, summary: emptySummary, updatedAt: '' });
   const [selected, setSelected] = useState<Item[]>([]), [allFiltered, setAllFiltered] = useState(false);
+  const [selectedAllCount, setSelectedAllCount] = useState<number | null>(null);
+  const [selectingAll, setSelectingAll] = useState(false);
   const [jobs, setJobs] = useState<Job[]>([]), [jobTotal, setJobTotal] = useState(0), [jobPage, setJobPage] = useState(1);
   const [showJobs, setShowJobs] = useState(false), [busy, setBusy] = useState(''), [loading, setLoading] = useState(false);
   const [error, setError] = useState(''), [message, setMessage] = useState('');
@@ -67,6 +71,16 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
   const [users, setUsers] = useState<UserOption[]>([]);
   const requestId = useRef(0), jobRequestId = useRef(0), failures = useRef(0), mounted = useRef(true);
   const archiveMutation = useRef<{ fingerprint: string; requestId: string } | null>(null);
+  const selectionRequestId = useRef(0), selectionController = useRef<AbortController | null>(null);
+  const invalidateAllSelection = useCallback(() => {
+    selectionRequestId.current++;
+    selectionController.current?.abort();
+    selectionController.current = null;
+  }, []);
+  const clearSelection = useCallback(() => {
+    invalidateAllSelection();
+    setSelected([]); setAllFiltered(false); setSelectedAllCount(null); setSelectingAll(false);
+  }, [invalidateAllSelection]);
 
   useEffect(() => {
     const restore = () => {
@@ -75,15 +89,15 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
         const query = new URLSearchParams(window.location.search);
         for (const field of Object.keys(value) as (keyof Filters)[]) if (query.has(`dl_${field}`)) value[field] = query.get(`dl_${field}`)!;
       }
-      setFilters(value); setDraft(value); setPage(1); setSelected([]); setAllFiltered(false); setInitialized(true);
+      setFilters(value); setDraft(value); setPage(1); clearSelection(); setInitialized(true);
     };
     restore(); window.addEventListener('popstate', restore);
     mounted.current = true;
-    return () => { mounted.current = false; window.removeEventListener('popstate', restore); requestId.current++; jobRequestId.current++; };
-  }, [historyOnly, initialState]);
+    return () => { mounted.current = false; invalidateAllSelection(); window.removeEventListener('popstate', restore); requestId.current++; jobRequestId.current++; };
+  }, [historyOnly, initialState, clearSelection, invalidateAllSelection]);
 
   const apply = useCallback((value: Filters) => {
-    setFilters(value); setDraft(value); setPage(1); setSelected([]); setAllFiltered(false);
+    setFilters(value); setDraft(value); setPage(1); clearSelection();
     if (!historyOnly) {
       const url = new URL(window.location.href);
       for (const field of Object.keys(value) as (keyof Filters)[]) {
@@ -91,7 +105,7 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
       }
       window.history.replaceState(null, '', url);
     }
-  }, [historyOnly]);
+  }, [historyOnly, clearSelection]);
 
   const load = useCallback(async (silent = false) => {
     const id = ++requestId.current;
@@ -177,16 +191,53 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
   }, [role]);
 
   const perform = async (label: string, action: () => Promise<void>) => {
-    if (busy) return;
+    if (busy || selectingAll) return;
     setBusy(label); setError(''); setMessage('');
     try { await action(); await load(true); if (showJobs) await loadJobs(); }
     catch (caught) { setError(caught instanceof Error ? caught.message : '操作失败'); }
     finally { setBusy(''); }
   };
   const toggle = (items: Item[], checked: boolean) => {
-    setAllFiltered(false);
-    setSelected(previous => checked ? [...new Map([...previous, ...items].map(item => [key(item), item])).values()].slice(0, 200)
-      : previous.filter(item => !items.some(row => key(row) === key(item))));
+    invalidateAllSelection(); setSelectingAll(false);
+    const next = checked ? [...new Map([...selected, ...items].map(item => [key(item), item])).values()]
+      : selected.filter(item => !items.some(row => key(row) === key(item)));
+    if (next.length > selectionLimit) {
+      setMessage(`单次最多选择 ${selectionLimit} 条；本次勾选会超过上限，请缩小筛选范围或分批处理。`);
+      return;
+    }
+    setSelectedAllCount(null); setAllFiltered(false); setSelected(next);
+  };
+  const selectAllFiltered = async () => {
+    invalidateAllSelection();
+    const id = selectionRequestId.current, controller = new AbortController();
+    selectionController.current = controller;
+    setSelectingAll(true); setError(''); setMessage('');
+    try {
+      if (result.total > selectionLimit) {
+        if (role === 'ADMIN' && filters.state === 'DELIVERED' && result.total <= archiveSelectionLimit) {
+          setSelected([]); setSelectedAllCount(null); setAllFiltered(true);
+          return;
+        }
+        throw new Error(`当前筛选共 ${result.total} 条，单次最多选择 ${selectionLimit} 条，请缩小筛选范围或分批处理。`);
+      }
+      const query = new URLSearchParams({ ...filters, limit: String(selectionLimit), offset: '0' });
+      const data = await apiRequest<Page>(`/api/control-plane/v1/delivery-items?${query}`, { cache: 'no-store', signal: controller.signal });
+      if (id !== selectionRequestId.current || !mounted.current) return;
+      if (data.total > selectionLimit) throw new Error(`当前筛选已变为 ${data.total} 条，单次最多选择 ${selectionLimit} 条，请缩小筛选范围或分批处理。`);
+      if (!Number.isSafeInteger(data.total) || data.total < 1 || data.items.length !== data.total
+        || new Set(data.items.map(key)).size !== data.total) {
+        throw new Error('筛选结果已变化或读取不完整，请刷新后重新选择。');
+      }
+      setSelected(data.items); setSelectedAllCount(data.total); setAllFiltered(false);
+    } catch (caught) {
+      if (id === selectionRequestId.current && mounted.current && !controller.signal.aborted) {
+        setError(`${caught instanceof Error ? caught.message : '读取全部筛选结果失败'} 原选择已保留。`);
+      }
+    } finally {
+      if (id === selectionRequestId.current && mounted.current) {
+        selectionController.current = null; setSelectingAll(false);
+      }
+    }
   };
   const selectedKeys = new Set(selected.map(key));
   const allPageChecked = result.items.length > 0 && result.items.every(item => selectedKeys.has(key(item)));
@@ -194,7 +245,12 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
   const canDownload = selected.length > 0 && selected.every(item => item.itemId !== null);
   const canConfirm = selected.length > 0 && selected.every(item => item.canConfirm);
   const canArchive = selected.length > 0 && selected.every(item => item.state === 'DELIVERED');
-  const busyReason = busy ? `正在${busy}，请稍后。` : null;
+  const interactionBusy = Boolean(busy) || selectingAll;
+  const busyReason = busy ? `正在${busy}，请稍后。` : selectingAll ? '正在读取全部筛选结果，请稍后。' : null;
+  const canSelectArchiveRange = role === 'ADMIN' && filters.state === 'DELIVERED';
+  const allSelectionLimit = canSelectArchiveRange ? archiveSelectionLimit : selectionLimit;
+  const allSelectionDisabledReason = busyReason ?? (result.total > allSelectionLimit
+    ? `当前筛选共 ${result.total} 条，${canSelectArchiveRange ? '汇总保存' : '单次选择'}最多 ${allSelectionLimit} 条，请缩小筛选范围或分批处理。` : null);
   const filteredSelectionReason = allFiltered ? '“选择全部筛选结果”仅支持汇总保存；请改为逐条勾选，最多 200 条。' : null;
   const packDisabledReason = busyReason ?? filteredSelectionReason
     ?? (selected.length === 0 ? '请先勾选至少 1 条待打包内容。'
@@ -222,7 +278,7 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
         expectedBindings: selected.map(item => ({ taskId: item.taskId, copyRevisionId: item.copyRevisionId, imageRunId: item.imageRunId })) }),
     }));
     download(`/api/control-plane/v1/delivery-pool/archive/${encodeURIComponent(prepared.downloadId)}`, prepared.fileName);
-    setSelected([]); setMessage(`${prepared.batchCode ?? '交付包'}已创建并开始下载；实际发送后，请确认已交付。`);
+    clearSelection(); setMessage(`${prepared.batchCode ?? '交付包'}已创建并开始下载；实际发送后，请确认已交付。`);
     window.setTimeout(() => { if (mounted.current) void load(true); }, 1500);
   });
   const confirmItems = () => perform('确认交付', async () => {
@@ -230,7 +286,7 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
     const response = await apiRequest<{ confirmed: number; alreadyConfirmed: number }>('/api/control-plane/v1/delivery-items/confirm', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ itemIds: selected.map(item => item.itemId) }),
     });
-    setMessage(`已确认 ${response.confirmed} 条${response.alreadyConfirmed ? `，另 ${response.alreadyConfirmed} 条已由其他操作确认` : ''}。双方交付状态已更新。`); setSelected([]);
+    setMessage(`已确认 ${response.confirmed} 条${response.alreadyConfirmed ? `，另 ${response.alreadyConfirmed} 条已由其他操作确认` : ''}。双方交付状态已更新。`); clearSelection();
   });
   const createArchive = (kind: 'DOWNLOAD' | 'ARCHIVE') => perform(kind === 'ARCHIVE' ? '汇总保存' : '准备下载', async () => {
     const selection = allFiltered && kind === 'ARCHIVE'
@@ -251,7 +307,7 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
     if (archiveMutation.current === mutation) archiveMutation.current = null;
     if (kind === 'DOWNLOAD') setDownloadState({ job, phase: 'WAITING', error: '' });
     else setMessage(`文件任务 HG-${job.id} 已创建，共 ${job.itemCount} 条。可离开页面，稍后从文件记录下载。`);
-    setSelected([]); setAllFiltered(false); setShowJobs(true); setJobPage(1); await loadJobs();
+    clearSelection(); setShowJobs(true); setJobPage(1); await loadJobs();
   });
   const quickDate = (days: number, yesterday = false) => {
     const today = new Date(Date.now() + 8 * 3600_000); today.setUTCHours(0, 0, 0, 0);
@@ -327,21 +383,33 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
         <Button unstyled type="button" className="button small" disabled={Boolean(busy)} onClick={() => apply({ ...filters, assigneeId: '', packedById: '', deliveredById: '' })}>清除人员筛选</Button></div>
     </div>}
     <div className={styles.actions}>
-      <span>{allFiltered ? `已选择符合筛选的全部 ${result.total} 条` : `已选 ${selected.length} 条（最多 200 条）`}</span>
+      <span>{allFiltered ? `已选择符合筛选的全部 ${result.total} 条` : `已选 ${selected.length} 条（最多 ${selectionLimit} 条）`}</span>
       <ReviewActionButton unstyled className="button small" disabledReason={packDisabledReason}
-        disabled={Boolean(busy) || !canPack || allFiltered} onClick={() => void pack()}><PackageCheck size={14} />打包并下载</ReviewActionButton>
+        disabled={interactionBusy || !canPack || allFiltered} onClick={() => void pack()}><PackageCheck size={14} />打包并下载</ReviewActionButton>
       <ReviewActionButton unstyled className="button small" disabledReason={downloadDisabledReason}
-        disabled={Boolean(busy) || pendingDownloadId !== null || !canDownload || allFiltered} onClick={() => void createArchive('DOWNLOAD')}><Download size={14} />下载所选冻结内容</ReviewActionButton>
+        disabled={interactionBusy || pendingDownloadId !== null || !canDownload || allFiltered} onClick={() => void createArchive('DOWNLOAD')}><Download size={14} />下载所选冻结内容</ReviewActionButton>
       <ReviewActionButton unstyled className="button small primary" disabledReason={confirmDisabledReason}
-        disabled={Boolean(busy) || !canConfirm || allFiltered} onClick={() => void confirmItems()}><CheckCircle2 size={14} />确认所选已交付</ReviewActionButton>
+        disabled={interactionBusy || !canConfirm || allFiltered} onClick={() => void confirmItems()}><CheckCircle2 size={14} />确认所选已交付</ReviewActionButton>
       {role === 'ADMIN' && <ReviewActionButton unstyled className="button small" disabledReason={archiveDisabledReason}
-        disabled={Boolean(busy) || (!canArchive && !allFiltered)} onClick={() => void createArchive('ARCHIVE')}>汇总保存已交付内容</ReviewActionButton>}
-      {role === 'ADMIN' && filters.state === 'DELIVERED' && result.total > 0 && <ReviewActionButton unstyled className="button small"
-        disabledReason={busyReason ?? (result.total > 2000 ? '筛选结果超过 2000 条，请缩小筛选范围后重试。' : null)}
-        disabled={Boolean(busy) || result.total > 2000} onClick={() => { setAllFiltered(true); setSelected([]); }}>选择全部筛选结果（{result.total} 条）</ReviewActionButton>}
-      <ReviewActionButton unstyled className="button small" disabledReason={busyReason} disabled={Boolean(busy)}
-        onClick={() => { setSelected([]); setAllFiltered(false); }}>清空选择</ReviewActionButton>
+        disabled={interactionBusy || (!canArchive && !allFiltered)} onClick={() => void createArchive('ARCHIVE')}>汇总保存已交付内容</ReviewActionButton>}
+      <ReviewActionButton unstyled className="button small" disabledReason={busy ? `正在${busy}，请稍后。` : null} disabled={Boolean(busy)}
+        onClick={clearSelection}>清空选择</ReviewActionButton>
     </div>
+    {(selectedAllCount !== null || allFiltered || (!loading && allPageChecked && result.total > result.items.length)) && <div className={styles.selectionNotice} role="status" aria-label="跨页选择范围">
+      {selectedAllCount !== null
+        ? <><strong>已选择本次筛选的全部 {selectedAllCount} 条</strong><span>选择范围已固定；自动同步不会加入新增内容。可取消个别条目或清空选择。</span></>
+        : allFiltered
+          ? <><strong>已选择符合筛选的全部 {result.total} 条</strong><span>超过 {selectionLimit} 条，仅支持汇总保存已交付内容。</span></>
+          : <><span>已选本页 {result.items.length} 条。</span>
+            <ReviewActionButton unstyled className="button small" disabledReason={allSelectionDisabledReason}
+              disabled={Boolean(allSelectionDisabledReason)} onClick={() => void selectAllFiltered()}>
+              {selectingAll ? '正在读取全部筛选结果…' : `选择全部筛选结果（${result.total} 条）`}
+            </ReviewActionButton>
+            {result.total > selectionLimit && <span>{canSelectArchiveRange
+              ? `超过 ${selectionLimit} 条时，仅支持汇总保存；最多 ${archiveSelectionLimit} 条。`
+              : `单次最多选择 ${selectionLimit} 条，请缩小筛选范围或分批处理。`}</span>}
+          </>}
+    </div>}
     {selected.some(item => item.state === 'PACKED' && !item.downloadedByMe) && <p className={styles.hint}>所选内容中有本人尚未下载的条目。请先下载并实际发送，再确认交付。</p>}
     {busy && <p role="status">正在{busy}…</p>}
     {message && <div className="notice" role="status">{message}</div>}
@@ -359,11 +427,11 @@ export function SharedDeliveryWorkbench({ role, historyOnly = false, refreshKey 
     {error && <div className="notice error" role="alert">{error}。当前内容可能尚未更新，请重试刷新。</div>}
     <p className={styles.hint}>共 {result.updatedAt ? result.total : '—'} 条 · 最近同步：{time(result.updatedAt || null)} · 页面打开时每 15 秒自动同步</p>
     <div className="table-wrap mobile-cards" role="region" aria-label="共享交付内容" tabIndex={0}>
-      <table><thead><tr><th><Checkbox aria-label="选择本页交付内容" checked={allPageChecked || allFiltered} disabled={Boolean(busy)} onChange={event => toggle(result.items, event.target.checked)} /></th>
+      <table><thead><tr><th><Checkbox aria-label="选择本页交付内容" checked={allPageChecked || allFiltered} disabled={interactionBusy || loading} onChange={event => toggle(result.items, event.target.checked)} /></th>
         <th>内容与版本</th><th>交付状态</th><th>打包信息</th><th>交付信息</th>{role === 'ADMIN' && <th>汇总保存</th>}</tr></thead>
         <tbody>{result.items.map(item => <tr key={key(item)}>
           <td data-label="选择"><Checkbox aria-label={`选择交付任务 ${item.taskId}`} checked={selectedKeys.has(key(item)) || allFiltered}
-            disabled={Boolean(busy) || (!selectedKeys.has(key(item)) && selected.length >= 200)} onChange={event => toggle([item], event.target.checked)} /></td>
+            disabled={interactionBusy || loading || (!selectedKeys.has(key(item)) && selected.length >= selectionLimit)} onChange={event => toggle([item], event.target.checked)} /></td>
           <td data-label="内容与版本"><strong>#{item.taskId} {item.query}</strong><small className={styles.meta}>文案 #{item.copyRevisionId} · 图片 {item.imageRunId.slice(0, 8)}</small>
             <small className={styles.meta}>负责人 {filters.view === 'HISTORY' ? displayUsername(item.ownerUsername) ?? '历史未记录' : displayUsername(item.assigneeUsername) ?? '未分配'}</small>
             {role === 'ADMIN' && <small className={styles.meta}>{item.packageName ?? '未归属词包'}</small>}</td>

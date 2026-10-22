@@ -10,6 +10,7 @@ import { startTemporaryPostgres18 } from './helpers/personal-postgres.mjs';
 import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 import { buildBatchTaskArchive, buildTaskArchive } from '../src/task-archive.mjs';
 import { createDeliveryArchiveService } from '../src/delivery-archives.mjs';
+import { createDeliverySnapshot, saveDeliverySnapshot } from '../src/delivery-snapshots.mjs';
 
 test('PostgreSQL delivery archives read each issued Query by source item and preserve legacy fallback', {
   skip: process.env.RUN_POSTGRES_E2E !== '1',
@@ -98,6 +99,12 @@ test('PostgreSQL delivery archives read each issued Query by source item and pre
     const publicId=randomUUID(),sourcePath=join(storageRoot,'.delivery-batches',publicId+'.zip');
     await mkdir(join(storageRoot,'.delivery-batches'));
     await writeFile(sourcePath,oldBytes);
+    const imagePath=join(storageRoot,'original.png');
+    await writeFile(imagePath,Buffer.from([1]));
+    await saveDeliverySnapshot(storageRoot,await createDeliverySnapshot(storageRoot,sourcePath,publicId,{
+      resolveImage:async()=>({storagePath:'original.png'}),
+    }));
+    await rm(sourcePath);
     const admin=(await pool.query("SELECT id,username FROM app_users WHERE username='admin'")).rows[0];
     const actor={userId:Number(admin.id),username:admin.username,role:'ADMIN'};
     const frozen=await repository.createDeliveryBatch({
@@ -130,8 +137,8 @@ test('PostgreSQL delivery archives read each issued Query by source item and pre
         assert.equal(text.split('\r\n')[0],'\uFEFF原始 Query：'+cases[index].expected);
         assert.equal(text.slice(text.indexOf('\r\n')),oldText.slice(oldText.indexOf('\r\n')));
       }
-      await artifact.record();
-      assert.deepEqual(await readFile(sourcePath),oldBytes);
+      await artifact.record();await artifact.cleanup();
+      await assert.rejects(readFile(sourcePath),{code:'ENOENT'});
     }
     const preview=await service.preview({kind:'DOWNLOAD',itemIds},actor);
     const created=await service.create({token:preview.token,requestId:randomUUID()},actor);
@@ -142,7 +149,7 @@ test('PostgreSQL delivery archives read each issued Query by source item and pre
     // Jobs created before the fix may not have an issued_query snapshot. A retry
     // must also resolve the original source, while retaining frozen copy bytes.
     const retryPreview=await service.preview({kind:'DOWNLOAD',itemIds},actor);
-    await writeFile(sourcePath,'corrupted');
+    await writeFile(imagePath,Buffer.from([2]));
     const interrupted=await service.create({token:retryPreview.token,requestId:randomUUID()},actor);
     assert.equal((await terminal(interrupted.id)).status,'FAILED');
     const legacyJob=Number((await pool.query(`INSERT INTO delivery_archive_jobs
@@ -151,7 +158,7 @@ test('PostgreSQL delivery archives read each issued Query by source item and pre
       FROM delivery_archive_jobs WHERE id=$1 RETURNING id`,[interrupted.id,randomUUID()])).rows[0].id);
     await pool.query(`INSERT INTO delivery_archive_items(job_id,item_id,snapshot)
       SELECT $2,item_id,snapshot-'issued_query' FROM delivery_archive_items WHERE job_id=$1`,[interrupted.id,legacyJob]);
-    await writeFile(sourcePath,oldBytes);
+    await writeFile(imagePath,Buffer.from([1]));
     await service.retry(legacyJob,actor);
     await verifyDownload(legacyJob);
   } finally {

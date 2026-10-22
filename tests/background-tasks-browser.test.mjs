@@ -6,18 +6,31 @@ import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import test from 'node:test';
 import { DEFAULT_HUMAN_QUALITY_SETTINGS } from '../src/human-quality-settings.mjs';
+import { normalizeCopyReviewEdits } from '../server/src/domain.mjs';
 
-test('background tasks browser: close, reload, recover planning draft and receive image completion after unmount', {
-  skip: process.env.RUN_BACKGROUND_TASK_BROWSER !== '1', timeout: 75_000,
+test('background tasks browser: recover and save a normalized planning draft and receive image completion after unmount', {
+  skip: process.env.RUN_BACKGROUND_TASK_BROWSER !== '1', timeout: 120_000,
 }, async () => {
   const { build } = await import('esbuild');
   const { chromium } = await import('playwright-core');
   const root = await mkdtemp(join(tmpdir(), 'background-tasks-browser-'));
   const planId = randomUUID(), editId = randomUUID(), runId = randomUUID();
-  const copy = { title: '桌面整理的三个动作', body: '保留常用物品，按使用频率分区整理。'.repeat(27), tags: ['#收纳', '#桌面', '#整理'] };
-  const imagePlan = [{ kind: 'hero', headline: '原规划标题', subtitle: '', bullets: ['清理桌面'], prompt: '简洁桌面' }];
+  const bodyParagraph = '保留常用物品，按使用频率分区整理。';
+  const copy = { title: ' 桌面整理的三个动作 ',
+    body: ` \r\n${bodyParagraph.repeat(13)}\r\n${bodyParagraph.repeat(14)}\r\n `,
+    tags: ['#收纳', '#桌面', '#整理'] };
+  const imagePlan = ['hero', 'steps', 'summary'].map((kind, index) => ({
+    kind, headline: `原规划第 ${index + 1} 页`, subtitle: '', bullets: ['清理桌面', '按使用频率分区'],
+    prompt: '简洁桌面、分区收纳盒和明亮自然光',
+  }));
+  let revisionId = 1;
+  const revisions = [{ id: 1, revision: 1, content: { copy: structuredClone(copy), imagePlan: structuredClone(imagePlan) }, approvedAt: null }];
+  const task = () => ({ id: 10, query: '桌面收纳', state: 'COPY_REVIEW_PENDING',
+    assignedToUserId: 'worker', assignedToAccountId: 22, aiDisclosureEnabled: false,
+    currentCopyRevisionId: revisionId, currentImageRunId: null, createdAt: new Date().toISOString(),
+    copyRevisions: revisions, imageRuns: [], assets: [], humanQualityAssessments: [] });
   let job = null, edits = [], browser, server;
-  const errors = [], requests = [];
+  const errors = [], requests = [], planSaves = [];
   try {
     await build({ stdin: { contents: `
       import './app/globals.css';
@@ -50,17 +63,31 @@ test('background tasks browser: close, reload, recover planning draft and receiv
         const data = body ? JSON.parse(body) : null;
         let response;
         if (pathname === '/api/human-quality-settings') response = DEFAULT_HUMAN_QUALITY_SETTINGS;
-        else if (pathname.endsWith('/tasks/10')) response = { id: 10, query: '桌面收纳', state: 'COPY_REVIEW_PENDING', assignedToUserId: 'worker', assignedToAccountId: 22, aiDisclosureEnabled: false,
-          currentCopyRevisionId: 1, currentImageRunId: null, createdAt: new Date().toISOString(), copyRevisions: [{ id: 1, revision: 1, content: { copy, imagePlan }, approvedAt: null }], imageRuns: [], assets: [], humanQualityAssessments: [] };
+        else if (pathname.endsWith('/tasks/10')) response = task();
         else if (pathname.endsWith('/copy-review-drafts')) {
           if (req.method === 'POST') { res.statusCode = 405; response = null; }
-          else response = { baseCopyRevisionId: 1, drafts: [] };
+          else response = { baseCopyRevisionId: revisionId, drafts: [] };
         } else if (pathname.endsWith('/regenerate-image-plan')) {
-          job = { id: planId, status: 'QUEUED', requestedByUsername: 'worker', requestedByAccountId: 22, copyRevisionId: 1, copy: { body: data.copy.body, tags: data.copy.tags, title: data.copy.title }, result: null };
+          const normalized = normalizeCopyReviewEdits({ copy: data.copy, imagePlan });
+          job = { id: planId, status: 'QUEUED', requestedByUsername: 'worker', requestedByAccountId: 22,
+            copyRevisionId: revisionId, copy: normalized.copy, result: null };
           response = { created: true, job };
         } else if (pathname.endsWith(`/regenerate-image-plan/${planId}`)) response = url.searchParams.get('metadata') === 'true' ? {
           id:job.id,status:job.status,error:job.error,requestedByUsername:job.requestedByUsername,requestedByAccountId:job.requestedByAccountId,
         } : job;
+        else if (pathname.endsWith('/tasks/10/approve-copy')) {
+          assert.equal(data.decision, 'SAVE_PLAN');
+          assert.equal(data.revisionId, revisionId);
+          assert.deepEqual(data.edits.copy, revisions.at(-1).content.copy,
+            'saving a generated plan submits only the formal copy, not unsubmitted copy edits');
+          for (const field of ['score', 'originalScore', 'reasons', 'originalReasons', 'note', 'originalNote', 'aiDisclosureEnabled']) {
+            assert.equal(Object.hasOwn(data, field), false, `plan save must not submit ${field}`);
+          }
+          planSaves.push(data);
+          revisions.push({ id: ++revisionId, revision: revisionId,
+            content: normalizeCopyReviewEdits(data.edits), approvedAt: null });
+          response = task();
+        }
         else if (pathname.endsWith('/tasks/11/image-edits/state')) {
           const items = edits.map(({id,target_page,status,version,error,created_by,created_by_account_id}) => ({id,task_id:11,target_page,status,version,error,created_by,created_by_account_id}));
           response = {status:items[0]?.status??'UPLOADED',signature:JSON.stringify(items.map(item=>[item.id,item.version,item.status,item.error??null])),items};
@@ -81,18 +108,37 @@ test('background tasks browser: close, reload, recover planning draft and receiv
     page.on('pageerror', error => errors.push(error.message));
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     await page.getByRole('button', { name: '打开规划任务', exact: true }).click();
+    await page.locator('input[type="radio"][value="2.5"]').check();
+    await page.locator('#copy-original-10-note').fill('保留当前文案评分说明');
     await page.getByRole('button', { name: '按当前文案重新生成规划', exact: true }).click();
     const overwritePlan = page.getByRole('alertdialog', { name: '覆盖当前图片文案规划？' });
     if (await overwritePlan.isVisible()) await overwritePlan.getByRole('button', { name: '覆盖并重新生成', exact: true }).click();
     await page.getByRole('button', { name: '关闭，后台继续处理', exact: true }).click();
     await page.getByRole('dialog').waitFor({ state: 'hidden' });
     assert.equal(job.status, 'QUEUED');
+    assert.equal(job.copy.title, copy.title.trim());
+    assert.equal(job.copy.body, copy.body.replace(/\r\n?/gu, '\n').trim());
     await page.reload();
     await page.getByRole('button', { name: '后台任务，1 项处理中，0 条未读提醒', exact: true }).waitFor();
-    job = { ...job, status: 'SUCCEEDED', result: { imagePlan: [{ ...imagePlan[0], headline: '后台完成的新规划' }], model: 'fake' } };
+    const generatedPlan = imagePlan.map((item, index) => ({ ...item,
+      headline: index === 0 ? '后台完成的新规划' : item.headline }));
+    job = { ...job, status: 'SUCCEEDED', result: { imagePlan: generatedPlan, model: 'fake' } };
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
     await page.getByRole('button', { name: '后台任务，0 项处理中，1 条未读提醒', exact: true }).waitFor();
     await page.getByRole('button', { name: '打开规划任务', exact: true }).click();
+    const loadButton = page.getByRole('button', { name: '载入新规划', exact: true });
+    await loadButton.waitFor();
+    assert.equal(await page.locator('#review-copy-title').inputValue(), copy.title,
+      'the completed normalized source matches the original title with surrounding whitespace');
+    assert.equal(await page.locator('#review-copy-body').inputValue(), copy.body.replace(/\r\n?/gu, '\n'),
+      'the browser keeps source paragraph breaks and surrounding blank lines');
+    assert.equal(await page.locator('input[type="radio"][value="2.5"]').isChecked(), true);
+    assert.equal(await page.locator('#copy-original-10-note').inputValue(), '保留当前文案评分说明');
+    await page.locator('#review-copy-title').fill('生成后真正修改的标题');
+    await page.getByRole('status').filter({ hasText: '当前文案或版本与生成时不同' }).waitFor();
+    assert.equal(await loadButton.count(), 0, 'a substantive source-copy edit still hides the load action');
+    await page.locator('#review-copy-title').fill(copy.title);
+    await loadButton.waitFor();
     await page.getByRole('button', { name: '载入新规划', exact: true }).click();
     const loadPlan = page.getByRole('alertdialog', { name: '载入已完成的新规划？' });
     if (await loadPlan.isVisible()) await loadPlan.getByRole('button', { name: '载入新规划', exact: true }).click();
@@ -103,6 +149,33 @@ test('background tasks browser: close, reload, recover planning draft and receiv
     await page.getByRole('button', { name: '关闭', exact: true }).click();
     await page.getByRole('button', { name: '打开规划任务', exact: true }).click();
     await page.waitForFunction(() => document.querySelector('#review-plan-headline-0')?.value === '后台完成的新规划');
+    await page.locator('#review-copy-title').fill('保留未提交的文案修改');
+    await page.waitForFunction(() => [...document.querySelectorAll('.workbench-review-draft-history small')]
+      .some(item => item.textContent?.startsWith('已保存')));
+    const [planSave] = await Promise.all([
+      page.waitForResponse(response => response.url().endsWith('/tasks/10/approve-copy')
+        && response.request().postDataJSON()?.decision === 'SAVE_PLAN'),
+      page.getByRole('button', { name: '单独保存图片规划', exact: true }).click(),
+    ]);
+    assert.equal(planSave.status(), 200);
+    await page.waitForFunction(() => document.querySelector('#review-copy-title')?.value === '保留未提交的文案修改'
+      && ![...document.querySelectorAll('button')].some(button => button.textContent?.includes('单独保存图片规划')));
+    assert.equal(planSaves.length, 1);
+    assert.equal(revisionId, 2);
+    assert.deepEqual(revisions.at(-1).content.imagePlan,
+      normalizeCopyReviewEdits({ copy, imagePlan: generatedPlan }).imagePlan);
+    assert.deepEqual(revisions.at(-1).content.copy, job.copy);
+    assert.equal(task().state, 'COPY_REVIEW_PENDING');
+    assert.deepEqual(task().humanQualityAssessments, [], 'saving the plan does not submit a copy rating');
+    assert.equal(await page.locator('input[type="radio"][value="2.5"]').isChecked(), true);
+    assert.equal(await page.locator('#copy-original-10-note').inputValue(), '保留当前文案评分说明');
+    await page.getByRole('button', { name: '关闭', exact: true }).click();
+    await page.getByRole('button', { name: '打开规划任务', exact: true }).click();
+    await page.locator('#review-copy-title').waitFor();
+    assert.equal(await page.locator('#review-copy-title').inputValue(), '保留未提交的文案修改');
+    assert.equal(await page.locator('#review-plan-headline-0').inputValue(), '后台完成的新规划');
+    assert.equal(await page.locator('input[type="radio"][value="2.5"]').isChecked(), true);
+    assert.equal(await page.locator('#copy-original-10-note').inputValue(), '保留当前文案评分说明');
     await page.getByRole('button', { name: '关闭', exact: true }).click();
     await page.getByRole('button', { name: '修改图片', exact: true }).click();
     await page.getByLabel('人工生成标识文字', { exact: true }).fill('人工生成');

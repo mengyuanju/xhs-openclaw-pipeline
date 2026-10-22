@@ -21,6 +21,7 @@ test('batch permanent deletion detaches all task rows without reviving retired l
     const source = String(sql).replace(/\s+/gu, ' ').trim();
       calls.push({ sql: source, values });
       if (['BEGIN', 'COMMIT', 'ROLLBACK'].includes(source)) return { rows: [] };
+      if (source.startsWith('SELECT 1 FROM delivery_snapshot_assets')) return { rows: [] };
       if (source.startsWith('SELECT * FROM app_users')) {
         return { rows: [{
           username: 'admin', role: 'ADMIN', status: 'ACTIVE', deletion_password_hash: passwordHash,

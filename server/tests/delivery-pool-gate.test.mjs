@@ -242,6 +242,7 @@ test('an operator creates and downloads one formal batch for a stable personal a
         code: `JF-${input.publicId.slice(0, 8).toUpperCase()}`,
         fileName: input.fileName,
         byteSize: input.byteSize,
+        sha256: input.sha256,
         taskCount: input.bindings.length,
       };
       return createdBatch;

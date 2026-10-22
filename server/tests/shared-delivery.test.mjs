@@ -9,6 +9,7 @@ import { startTemporaryPostgres18 } from './helpers/personal-postgres.mjs';
 import { PostgresControlPlaneRepository } from '../src/postgres-repository.mjs';
 import { deliveryDateBoundary,normalizeDeliveryFilters,listDeliveryItems,confirmDeliveryItems } from '../src/delivery-ledger.mjs';
 import { createDeliveryArchiveService } from '../src/delivery-archives.mjs';
+import { createDeliverySnapshot, saveDeliverySnapshot } from '../src/delivery-snapshots.mjs';
 import { createControlPlaneApp } from '../src/http-server.mjs';
 import { applyMigrations,loadMigrations } from '../src/database-migrations.mjs';
 import { inDeliveryTransaction } from '../src/delivery-ledger.mjs';
@@ -56,7 +57,13 @@ test('shared delivery PostgreSQL: cross-role visibility, partial confirmation, o
       const bytes=await zip.generateAsync({type:'nodebuffer'});bytesByTask.set(item.taskId,bytes);original.file(`未归属甲方批次/任务-${item.taskId}-资源包.zip`,bytes);}
     const bytes=await original.generateAsync({type:'nodebuffer'}),publicId=randomUUID();
     await mkdir(join(root,'.delivery-batches'));
-    await writeFile(join(root,'.delivery-batches',`${publicId}.zip`),bytes);
+    const originalPath=join(root,'.delivery-batches',`${publicId}.zip`);
+    await writeFile(originalPath,bytes);
+    for(const item of tasks)await writeFile(join(root,`original-${item.taskId}.png`),Buffer.from([1,2,3,item.taskId]));
+    await saveDeliverySnapshot(root,await createDeliverySnapshot(root,originalPath,publicId,{
+      resolveImage:async({taskId})=>({storagePath:`original-${taskId}.png`}),
+    }));
+    await rm(originalPath);
     const batch=await repository.createDeliveryBatch({publicId,scope:'SELECTED',fileName:'test.zip',byteSize:bytes.length,
       sha256:createHash('sha256').update(bytes).digest('hex'),bindings:tasks},{actor:admin});
     let page=await listDeliveryItems(pool,{},a);
@@ -94,7 +101,7 @@ test('shared delivery PostgreSQL: cross-role visibility, partial confirmation, o
     }
     await assertFrozenFiles(downloaded);
     assert.equal(Object.keys(downloaded.files).some(name=>name.includes(`/任务-${tasks[2].taskId}-资源包/`)),false,'another operator is never included');
-    await artifact.record();
+    await artifact.record();await artifact.cleanup();
     const confirmations=await Promise.all([confirmDeliveryItems(pool,{itemIds:[itemA.itemId]},a),confirmDeliveryItems(pool,{itemIds:[itemA.itemId]},a)]);
     assert.equal(confirmations.reduce((sum,value)=>sum+value.confirmed,0),1);
     assert.equal((await pool.query("SELECT account_id FROM operator_performance_events WHERE event_key=$1",[`delivered:${batch.id}:${itemA.itemId}`])).rows[0].account_id,String(a.userId));
@@ -146,7 +153,7 @@ test('shared delivery PostgreSQL: cross-role visibility, partial confirmation, o
     const old=(await listDeliveryItems(pool,{view:'HISTORY'},admin)).items.find(item=>item.itemId===itemA.itemId);
     assert.equal(old.isCurrent,false);assert.equal(old.state,'DELIVERED');
     const retryPreview=await service.preview({kind:'ARCHIVE',itemIds:[itemA.itemId]},admin);
-    await writeFile(join(root,'.delivery-batches',`${publicId}.zip`),'corrupted');
+    await writeFile(join(root,`original-${tasks[0].taskId}.png`),'corrupted');
     await assert.rejects(service.preview({kind:'ARCHIVE',itemIds:[itemA.itemId]},admin),{code:'DELIVERY_SOURCE_MISSING'});
     const interrupted=await service.create({token:retryPreview.token,requestId:randomUUID()},admin);
     for(let attempt=0;attempt<100;attempt++){
@@ -154,10 +161,10 @@ test('shared delivery PostgreSQL: cross-role visibility, partial confirmation, o
       await new Promise(resolve=>setTimeout(resolve,30));
     }
     assert.equal((await service.get(interrupted.id,admin)).status,'FAILED','failure never publishes a partial successful archive');
-    await writeFile(join(root,'.delivery-batches',`${publicId}.zip`),bytes);
+    await writeFile(join(root,`original-${tasks[0].taskId}.png`),Buffer.from([1,2,3,tasks[0].taskId]));
     await service.retry(interrupted.id,admin);await finished(interrupted.id,admin);
     const recovered=await service.download(interrupted.id,1,admin),recoveredZip=await JSZip.loadAsync(await readFile(recovered.path));
-    await assertFrozenFiles(recoveredZip);
+    await assertFrozenFiles(recoveredZip);await recovered.cleanup();
   } finally {
     if(server)await new Promise(resolve=>server.close(resolve));await app?.context.disposeControlPlaneResources();
     await service?.dispose();await repository.pool.end();await database.stop();

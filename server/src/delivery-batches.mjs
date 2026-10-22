@@ -7,6 +7,7 @@ import {
 } from './domain.mjs';
 import { normalizeListPagination } from './list-pagination.mjs';
 import { normalizeClientBatchCode } from './client-batch.mjs';
+import { registerDeliverySnapshotAssets } from './delivery-snapshot-assets.mjs';
 
 const SCOPES = new Set(['ALL_READY', 'QUERY_PACKAGE', 'CLIENT_BATCH', 'SELECTED']);
 const STATUSES = new Set(['GENERATED', 'DOWNLOADED', 'DELIVERED']);
@@ -156,6 +157,16 @@ export async function createDeliveryBatch(client, input, rawActor) {
     throw new TypeError('delivery batch archive hash is invalid');
   }
   const bindings = normalizedBindings(input?.bindings);
+  if (input.snapshotAssets !== undefined) {
+    if (!Array.isArray(input.snapshotAssets) || !input.snapshotAssets.length
+        || input.snapshotAssets.some(asset => !bindings.some(binding => binding.taskId === Number(asset.taskId)))) {
+      throw new TypeError('delivery snapshot image references are invalid');
+    }
+    // Lock original tasks before delivery entries, matching task reset/deletion lock order.
+    await client.query('SELECT id FROM tasks WHERE id = ANY($1::bigint[]) ORDER BY id FOR UPDATE',
+      [bindings.map(binding => binding.taskId).sort((a, b) => a - b)]);
+    await registerDeliverySnapshotAssets(client, publicId, input.snapshotAssets);
+  }
   const taskIds = [...bindings.map((binding) => binding.taskId)].sort((left, right) => left - right);
   const locked = await client.query(`
     SELECT delivery.id AS delivery_entry_id, delivery.task_id, delivery.copy_revision_id,

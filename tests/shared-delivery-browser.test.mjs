@@ -106,14 +106,15 @@ test('shared delivery browser: state, filters, automatic downloads, retry, histo
     await admin.getByLabel('交付开始日期',{exact:true}).fill('2026-09-18');await admin.getByLabel('交付结束日期',{exact:true}).fill('2026-09-18');
     await Promise.all([admin.waitForResponse(response=>response.url().includes('state=DELIVERED')&&response.url().includes('from=2026-09-18')),
       admin.getByRole('button',{name:'查询',exact:true}).click()]);
-    await admin.reload();await admin.getByRole('button',{name:'选择全部筛选结果（24 条）',exact:true}).waitFor();
+    await admin.reload();await admin.getByRole('checkbox',{name:'选择本页交付内容',exact:true}).waitFor();
     assert.equal(await admin.getByLabel('交付开始日期',{exact:true}).inputValue(),'2026-09-18');
+    await admin.getByRole('checkbox',{name:'选择本页交付内容',exact:true}).check();
     await admin.getByRole('button',{name:'选择全部筛选结果（24 条）',exact:true}).click();
     await admin.getByRole('button',{name:'汇总保存已交付内容',exact:true}).click();
     await admin.getByRole('alertdialog').getByRole('button',{name:'生成文件',exact:true}).click();
     await admin.getByRole('link',{name:'下载第 1 卷',exact:true}).waitFor();
     const previewRequest=requests.find(req=>req.url.endsWith('/delivery-archives/preview'));
-    assert.equal(previewRequest.input.filters.state,'DELIVERED');assert.equal(previewRequest.input.itemIds,undefined,'all-filter selection is server-side rather than loaded-page IDs');
+    assert.equal(previewRequest.input.filters,undefined);assert.deepEqual(previewRequest.input.itemIds,rows.filter(row=>row.state==='DELIVERED').map(row=>row.itemId),'small all-filter selections use all explicit IDs, including the next page');
     assert.equal(await operator.getByRole('button',{name:'汇总保存已交付内容',exact:true}).count(),0);
 
     const downloads=[];operator.on('download',file=>downloads.push(file.suggestedFilename()));

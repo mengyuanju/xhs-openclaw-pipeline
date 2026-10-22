@@ -8,8 +8,8 @@ import {
   latestImageRetryFailures,
 } from '../src/control-plane/image-retry-status.mjs';
 
-test('only exhausted image retries in copy review display the three-failures status', () => {
-  assert.equal(IMAGE_RETRY_EXHAUSTED_LABEL, '生图3次失败');
+test('image failures returned to copy review display a failure status', () => {
+  assert.equal(IMAGE_RETRY_EXHAUSTED_LABEL, '生图失败待处理');
   assert.equal(isImageRetryExhausted({ state: 'COPY_REVIEW_PENDING', currentStage: 'IMAGE_RETRY_EXHAUSTED' }), true);
   for (const task of [
     { state: 'COPY_REVIEW_PENDING', currentStage: 'COPY_REVIEW_PENDING' },

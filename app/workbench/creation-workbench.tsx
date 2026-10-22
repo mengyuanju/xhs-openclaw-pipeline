@@ -789,6 +789,7 @@ type TaskRowHandlers = {
   toggleTaskSelection: (taskId: number, checked: boolean) => void;
   setSelectedTaskId: (taskId: number) => void; setAssignmentTasks: (tasks: DistributedTask[]) => void;
   showPermanentDelete: (task: DistributedTask) => void; refresh: () => void | Promise<void>;
+  returnToCopyReview: (task: DistributedTask) => unknown;
   restoreCancelledTask: (task: DistributedTask) => unknown; retryImages: (task: DistributedTask) => unknown;
   retryCopy: (task: DistributedTask) => unknown; discardTask: (task: DistributedTask) => unknown;
   resumeImages: (task: DistributedTask) => unknown; runBatchAction: (action: 'DISCARD', tasks: DistributedTask[]) => unknown;
@@ -796,7 +797,7 @@ type TaskRowHandlers = {
 
 function taskActions(task: DistributedTask, context: TaskRowContext, handlers: TaskRowHandlers, busy: boolean) {
     const { role, creatorUserId, creatorAccountId, activeView, isAllJobs, batchAction, batchPermanentDeleteTasks, duplicateQueryCleanupBusy } = context;
-    const { setAssignmentTasks, setSelectedTaskId, showPermanentDelete, restoreCancelledTask, runBatchAction, retryImages, retryCopy, discardTask, resumeImages } = handlers;
+    const { setAssignmentTasks, setSelectedTaskId, showPermanentDelete, restoreCancelledTask, runBatchAction, retryImages, retryCopy, discardTask, resumeImages, returnToCopyReview } = handlers;
     if (task.canOpen === false) return <span className="muted">历史记录 · 无当前详情权限</span>;
     const currentUserIsAssignee = isTaskAssignee(task, creatorUserId, creatorAccountId);
     const canHandleAssignedImages = ['ADMIN', 'USER'].includes(role) && currentUserIsAssignee;
@@ -827,6 +828,10 @@ function taskActions(task: DistributedTask, context: TaskRowContext, handlers: T
     const canRetryCopy = (hasOwnerControl || creatorCanControlMachineCopy)
       && ['COPY_RUNNING', 'COPY_FAILED'].includes(task.state);
     const canRetryImages = hasOwnerControl && task.state !== 'MANUAL_ARCHIVE' && canRequeueImages(task);
+    const returnToCopyReviewButton = task.state === 'IMAGE_FAILED' && hasOwnerControl
+      && ['ADMIN', 'USER'].includes(role) && !task.currentExecutionId
+      && <Button unstyled className="button small" type="button" disabled={busy}
+        onClick={() => { void returnToCopyReview(task); }}>退回文案审核</Button>;
     const retryImageButton = <Button unstyled
       className="button small"
       type="button"
@@ -841,6 +846,7 @@ function taskActions(task: DistributedTask, context: TaskRowContext, handlers: T
       {directCopyQaButton}
       {allJobsDetailButton}
       {restoreButton}
+      {returnToCopyReviewButton}
       {['COPY_RUNNING', 'COPY_FAILED'].includes(task.state) && <Button unstyled className="button small" type="button" disabled={busy} onClick={() => { void retryCopy(task); }}><RotateCcw size={14} />重试</Button>}
       {isImageRetryExhausted(task) && canRetryImages && retryImageButton}
       {adminDiscardButton}
@@ -868,6 +874,7 @@ function taskActions(task: DistributedTask, context: TaskRowContext, handlers: T
       {assignmentButton}
       <Button unstyled className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
       {adminDiscardButton}
+      {returnToCopyReviewButton}
       {retryImageButton}
       {permanentDeleteButton}
     </TaskRowActions>;
@@ -883,6 +890,7 @@ function taskActions(task: DistributedTask, context: TaskRowContext, handlers: T
     return <TaskRowActions taskId={task.id} busy={busy} visibleActionCount={visibleActionCount}>
       {assignmentButton}
       {directCopyQaButton}
+      {returnToCopyReviewButton}
       <Button unstyled className="button small" type="button" disabled={busy} onClick={() => setSelectedTaskId(task.id)}><Eye size={14} />查看</Button>
       {adminDiscardButton}
       {restoreButton}
@@ -1859,6 +1867,22 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
     } finally { setActingTaskId(null); }
   }
 
+  async function returnToCopyReview(task: DistributedTask) {
+    if (task.state !== 'IMAGE_FAILED') return;
+    if (!await confirm({ title: '退回文案审核？',
+      description: '保留现有文案和生图失败记录。修改标题或内容后提交强制复检，通过后重新生图。',
+      confirmLabel: '退回文案审核' })) return;
+    setActingTaskId(task.id);
+    try {
+      await apiRequest(apiPath(`/v1/tasks/${task.id}/return-to-copy-review`), { method: 'POST' });
+      setMessage(`任务 #${task.id} 已退回文案审核，请修改后提交强制复检。`);
+      setError('');
+      await refresh({ silent: true });
+      setSelectedTaskId(task.id);
+    } catch (caught) { setError(caught instanceof Error ? caught.message : '退回文案审核失败'); }
+    finally { setActingTaskId(null); }
+  }
+
   async function retryImages(task: DistributedTask) {
     if (!canRequeueImages(task)) return;
     const exhausted = isImageRetryExhausted(task);
@@ -2011,7 +2035,7 @@ export function CreationWorkbench({ nodeId, creatorUserId, creatorAccountId, rol
   }), [role, activeView, creatorUserId, creatorAccountId, isAllJobs, showTaskSelection, executorColumnLabel,
     nodes, personalOptions.mode, batchAction, batchPermanentDeleteTasks, duplicateQueryCleanupBusy, canOperatorDeliverTask]);
   const taskRowHandlers = useStableEventHandlers<TaskRowHandlers>({
-    toggleTaskSelection, setSelectedTaskId, setAssignmentTasks, refresh, restoreCancelledTask, retryImages,
+    toggleTaskSelection, setSelectedTaskId, setAssignmentTasks, refresh, restoreCancelledTask, retryImages, returnToCopyReview,
     retryCopy, discardTask, resumeImages, runBatchAction,
     showPermanentDelete: task => { setDeletionError(''); setDeletionPassword(''); setPermanentDeleteTask(task); },
   });
