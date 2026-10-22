@@ -1,4 +1,5 @@
 export const DEFAULT_WEB_SEARCH_PROVIDER = 'DEEPSEEK';
+// Retained for callers reading historical model-based search settings.
 export const DEFAULT_DEEPSEEK_SEARCH_MODEL = 'deepseek-v4-pro';
 export const DEFAULT_WEB_SEARCH_TIMEOUT_MS = 120_000;
 export const DEFAULT_WEB_SEARCH_RESULT_LIMIT = 5;
@@ -10,7 +11,7 @@ export const DEEPSEEK_MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/u
 export const DEFAULT_WEB_SEARCH_SETTINGS = Object.freeze({
   webSearchProvider: null,
   webSearchProviderOrder: null,
-  deepseekSearchModel: null,
+  deepseekSearchModel: null, // Legacy metadata; the standalone Search API does not use a model.
   webSearchTimeoutMs: null,
   webSearchResultLimit: null,
   doubaoSearchMode: null,
@@ -131,16 +132,13 @@ export function resolveWebSearchConfig(environment = process.env, input = {}) {
   // Saved execution snapshots predating this field must keep using Global.
   // New snapshots and new installations store CUSTOM explicitly.
   const doubaoSearchMode = settings.doubaoSearchMode ?? LEGACY_DOUBAO_SEARCH_MODE;
-  const model = usesDeepSeek ? validatedDeepSeekSearchModel(
-    settings.deepseekSearchModel ?? (environment.XHS_DEEPSEEK_SEARCH_MODEL || DEFAULT_DEEPSEEK_SEARCH_MODEL),
-  ) : undefined;
   const environmentTimeout = usesDeepSeek
     ? environment.XHS_DEEPSEEK_SEARCH_TIMEOUT_MS
     : environment.XHS_DOUBAO_SEARCH_TIMEOUT_MS;
   const timeoutMs = usesApi ? validatedWebSearchTimeout(Number(
     settings.webSearchTimeoutMs ?? (environmentTimeout || DEFAULT_WEB_SEARCH_TIMEOUT_MS),
   )) : undefined;
-  if (providers) return { provider, providers, ...(model ? { model } : {}),
+  if (providers) return { provider, providers,
     ...(timeoutMs ? { timeoutMs } : {}), resultLimit,
     ...(usesDoubao ? { doubaoSearchMode } : {}),
     doubaoIcpHostOnly: settings.doubaoIcpHostOnly ?? DEFAULT_DOUBAO_ICP_HOST_ONLY };
@@ -148,5 +146,5 @@ export function resolveWebSearchConfig(environment = process.env, input = {}) {
   if (provider === 'DOUBAO') return { provider, timeoutMs, resultLimit,
     doubaoSearchMode,
     doubaoIcpHostOnly: settings.doubaoIcpHostOnly ?? DEFAULT_DOUBAO_ICP_HOST_ONLY };
-  return { provider, model, timeoutMs, resultLimit };
+  return { provider, timeoutMs, resultLimit };
 }

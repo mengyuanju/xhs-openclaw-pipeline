@@ -161,7 +161,7 @@ npm run executor -- --enable-image-worker
 
 需要并行比较国内搜索服务的实际摘要和来源，可运行独立的[联网搜索 API 对比测试站](search-lab/README.md)：`npm run search:lab`，默认访问 `http://127.0.0.1:3077`。测试站在页面临时接收各产品的 Key，不修改生产搜索配置。
 
-生成引擎固定 `CODEX`。`XHS_COPY_GENERATION_PROVIDER` 支持 `CODEX`、`DOTS`；`XHS_WEB_SEARCH_PROVIDER` 支持 `CODEX`、`DEEPSEEK`、`DOUBAO`，默认使用 DeepSeek `deepseek-v4-pro`。文案和搜索的切换相互独立。
+生成引擎固定 `CODEX`。`XHS_COPY_GENERATION_PROVIDER` 支持 `CODEX`、`DOTS`；`XHS_WEB_SEARCH_PROVIDER` 支持 `CODEX`、`DEEPSEEK`、`DOUBAO`，默认使用 DeepSeek 独立 Search API，无需搜索模型。文案和搜索的切换相互独立。
 
 生产配置中保存的非空值优先于执行机环境变量，`null` 表示继承环境或默认值。中心配置进入后续执行快照，已领取任务使用原快照。页面搜索面板只修改搜索字段，保留其他生产参数。Key 由实际调用服务的主机提供，不保存到配置 JSON。
 
@@ -171,7 +171,6 @@ npm run executor -- --enable-image-worker
 XHS_AGENT_PROVIDER=CODEX
 XHS_COPY_GENERATION_PROVIDER=CODEX
 XHS_WEB_SEARCH_PROVIDER=DEEPSEEK
-XHS_DEEPSEEK_SEARCH_MODEL=deepseek-v4-pro
 XHS_DEEPSEEK_SEARCH_TIMEOUT_MS=120000
 DEEPSEEK_API_KEY=
 DOUBAO_SEARCH_API_KEY=
@@ -183,7 +182,9 @@ DOUBAO_SEARCH_API_KEY=
 
 Dots 使用 `XHS_DOTS_API_KEY`、`XHS_DOTS_BASE_URL`、`XHS_DOTS_MODEL`。Codex 模型和代理变量见 `.env.example`。模型调用使用参数数组、`shell:false`，模型输出和外部 Query 始终作为不可信输入验证。
 
-DeepSeek 搜索模型不使用版本白名单：生产配置或 `XHS_DEEPSEEK_SEARCH_MODEL` 可填写任意符合安全格式的模型 ID（最多 128 个字符），因此 DeepSeek 发布新模型时无需升级执行机代码。项目默认使用已验证能完成服务端 `web_search` 的 `deepseek-v4-pro`；切换模型前应先实测响应包含完成的 `web_search_call`，不能只以 HTTP 成功作为可用依据。
+DeepSeek 使用官方 [`POST /v1/tools/search`](https://api-docs.deepseek.com/zh-cn/api/search/)，只发送搜索词、来源数量和 `need_content: false`。搜索词按接口限制截取到 128 个 Unicode 字符，并保留补充检索的官方来源关键词；任务原始 Query 仍保存在研究快照。网页长摘要 `summary` 优先作为来源摘录，缺失时使用 `snippet`，由程序整理为“搜索结果摘录”，不额外调用模型归纳，也不抓取网页全文。资料检索提示词不作用于这个直连接口，来源校验与权威来源要求继续由程序执行。
+
+旧配置与历史快照中的 `deepseekSearchModel` 保留兼容读取，`XHS_DEEPSEEK_SEARCH_MODEL` 不再影响搜索。网络错误、408、429 和 5xx 在同一次超时预算内最多重试一次；鉴权、余额等其他错误不重试。空结果进入现有补充检索或备用服务流程。部署此变更时先暂停领取新任务并等待运行任务结束，再统一升级执行机与服务；历史成功研究快照继续复用。
 
 `executor:deepseek-sim` 仍是内部流程联调入口。搜图或本地兜底结果明确标记为模拟，不能视为 Codex 原生生成，也不能作为真实模型验收证据。
 

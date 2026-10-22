@@ -22,5 +22,8 @@ test('task dialogs expose lazy read-only model call history only to administrato
   assert.match(trace, /COPY_CONTRACT_REPAIR: '文案格式修复'/u);
   assert.match(trace, /WEB_SEARCH_RETRY: '联网搜索重试'/u);
   assert.match(trace, /WEB_SEARCH_FINALIZE: '整理已有搜索结果'/u);
+  assert.match(trace, /模型与搜索调用链路/u);
+  assert.match(trace, /总次数包含模型调用和独立搜索请求/u);
+  assert.match(trace, /搜索请求遇到可恢复错误/u);
   assert.match(trace, /修复正文长度或残句，沿用标题、来源和配图策划/u);
 });

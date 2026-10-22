@@ -67,7 +67,8 @@ test('saved Doubao research stays separate from actual calls and normalized sear
       if (request.method === 'GET' && url.pathname === '/api/control-plane/v1/tasks/1061/model-calls') {
         const offset = Number(url.searchParams.get('offset'));
         const all = scenario === 'pages' ? Array.from({ length: 22 }, (_, index) => call(index + 1))
-          : scenario === 'search' ? [call(1, 'Doubao', 'WEB_SEARCH'), call(2), call(3)] : scenario === 'failed' ? [{ ...call(1), status: 'FAILED', truncated: true }] : [call(1), call(2)];
+          : ['search', 'deepseek'].includes(scenario) ? [call(1, scenario === 'deepseek' ? 'DeepSeek' : 'Doubao', 'WEB_SEARCH'), call(2), call(3)]
+            : scenario === 'failed' ? [{ ...call(1), status: 'FAILED', truncated: true }] : [call(1), call(2)];
         data = { items: all.slice(offset, offset + 20), total: all.length };
       } else if (request.method === 'GET' && url.pathname === '/api/control-plane/v1/tasks/1061/model-calls/call-1') {
         if (scenario === 'failed') {
@@ -75,7 +76,7 @@ test('saved Doubao research stays separate from actual calls and normalized sear
           data = { ...call(1), status: 'FAILED', truncated: true, prompt: '合成失败请求的原始提示词 <script>window.__traceExecuted=1</script>', error: '合成调用失败：服务暂不可用', response: null,
             request: JSON.stringify({ format: 'xhs-model-request', schemaVersion: 1, scope: 'CLI_INPUT', payload: { args: ['exec', '--image', '/synthetic/reference.png', '--sandbox', 'read-only'], input: '合成请求' } }) };
         } else {
-        data = { ...call(1, 'Doubao', 'WEB_SEARCH'), prompt: '', request: '{}',
+        data = { ...call(1, scenario === 'deepseek' ? 'DeepSeek' : 'Doubao', 'WEB_SEARCH'), prompt: '剪映怎么学习', request: '{}',
           response: JSON.stringify({ httpStatus: 200, scope: 'NORMALIZED_SEARCH_EVIDENCE', result: { content: '归一化的豆包结果', sources: snapshot.sources } }) };
         }
       } else { unexpected.push(`${request.method} ${url.pathname}`); response.statusCode = 404; }
@@ -92,7 +93,7 @@ test('saved Doubao research stays separate from actual calls and normalized sear
     const origin = `http://127.0.0.1:${server.address().port}`;
     await page.goto(origin);
     assert.equal(requests.length, 0, 'collapsed history must remain lazy');
-    await page.getByRole('button', { name: /模型调用链路/u }).click();
+    await page.getByRole('button', { name: /模型与搜索调用链路/u }).click();
     await page.getByText('共 2 次调用', { exact: true }).waitFor();
     // The snapshot is a named section, not a numbered call or HTTP reconstruction.
     const snapshotSection = page.locator('section[aria-label="当前文案保存的搜索记录"]');
@@ -102,7 +103,7 @@ test('saved Doubao research stays separate from actual calls and normalized sear
     assert.match(await snapshotSection.innerText(), new RegExp(executionId, 'u'));
     assert.match(await snapshotSection.innerText(), /研究词（非完整 HTTP 请求）：剪映怎么学习/u);
     assert.match(await snapshotSection.innerText(), /1\. 豆包（已返回来源）/u);
-    assert.match(await snapshotSection.innerText(), /不计入模型调用次数/u);
+    assert.match(await snapshotSection.innerText(), /不计入调用次数/u);
     assert.equal(await page.locator('.model-call-card').count(), 2);
     await page.getByRole('button', { name: '研究摘要（已脱敏）', exact: true }).click();
     assert.match(await snapshotSection.innerText(), /先学会导入素材/u);
@@ -121,7 +122,7 @@ test('saved Doubao research stays separate from actual calls and normalized sear
     assert.equal(await page.locator('.model-call-card').count(), 2);
 
     await page.goto(`${origin}/?scenario=pages`);
-    await page.getByRole('button', { name: /模型调用链路/u }).click();
+    await page.getByRole('button', { name: /模型与搜索调用链路/u }).click();
     await page.getByText('共 22 次调用', { exact: true }).waitFor();
     await page.getByRole('button', { name: '下一页', exact: true }).click();
     await page.getByText('第 2 页 / 共 2 页', { exact: true }).waitFor();
@@ -131,7 +132,7 @@ test('saved Doubao research stays separate from actual calls and normalized sear
     assert.equal(await page.locator('.model-call-card').count(), 2);
 
     await page.goto(`${origin}/?scenario=search`);
-    await page.getByRole('button', { name: /模型调用链路/u }).click();
+    await page.getByRole('button', { name: /模型与搜索调用链路/u }).click();
     await page.getByText('共 3 次调用', { exact: true }).waitFor();
     const searchCall = page.locator('.model-call-card').first();
     assert.match(await searchCall.innerText(), /Doubao · 搜索服务 · 联网搜索/u);
@@ -140,8 +141,21 @@ test('saved Doubao research stays separate from actual calls and normalized sear
     await searchCall.getByRole('heading', { name: '搜索结果（已脱敏）', exact: true }).waitFor();
     await searchCall.getByText('归一化的豆包结果', { exact: true }).waitFor();
     assert.equal(await snapshotSection.count(), 1);
+    await page.goto(`${origin}/?scenario=deepseek`);
+    await page.getByRole('button', { name: /模型与搜索调用链路/u }).click();
+    await page.getByText('共 3 次调用', { exact: true }).waitFor();
+    const deepseekCall = page.locator('.model-call-card').first();
+    assert.match(await deepseekCall.innerText(), /DeepSeek · 搜索服务 · 联网搜索/u);
+    assert.doesNotMatch(await deepseekCall.innerText(), /未暴露模型名称/u);
+    await deepseekCall.getByRole('button', { name: /第 1 步/u }).click();
+    await deepseekCall.getByText('此步骤直接调用搜索服务，未调用生成模型，也未执行资料检索提示词。', { exact: true }).waitFor();
+    const searchQueryToggle = deepseekCall.getByRole('button', { name: '搜索词（已脱敏）', exact: true });
+    await searchQueryToggle.click();
+    const searchQueryContent = page.locator(`[id="${await searchQueryToggle.getAttribute('aria-controls')}"] pre`);
+    await searchQueryContent.waitFor();
+    assert.equal(await searchQueryContent.innerText(), '剪映怎么学习');
     await page.goto(`${origin}/?scenario=failed`);
-    await page.getByRole('button', { name: /模型调用链路/u }).click(); await page.getByText('共 1 次调用', { exact: true }).waitFor();
+    await page.getByRole('button', { name: /模型与搜索调用链路/u }).click(); await page.getByText('共 1 次调用', { exact: true }).waitFor();
     const failedCall = page.locator('.model-call-card').first(); await failedCall.getByRole('button', { name: /第 1 步/u }).click();
     await failedCall.getByRole('alert').filter({ hasText: 'temporary trace detail unavailable' }).waitFor(); await failedCall.getByRole('button', { name: '重试加载', exact: true }).click();
     await failedCall.getByText('合成调用失败：服务暂不可用', { exact: true }).waitFor(); await failedCall.getByText('记录内容过长，已截断展示；并非完整原文。', { exact: true }).waitFor();

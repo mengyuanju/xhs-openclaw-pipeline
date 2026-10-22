@@ -53,10 +53,12 @@ const STAGE_HINTS: Record<string, string> = {
   COPY_CONTRACT_REPAIR: '仅修复未通过校验的字段及必要联动',
 };
 const OPERATION_HINTS: Record<string, string> = {
-  WEB_SEARCH_RETRY: '搜索服务未返回完整调用，执行一次限次重试',
+  WEB_SEARCH_RETRY: '搜索请求遇到可恢复错误，在原有时间预算内限次重试',
   WEB_SEARCH_FINALIZE: '仅整理已有证据，不会再次联网搜索',
 };
 const STATUSES: Record<string, string> = { RUNNING: '等待返回', SUCCEEDED: '已返回', FAILED: '调用失败' };
+const isSearchService = (item: Call) => !item.model && ['WEB_SEARCH', 'WEB_SEARCH_RETRY'].includes(item.operation)
+  && ['deepseek', 'doubao'].includes(item.provider.toLowerCase());
 const formatTime = (value: string) => new Date(value).toLocaleString('zh-CN', { hour12: false });
 const basePath = (taskId: number) => `/api/control-plane/v1/tasks/${taskId}/model-calls`;
 
@@ -87,7 +89,7 @@ function ResearchSnapshotCard({ research, copyRevisionId, researchExecutionId }:
     ? formatTime(research.searchedAt) : '未记录';
   return <section className="model-call-body workbench-review-section" aria-label="当前文案保存的搜索记录">
     <h4>当前文案保存的搜索记录 · {researchProviderLabel(research.provider)} · {sourceCount} 条来源</h4>
-    <p className="model-call-note">来自文案版本 {copyRevisionId ?? '未记录'} 保存的研究快照，不包含完整 HTTP 请求与响应；详细调用以链路记录为准。此摘要不计入模型调用次数。</p>
+    <p className="model-call-note">来自文案版本 {copyRevisionId ?? '未记录'} 保存的研究快照，不包含完整 HTTP 请求与响应；详细调用以链路记录为准。此摘要不计入调用次数。</p>
     <p className="model-call-note">所属执行：{researchExecutionId || '未记录'} · 搜索时间：{searchedAt}</p>
     <p className="model-call-note">研究词（非完整 HTTP 请求）：{query || '未记录'}</p>
     {!!attempts.length && <p className="model-call-note">服务尝试：{attempts.map((attempt, index) => {
@@ -119,7 +121,7 @@ function CallCard({ taskId, item }: { taskId: number; item: Call }) {
   return <Disclosure className="model-call-card" open={open} onOpenChange={setOpen}>
     <DisclosureTrigger>
       <span><strong>第 {item.sequence} 步 · {stageLabel(item)}</strong>
-        <small>{item.provider} · {item.model || (item.provider.toLowerCase() === 'doubao' && item.operation === 'WEB_SEARCH' ? '搜索服务' : '未暴露模型名称')} · {OPERATIONS[item.operation] ?? '模型调用'}</small></span>
+        <small>{item.provider} · {item.model || (isSearchService(item) ? '搜索服务' : '未暴露模型名称')} · {OPERATIONS[item.operation] ?? '模型调用'}</small></span>
       {(STAGE_HINTS[item.stage] || OPERATION_HINTS[item.operation]) && <small>{STAGE_HINTS[item.stage] ?? OPERATION_HINTS[item.operation]}</small>}
       <span className={`model-call-status ${item.status === 'FAILED' ? 'is-failed' : ''}`}>
         {STATUSES[item.status] ?? '未知状态'}{item.durationMs !== null ? ` · ${(item.durationMs / 1000).toFixed(1)} 秒` : ''}
@@ -128,11 +130,14 @@ function CallCard({ taskId, item }: { taskId: number; item: Call }) {
     {open && <div className="model-call-body">
       <p className="model-call-note">调用时间：{formatTime(item.startedAt)}</p>
       {error && <div role="alert" className="notice error">{error} <Button unstyled className="button" type="button" onClick={() => setRevision((value) => value + 1)}>重试加载</Button></div>}
-      {!detail && !error && <p role="status">正在加载提示词与返回内容…</p>}
+      {!detail && !error && <p role="status">正在加载请求与返回内容…</p>}
       {detail && <>
         {detail.truncated && <p className="notice warning">记录内容过长，已截断展示；并非完整原文。</p>}
-        <ModelRequestDetails detail={detail} />
-        <Disclosure className="model-call-request"><DisclosureTrigger>{detail.truncated ? '提示词记录（可能已截断）' : '完整提示词原文（已脱敏）'}</DisclosureTrigger><DisclosureContent><pre>{detail.prompt || '此调用未提供文本提示词。'}</pre></DisclosureContent></Disclosure>
+        <ModelRequestDetails detail={detail} searchService={isSearchService(item)} />
+        {isSearchService(item) && <p className="model-call-note">此步骤直接调用搜索服务，未调用生成模型，也未执行资料检索提示词。</p>}
+        <Disclosure className="model-call-request"><DisclosureTrigger>{isSearchService(item)
+          ? (detail.truncated ? '搜索词记录（可能已截断）' : '搜索词（已脱敏）')
+          : (detail.truncated ? '提示词记录（可能已截断）' : '完整提示词原文（已脱敏）')}</DisclosureTrigger><DisclosureContent><pre>{detail.prompt || '此调用未提供文本提示词。'}</pre></DisclosureContent></Disclosure>
         <h4>{item.operation.startsWith('WEB_SEARCH') ? '搜索结果（已脱敏）' : '模型返回内容'}</h4>
         {detail.response != null ? <ModelResponseView text={detail.response} /> : <p className="model-call-note">{detail.status === 'RUNNING' ? '暂未记录返回：调用可能仍在执行，或执行机已中断。' : '未取得返回内容。'}</p>}
         {detail.error && <><h4>调用错误</h4><pre className="model-call-error">{detail.error}</pre></>}
@@ -165,17 +170,17 @@ export function ModelCallTrace({ taskId, researchSnapshot, copyRevisionId, resea
   }, [data, page]);
 
   return <Disclosure className="model-call-trace workbench-review-section" open={open} onOpenChange={setOpen}>
-    <DisclosureTrigger><strong>模型调用链路</strong><span>{open ? '收起' : '展开查看每一步的提示词与返回内容'}</span></DisclosureTrigger><DisclosureContent>
+    <DisclosureTrigger><strong>模型与搜索调用链路</strong><span>{open ? '收起' : '展开查看每一步的请求与返回内容'}</span></DisclosureTrigger><DisclosureContent>
     {open && <div className="model-call-trace-content">
-      <p className="model-call-note">按执行轮次和调用顺序记录，重试单独保留。这里展示项目实际发送和收到的内容（已脱敏）；模型客户端及服务商内部未返回的子调用不可见。“已返回”不代表业务校验通过。</p>
+      <p className="model-call-note">按执行轮次和调用顺序记录，重试单独保留。总次数包含模型调用和独立搜索请求。这里展示项目实际发送和收到的内容（已脱敏）；模型客户端及服务商内部未返回的子调用不可见。“已返回”不代表业务校验通过。</p>
       {researchSnapshot && <ResearchSnapshotCard research={researchSnapshot} copyRevisionId={copyRevisionId} researchExecutionId={researchExecutionId} />}
-      <div className="model-call-toolbar"><span>{data ? `共 ${data.total} 次调用` : '模型调用记录'}</span>
+      <div className="model-call-toolbar"><span>{data ? `共 ${data.total} 次调用` : '调用记录'}</span>
         <Button unstyled type="button" className="button" onClick={() => setRevision((value) => value + 1)}>刷新记录</Button></div>
       {error && <div role="alert" className="notice error">加载失败：{error}。请确认中心服务已升级，可点击刷新重试。</div>}
       {!data && !error && <p role="status">正在加载调用链路…</p>}
       {data?.cleanup?.status === 'COMPLETE' && <p className="model-call-note">已进入交付池，交付前的模型调用记录已按策略清理{data.cleanup.completedAt ? `（${formatTime(data.cleanup.completedAt)}）` : ''}。文案、图片和质检结果仍保留。{data.total > 0 ? '下方为后续执行的调用记录。' : ''}</p>}
       {data?.cleanup && data.cleanup.status !== 'COMPLETE' && <p className="model-call-note">交付前的调用记录正在分批清理，执行中的记录会延后处理。</p>}
-      {data?.items.length === 0 && !data.cleanup && <p className="model-call-empty">暂无模型调用记录。旧任务或未升级执行机的任务可能没有记录，无法还原当时的提示词与返回内容。</p>}
+      {data?.items.length === 0 && !data.cleanup && <p className="model-call-empty">暂无调用记录。旧任务或未升级执行机的任务可能没有记录，无法还原当时的提示词、搜索词与返回内容。</p>}
       {data?.items.map((item, index) => <div key={item.id}>
         {(index === 0 || item.executionId !== data.items[index - 1].executionId) && <div className="model-call-execution">
           <strong>{item.kind === 'COPY' ? '文案执行' : '生图执行'} · {formatTime(item.executionStartedAt)}</strong>

@@ -14,25 +14,14 @@ function responsePayload(text) {
   };
 }
 
-test('DeepSeek simulation client uses the fixed model and server-side web search', async () => {
+test('DeepSeek simulation keeps its fixed text model and delegates research to the independent Search API', async () => {
   const calls = [];
   const fetchImpl = async (url, init) => {
     calls.push({ url, init, body: JSON.parse(init.body) });
-    const text = calls.length === 1
-      ? '{"decision":"PASS"}'
-      : JSON.stringify({
-        summary: '检索资料摘要',
-        sources: [{
-          title: '权威来源',
-          url: 'https://example.com/reference',
-          snippet: '支持摘要的来源要点',
-          siteName: 'Example',
-        }],
-      });
-    return new Response(JSON.stringify(responsePayload(text)), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    });
+    return Response.json(url.endsWith('/v1/tools/search') ? { results: [{
+      title: '权威来源', url: 'https://example.com/reference',
+      summary: '支持摘要的来源要点', snippet: '短摘要', site_name: 'Example',
+    }] } : responsePayload('{"decision":"PASS"}'));
   };
   const client = createDeepSeekResponsesClient({ apiKey: 'test-secret-value', fetchImpl });
 
@@ -42,11 +31,11 @@ test('DeepSeek simulation client uses the fixed model and server-side web search
   assert.equal(text.model, DEEPSEEK_SIMULATION_MODEL);
   assert.equal(search.provider, 'deepseek');
   assert.equal(search.result.sources[0].url, 'https://example.com/reference');
-  assert.ok(calls.every((call) => call.url === 'https://api.deepseek.com/responses'));
-  assert.ok(calls.every((call) => call.body.model === 'deepseek-v4-pro'));
+  assert.deepEqual(calls.map(call => call.url), ['https://api.deepseek.com/responses', 'https://api.deepseek.com/v1/tools/search']);
+  assert.equal(calls[0].body.model, 'deepseek-v4-pro');
   assert.equal(calls[0].body.tools, undefined);
-  assert.deepEqual(calls[1].body.tools, [{ type: 'web_search' }]);
-  assert.deepEqual(calls[1].body.tool_choice, { type: 'web_search' });
+  assert.deepEqual(calls[1].body, { query: '测试选题', count: 3, need_content: false });
+  assert.equal(search.result.sources[0].snippet, '支持摘要的来源要点');
   assert.ok(calls.every((call) => !call.init.body.includes('test-secret-value')));
 });
 

@@ -259,7 +259,8 @@ export function effectiveModelApiConfig(input = {}, environment = process.env) {
     copyGenerationProvider,
     webSearchProvider: search.provider,
     webSearchProviderOrder: search.providers ?? null,
-    deepseekSearchModel: search.model ?? settings.deepseekSearchModel,
+    // Preserve historical settings without making them an active search parameter.
+    deepseekSearchModel: settings.deepseekSearchModel,
     webSearchTimeoutMs: search.timeoutMs ?? settings.webSearchTimeoutMs,
     webSearchResultLimit: search.resultLimit,
     doubaoSearchMode: search.doubaoSearchMode ?? settings.doubaoSearchMode ?? LEGACY_DOUBAO_SEARCH_MODE,

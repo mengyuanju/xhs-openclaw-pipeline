@@ -85,20 +85,24 @@ test('quoting earlier rules as task data does not claim that earlier business ve
   assert.deepEqual(JSON.parse(f.records.at(-1).request).provenance.versions.map(v => v.kind), ['TEXT_REVIEW_SYSTEM']);
 });
 
-test('DeepSeek search evidence is the exact outgoing body with instructions, schema and tool choice', async () => {
-  const f = fixture();
+test('DeepSeek search evidence preserves the exact Search API body without claiming a research prompt version', async () => {
+  const prompts = { RESEARCH_SYSTEM: { versionId: 71, content: '只用管理员指定来源' } };
+  const f = fixture({ prompts });
   let body;
-  await f.run(() => runDeepSeekWebSearch({ apiKey: 'fixture-private-key', model: 'test-model', timeoutMs: 5000,
+  await f.run(() => withPromptRuntime({ prompts, source: 'TEST_SNAPSHOT' }, () => runDeepSeekWebSearch({ apiKey: 'fixture-private-key', timeoutMs: 5000,
     fetchImpl: async (_url, options) => {
       body = JSON.parse(options.body);
-      return Response.json({ status: 'completed', output: [{ type: 'web_search_call', status: 'completed' },
-        { type: 'message', content: [{ type: 'output_text', text: JSON.stringify({ summary: '资料', sources: [{ title: '官网', url: 'https://example.com', snippet: '依据' }] }) }] }] });
+      return Response.json({ results: [{ title: '官网', url: 'https://example.com', summary: '依据' }] });
     },
-  }, { query: '测试任务', limit: 3 }));
+  }, { query: '测试任务', limit: 3 })));
   const evidence = JSON.parse(f.records.at(-1).request);
   assert.equal(evidence.scope, 'HTTP_BODY');
   assert.deepEqual(evidence.payload, body);
-  assert.equal(f.records.at(-1).prompt, body.input);
-  assert.equal(evidence.payload.tool_choice.type, 'web_search');
+  assert.deepEqual(body, { query: '测试任务', count: 3, need_content: false });
+  assert.equal(f.records.at(-1).prompt, '测试任务');
+  assert.equal(f.records.at(-1).model, '');
+  assert.deepEqual(evidence.provenance.versions, []);
+  assert.equal(JSON.parse(f.records.at(-1).response).api, 'deepseek-search');
+  assert.doesNotMatch(JSON.stringify(body), /model|instructions|tool_choice|schema|只用管理员指定来源/);
   assert.doesNotMatch(f.records.at(-1).request, /fixture-private-key/);
 });

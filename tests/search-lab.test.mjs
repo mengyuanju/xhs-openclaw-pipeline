@@ -12,6 +12,28 @@ function fakeFetch(payload, inspect = () => {}) {
   };
 }
 
+test('DeepSeek lab uses the shared Search API without a model selector or model request', async () => {
+  const provider = providerCatalogue.find(item => item.id === 'deepseek');
+  assert.equal(provider.kind, 'search-results');
+  assert.equal(provider.hasModel, undefined);
+  assert.equal(provider.defaultModel, undefined);
+  const request = validateCompareRequest({ query: '桌面整理', providers: [{
+    id: 'deepseek', key: 'fixture-key', model: 'obsolete model setting',
+  }] });
+  assert.equal(request.selections[0].model, null);
+  const calls = [];
+  const result = await runProviderSearch({ id: 'deepseek', key: 'fixture-key', query: request.query, limit: 3,
+    fetchImpl: fakeFetch({ results: [{ title: '收纳资料', url: 'https://example.org/desk',
+      summary: '分区收纳的网页长摘要', snippet: '短摘要', site_name: 'Example' }] },
+    (url, _init, body) => calls.push({ url, body })),
+  });
+  assert.deepEqual(calls, [{ url: 'https://api.deepseek.com/v1/tools/search',
+    body: { query: '桌面整理', count: 3, need_content: false } }]);
+  assert.equal(result.provider, 'deepseek');
+  assert.equal(result.result.sources[0].snippet, '分区收纳的网页长摘要');
+  assert.match(result.result.content, /分区收纳的网页长摘要/u);
+});
+
 test('search lab compares each provider independently with the same Query and redacts keys', async () => {
   const calls = [];
   const output = await compareSearch({

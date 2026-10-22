@@ -28,9 +28,10 @@ function normalizedSelection(value, catalogue) {
   if (provider.needsKey && (!key || key.length > 2048 || /\s/u.test(key))) {
     throw new TypeError(`${provider.label} API key 缺失或格式不正确`);
   }
-  const model = value.model == null || value.model === ''
-    ? provider.defaultModel ?? null
-    : String(value.model).trim();
+  const model = !provider.hasModel ? null
+    : value.model == null || value.model === ''
+      ? provider.defaultModel ?? null
+      : String(value.model).trim();
   if (model !== null && !MODEL_ID.test(model)) throw new TypeError(`${provider.label} 模型 ID 不正确`);
   const suppliedOptions = value.options ?? {};
   if (!suppliedOptions || typeof suppliedOptions !== 'object' || Array.isArray(suppliedOptions)) {

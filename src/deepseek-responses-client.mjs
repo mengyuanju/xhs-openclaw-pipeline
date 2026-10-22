@@ -1,5 +1,5 @@
 import { internalPrompt } from './prompt-runtime.mjs';
-import { buildResearchPrompt } from './research-prompt.mjs';
+import { runDeepSeekWebSearch } from './deepseek-web-search.mjs';
 import { businessPrompt } from './prompt-runtime.mjs';
 import { tracedModelFetch } from './model-call-trace.mjs';
 
@@ -90,27 +90,6 @@ function parsedJsonObject(rawText, label) {
     }
   }
   throw new TypeError(`${label} output is not a valid JSON object`);
-}
-
-function parsedSearchResult(rawText) {
-  const normalized = rawText
-    .replace(/^```(?:json)?\s*/iu, '')
-    .replace(/\s*```$/u, '')
-    .trim();
-  let value;
-  try {
-    value = JSON.parse(normalized);
-  } catch {
-    throw new TypeError('DeepSeek web search output is not valid JSON');
-  }
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new TypeError('DeepSeek web search output must be an object');
-  }
-  const summary = typeof value.summary === 'string' ? value.summary.trim() : '';
-  if (!summary || !Array.isArray(value.sources) || value.sources.length < 1) {
-    throw new TypeError('DeepSeek web search returned no grounded sources');
-  }
-  return { content: summary, sources: value.sources };
 }
 
 function cleanText(value, field, maximum) {
@@ -260,7 +239,7 @@ export function createDeepSeekResponsesClient({
     throw new TypeError(`DeepSeek simulation model must be ${DEEPSEEK_SIMULATION_MODEL}`);
   }
   if (typeof fetchImpl !== 'function') throw new TypeError('fetchImpl must be a function');
-  fetchImpl = tracedModelFetch(fetchImpl, 'DeepSeek 模拟');
+  const modelFetch = tracedModelFetch(fetchImpl, 'DeepSeek 模拟');
   if (!Number.isInteger(maxOutputTokens) || maxOutputTokens < 1_024 || maxOutputTokens > 32_768) {
     throw new RangeError('DeepSeek maxOutputTokens must be between 1024 and 32768');
   }
@@ -276,7 +255,7 @@ export function createDeepSeekResponsesClient({
     let response;
     const deadline = AbortSignal.timeout(validatedTimeout(timeoutMs));
     try {
-      response = await fetchImpl(DEEPSEEK_RESPONSES_ENDPOINT, {
+      response = await modelFetch(DEEPSEEK_RESPONSES_ENDPOINT, {
         method: 'POST',
         redirect: 'error',
         signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
@@ -324,20 +303,8 @@ export function createDeepSeekResponsesClient({
     runReview({ prompt, timeoutMs, signal }) {
       return createResponse({ prompt, timeoutMs, signal });
     },
-    async runWebSearch({ query, limit = 5, timeoutMs = 120_000, signal }) {
-      const normalizedQuery = typeof query === 'string' ? query.trim() : '';
-      if (normalizedQuery.length < 1 || normalizedQuery.length > 500) {
-        throw new RangeError('web search query must contain between 1 and 500 characters');
-      }
-      if (!Number.isInteger(limit) || limit < 1 || limit > 10) {
-        throw new RangeError('web search limit must be an integer between 1 and 10');
-      }
-      const prompt = buildResearchPrompt(normalizedQuery, limit);
-      const generated = await createResponse({ prompt, timeoutMs, webSearch: true, signal });
-      return {
-        provider: 'deepseek',
-        result: parsedSearchResult(generated.rawText),
-      };
+    runWebSearch(input) {
+      return runDeepSeekWebSearch({ apiKey: secret, timeoutMs: 120_000, fetchImpl }, input);
     },
     async runImageSearch({ query, copy, imagePlan, timeoutMs = 120_000, signal }) {
       const normalizedQuery = typeof query === 'string' ? query.trim() : '';

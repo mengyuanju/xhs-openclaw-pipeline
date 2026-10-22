@@ -48,7 +48,7 @@ function splitPrompt(prompt, view) {
 }
 
 /** Read historical evidence only. Never fill missing data from today's settings. */
-export function summarizeModelRequest({ prompt = '', request = '', truncated = false } = {}) {
+export function summarizeModelRequest({ prompt = '', request = '', truncated = false, searchService = false } = {}) {
   const record = parse(request);
   const current = object(record) && record.format === 'xhs-model-request' && record.schemaVersion === 1 && object(record.payload);
   const payload = current ? record.payload : null;
@@ -60,6 +60,19 @@ export function summarizeModelRequest({ prompt = '', request = '', truncated = f
     versions: current ? versionsFrom(record.provenance?.versions) : [],
     runtime: current && object(record.provenance?.runtime) ? record.provenance.runtime : null,
     business: [], program: [], taskData: [], references: [], constraints: [] };
+  if (searchService) {
+    // Search text is untrusted data, even when it looks like a prompt or message array.
+    view.versions = [];
+    view.runtime = null;
+    if (prompt) view.taskData.push({ label: '原始搜索词', value: prompt });
+    const sentQuery = payload?.query ?? payload?.Query;
+    if (typeof sentQuery === 'string') view.taskData.push({ label: '实际发送的搜索词', value: sentQuery });
+    if (payload) {
+      const { query: _query, Query: _legacyQuery, ...parameters } = payload;
+      if (Object.keys(parameters).length) view.constraints.push({ label: '搜索参数', value: parameters });
+    }
+    return view;
+  }
   const messages = Array.isArray(payload?.messages) ? payload.messages : Array.isArray(parse(prompt)) ? parse(prompt) : null;
   if (messages) {
     for (const message of messages) {

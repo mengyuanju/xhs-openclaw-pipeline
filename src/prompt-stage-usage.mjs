@@ -14,7 +14,7 @@ export const PROMPT_STAGE_USAGE = Object.freeze({
   DELIVERY_REVIEW_SYSTEM: { usage: '整套图片质量评分时调用；评分聚合和阻断阈值由程序执行。', callSites: ['src/quality-assessment.mjs#buildDeliveryQualityAssessmentPrompt'] },
   IMAGE_REPAIR_SYSTEM: { usage: '图片验收或整套质检未通过且允许修复时，针对实际问题生成修复请求。', callSites: ['src/images.mjs#promptWithRepair', 'src/quality-repair.mjs#appendQualityRepairPrompt'] },
   DEMAND_SCREENING_SYSTEM: { usage: '预留模板：当前代码没有调用此模板的模型入口。编辑或发布不会改变现有任务，不能用它代替 Query 筛选。', callSites: [], executionStatus: 'RESERVED' },
-  RESEARCH_SYSTEM: { usage: '文案生成所需的真实联网资料检索阶段调用。', callSites: ['src/research-prompt.mjs#buildResearchPrompt'] },
+  RESEARCH_SYSTEM: { usage: '用于 Codex 模型检索及搜索实验室的模型联网回答。DeepSeek、豆包等独立搜索接口只接收搜索参数，不执行此提示词；来源校验仍由程序执行。', callSites: ['src/research-prompt.mjs#buildResearchPrompt', 'search-lab/providers.mjs#modelAnswerPrompt'] },
   COPY_KNOWLEDGE_MATCH_SYSTEM: { usage: '启用知识库且存在候选案例时，为每个案例进行绝对匹配评分。', callSites: ['src/copy-knowledge-match.mjs#scoringPrompt'] },
   COPY_KNOWLEDGE_USE_SYSTEM: { usage: '存在入选文案案例时，随文案请求传入，限定可借鉴的方法及事实边界。', callSites: ['src/copy-knowledge-match.mjs#buildCopyKnowledgeReferencePrompt'] },
   VISUAL_KNOWLEDGE_ANALYSIS_SYSTEM: { usage: '管理员在知识库分析参考图片时调用，提炼视觉配方。', callSites: ['src/admin/visual-knowledge-service.mjs#analyzeVisualKnowledge'] },

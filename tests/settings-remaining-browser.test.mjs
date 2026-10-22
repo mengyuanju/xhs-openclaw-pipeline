@@ -4,14 +4,14 @@ import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { DEFAULT_PRODUCTION_SETTINGS } from '../src/production-settings.mjs';
-import { DEFAULT_WEB_SEARCH_SETTINGS, DEFAULT_DEEPSEEK_SEARCH_MODEL, DEFAULT_WEB_SEARCH_TIMEOUT_MS,
+import { DEFAULT_WEB_SEARCH_SETTINGS, DEFAULT_WEB_SEARCH_TIMEOUT_MS,
   normalizeWebSearchSettings, resolveWebSearchConfig } from '../src/web-search-config.mjs';
 import { normalizeXiaohongshuSearchSettings } from '../src/xhs-query-search.mjs';
 import { DEFAULT_HUMAN_QUALITY_SETTINGS, normalizeHumanQualitySettingsUpdate } from '../src/human-quality-settings.mjs';
 import { DEFAULT_WORKFLOW_QUALITY_SETTINGS, normalizeWorkflowQualitySettings } from '../server/src/workflow-quality-settings.mjs';
 import { BUILTIN_LAYOUT_CATALOG } from '../server/src/layout-catalog.mjs';
 
-test('remaining settings browser: search model bounds, tab drafts, blind sampling, read recovery, conflicts and feedback placeholders', {
+test('remaining settings browser: standalone search, bounded settings, tab drafts, read recovery and feedback placeholders', {
   skip: process.env.RUN_SETTINGS_REMAINING_BROWSER !== '1', timeout: 240_000,
 }, async () => {
   const { build } = await import('esbuild'); const { chromium } = await import('playwright-core');
@@ -35,7 +35,8 @@ test('remaining settings browser: search model bounds, tab drafts, blind samplin
   const { default: postcss } = await import('postcss'); const { default: tailwind } = await import('@tailwindcss/postcss');
   const { css } = await postcss([tailwind()]).process(rawCss, { from: resolve('app/globals.css') });
   const paths = { search: '/api/web-search-settings', workflow: '/api/control-plane/v1/workflow-quality-settings', human: '/api/human-quality-settings' };
-  let search = structuredClone(DEFAULT_WEB_SEARCH_SETTINGS), human = structuredClone(DEFAULT_HUMAN_QUALITY_SETTINGS);
+  let search = { ...structuredClone(DEFAULT_WEB_SEARCH_SETTINGS), deepseekSearchModel: 'historical-search-model' };
+  let human = structuredClone(DEFAULT_HUMAN_QUALITY_SETTINGS);
   let workflow = { ...structuredClone(DEFAULT_WORKFLOW_QUALITY_SETTINGS),
     copySampling: { ...DEFAULT_WORKFLOW_QUALITY_SETTINGS.copySampling, enabled: true },
     imageSampling: { ...DEFAULT_WORKFLOW_QUALITY_SETTINGS.imageSampling, enabled: true } };
@@ -97,7 +98,7 @@ test('remaining settings browser: search model bounds, tab drafts, blind samplin
     const selectProvider = async name => { await web.getByRole('combobox', { name: '搜索服务', exact: true }).click(); await page.getByRole('option', { name, exact: true }).click(); };
     await page.goto(`${origin}/settings`);
     await web.getByRole('alert').waitFor(); assert.equal(await web.getByRole('button', { name: '保存搜索配置', exact: true }).isDisabled(), true);
-    assert.equal(await web.getByLabel('DeepSeek 搜索模型', { exact: true }).isDisabled(), true);
+    assert.equal(await web.getByLabel('DeepSeek 搜索模型', { exact: true }).count(), 0);
     failures.delete(paths.search); await web.getByRole('button', { name: '重新读取', exact: true }).click();
     await web.getByRole('combobox', { name: '搜索服务', exact: true }).waitFor();
     await page.getByRole('tab', { name: /^质量与审核/u }).click(); await quality.getByRole('alert').waitFor();
@@ -112,40 +113,44 @@ test('remaining settings browser: search model bounds, tab drafts, blind samplin
     // The actual four tabs retain each mounted module's unsaved draft.
     await humanPanel.locator('#image-quality-note-placeholder').fill('未保存图片提示草稿');
     await quality.locator('#copy-sampling-blind').check();
-    await page.getByRole('tab', { name: /^生成与模型/u }).click(); await selectProvider('DeepSeek 联网搜索');
-    const model = web.getByLabel('DeepSeek 搜索模型', { exact: true }); await model.fill('deepseek-unsaved-fixture');
+    await page.getByRole('tab', { name: /^生成与模型/u }).click(); await selectProvider('DeepSeek 独立搜索');
+    const timeout = web.getByLabel('API 搜索超时（毫秒）', { exact: true }), sources = web.getByLabel('联网搜索来源数', { exact: true });
+    await timeout.fill('19000');
     for (const name of [/^图片与输出/u, /^兼容与高级/u, /^质量与审核/u, /^生成与模型/u]) await page.getByRole('tab', { name }).click();
-    assert.equal(await model.inputValue(), 'deepseek-unsaved-fixture');
+    assert.equal(await timeout.inputValue(), '19000');
     await page.getByRole('tab', { name: /^质量与审核/u }).click(); assert.equal(await quality.locator('#copy-sampling-blind').isChecked(), true);
     assert.equal(await humanPanel.locator('#image-quality-note-placeholder').inputValue(), '未保存图片提示草稿'); assert.equal(writes.length, 0);
     await page.getByRole('tab', { name: /^质量与审核/u }).press('End'); assert.equal(await page.locator('#settings-tab-advanced').getAttribute('aria-selected'), 'true');
     await page.locator('#settings-tab-advanced').press('Home'); assert.equal(await page.locator('#settings-tab-generation').getAttribute('aria-selected'), 'true');
-    await page.reload(); await selectProvider('DeepSeek 联网搜索');
-    assert.equal(await model.getAttribute('maxlength'), '128');
+    await page.reload(); await selectProvider('DeepSeek 独立搜索');
+    assert.equal(await web.getByLabel('DeepSeek 搜索模型', { exact: true }).count(), 0);
+    await web.getByText('DeepSeek 直接使用独立联网搜索服务，无需选择模型。', { exact: true }).waitFor();
+    assert.doesNotMatch(await web.textContent(), /historical-search-model/u);
     const searchSave = web.getByRole('button', { name: '保存搜索配置', exact: true });
-    for (const invalid of ['@model', '/model', 'model with spaces', '中文模型']) { await model.fill(invalid);
-      assert.equal(await model.getAttribute('aria-invalid'), 'true'); assert.equal(await searchSave.isDisabled(), true); }
-    await model.fill('a'.repeat(128));
-    const timeout = web.getByLabel('API 搜索超时（毫秒）', { exact: true }), sources = web.getByLabel('联网搜索来源数', { exact: true });
     for (const [input, invalids, valid] of [[timeout, ['4999', '120001', '5000.5'], '5000'], [sources, ['0', '11', '1.5'], '1']]) {
       for (const invalid of invalids) { await input.fill(invalid); assert.equal(await input.getAttribute('aria-invalid'), 'true'); assert.equal(await searchSave.isDisabled(), true); }
       await input.fill(valid); assert.equal(await input.getAttribute('aria-invalid'), 'false');
     }
-    let payload = await save(web, '保存搜索配置', paths.search); assert.equal(payload.deepseekSearchModel.length, 128); assert.equal(payload.webSearchTimeoutMs, 5000); assert.equal(payload.webSearchResultLimit, 1);
-    await timeout.fill('120000'); await sources.fill('10'); await model.fill('deepseek-functional-v4');
+    let payload = await save(web, '保存搜索配置', paths.search); assert.equal(Object.hasOwn(payload, 'deepseekSearchModel'), false); assert.equal(payload.webSearchTimeoutMs, 5000); assert.equal(payload.webSearchResultLimit, 1);
+    await timeout.fill('120000'); await sources.fill('10');
     payload = await save(web, '保存搜索配置', paths.search); assert.equal(payload.webSearchTimeoutMs, 120000); assert.equal(payload.webSearchResultLimit, 10);
-    await web.getByRole('button', { name: '使用 DeepSeek 默认模型', exact: true }).click();
-    assert.equal(await model.inputValue(), DEFAULT_DEEPSEEK_SEARCH_MODEL); assert.equal(await timeout.inputValue(), String(DEFAULT_WEB_SEARCH_TIMEOUT_MS));
-    payload = await save(web, '保存搜索配置', paths.search); assert.equal(payload.deepseekSearchModel, DEFAULT_DEEPSEEK_SEARCH_MODEL);
-    await model.fill('deepseek-pending'); let release; held.set(paths.search, new Promise(resolve => { release = resolve; }));
+    await web.getByRole('button', { name: '恢复环境配置', exact: true }).click();
+    payload = await save(web, '保存搜索配置', paths.search);
+    assert.equal(Object.hasOwn(payload, 'deepseekSearchModel'), false); assert.equal(search.deepseekSearchModel, 'historical-search-model');
+    await web.getByRole('button', { name: '使用 DeepSeek 独立搜索', exact: true }).click();
+    assert.equal(await timeout.inputValue(), String(DEFAULT_WEB_SEARCH_TIMEOUT_MS));
+    payload = await save(web, '保存搜索配置', paths.search); assert.equal(payload.webSearchProvider, 'DEEPSEEK'); assert.equal(Object.hasOwn(payload, 'deepseekSearchModel'), false);
+    await timeout.fill('18000'); let release; held.set(paths.search, new Promise(resolve => { release = resolve; }));
     const beforeHeldSearch = count(paths.search); await searchSave.click();
-    await page.waitForFunction(() => document.querySelector('#deepseek-search-model').disabled);
+    await page.waitForFunction(() => document.querySelector('#web-search-timeout').disabled);
     assert.equal(count(paths.search), beforeHeldSearch + 1); assert.equal(await timeout.isDisabled(), true); assert.equal(await sources.isDisabled(), true);
     assert.equal(await web.getByRole('button', { name: '恢复环境配置', exact: true }).isDisabled(), true); release(); held.delete(paths.search);
-    await searchSave.waitFor(); await page.waitForFunction(() => document.querySelector('#deepseek-search-model').disabled === false);
-    await model.fill('deepseek-failed-preserved'); rejectWrites.add(paths.search); await searchSave.click();
-    await web.getByRole('alert').filter({ hasText: '隔离保存失败，草稿保留' }).waitFor(); assert.equal(await model.inputValue(), 'deepseek-failed-preserved'); assert.equal(search.deepseekSearchModel, 'deepseek-pending');
-    await save(web, '保存搜索配置', paths.search); await page.reload(); assert.equal(await model.inputValue(), 'deepseek-failed-preserved');
+    await searchSave.waitFor(); await page.waitForFunction(() => document.querySelector('#web-search-timeout').disabled === false);
+    await timeout.fill('17000'); rejectWrites.add(paths.search); await searchSave.click();
+    await web.getByRole('alert').filter({ hasText: '隔离保存失败，草稿保留' }).waitFor(); assert.equal(await timeout.inputValue(), '17000'); assert.equal(search.webSearchTimeoutMs, 18000);
+    await save(web, '保存搜索配置', paths.search); await page.reload(); assert.equal(await timeout.inputValue(), '17000');
+    assert.equal(search.deepseekSearchModel, 'historical-search-model');
+    assert.ok(writes.filter(write => write.path === paths.search).every(write => !Object.hasOwn(write.body, 'deepseekSearchModel')));
 
     await page.getByRole('tab', { name: /^质量与审核/u }).click(); await quality.locator('#copy-sampling-enabled').waitFor();
     const workflowSave = quality.getByRole('button', { name: '保存流程配置', exact: true });

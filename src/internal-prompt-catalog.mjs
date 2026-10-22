@@ -535,14 +535,13 @@ export const INTERNAL_PROMPT_CATALOG = Object.freeze([
     "kind": "INTERNAL_SEARCH_TOOL_EXECUTION",
     "label": "联网检索工具协议",
     "group": "模型执行协议",
-    "description": "DeepSeek 联网搜索请求的工具和输出约束。",
-    "usage": "DeepSeek 联网搜索请求的工具和输出约束。",
+    "description": "历史 DeepSeek 模型联网检索的工具和输出约束。",
+    "usage": "已停用：仅保留历史模型检索协议，独立 Search API 不执行此模板。",
+    "executionStatus": "RETIRED",
     "editable": false,
     "layer": "CONTRACT",
     "defaultPath": "prompts/internal/search_tool_execution.md",
-    "callSites": [
-      "src/deepseek-web-search.mjs#runDeepSeekWebSearch"
-    ],
+    "callSites": [],
     "variables": []
   },
   {
@@ -550,13 +549,12 @@ export const INTERNAL_PROMPT_CATALOG = Object.freeze([
     "label": "检索收尾执行协议",
     "group": "模型执行协议",
     "description": "搜索结束后，仅用已有证据整理结果，不再调用搜索。",
-    "usage": "搜索结束后，仅用已有证据整理结果，不再调用搜索。",
+    "usage": "已停用：仅保留历史模型检索的收尾协议，独立 Search API 不调用模型整理结果。",
+    "executionStatus": "RETIRED",
     "editable": false,
     "layer": "CONTRACT",
     "defaultPath": "prompts/internal/search_finalization.md",
-    "callSites": [
-      "src/deepseek-web-search.mjs#runDeepSeekWebSearch"
-    ],
+    "callSites": [],
     "variables": []
   },
   {
@@ -564,13 +562,12 @@ export const INTERNAL_PROMPT_CATALOG = Object.freeze([
     "label": "检索收尾输出协议",
     "group": "模型执行协议",
     "description": "搜索收尾时输出摘要和来源，证据不足时返回空来源。",
-    "usage": "搜索收尾时输出摘要和来源，证据不足时返回空来源。",
+    "usage": "已停用：仅保留历史模型检索的输出协议，独立 Search API 直接返回结构化来源。",
+    "executionStatus": "RETIRED",
     "editable": false,
     "layer": "CONTRACT",
     "defaultPath": "prompts/internal/search_final_json.md",
-    "callSites": [
-      "src/deepseek-web-search.mjs#runDeepSeekWebSearch"
-    ],
+    "callSites": [],
     "variables": []
   },
   {

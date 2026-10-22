@@ -55,17 +55,31 @@ test('Codex failed protocol parsing retains bounded redacted transport evidence 
   assert.equal(calls, 1);
 });
 
-test('production DeepSeek search retains malformed model JSON and marks semantic failure', async () => {
+test('production DeepSeek search records a bounded failure without preserving untrusted malformed bodies', async () => {
   const f = fixture();
-  const payload = { status: 'completed', output: [{ type: 'web_search_call', status: 'completed' },
-    { type: 'message', content: [{ type: 'output_text', text: 'malformed secret-test-key' }] }] };
-  await f.run(() => assert.rejects(runDeepSeekWebSearch({ apiKey: 'secret-test-key', model: 'deepseek-v4-flash',
-    timeoutMs: 5000, fetchImpl: async () => Response.json(payload) }, { query: 'fixture' }), /not valid JSON/));
+  await f.run(() => assert.rejects(runDeepSeekWebSearch({ apiKey: 'secret-test-key',
+    timeoutMs: 5000, fetchImpl: async () => new Response('malformed secret-test-key') }, { query: 'fixture' }), /JSON/));
   const record = f.records.at(-1);
   assert.equal(record.status, 'FAILED');
   assert.equal(record.operation, 'WEB_SEARCH');
-  assert.match(record.response, /malformed/);
-  assert.doesNotMatch(record.response, /secret-test-key/);
+  assert.equal(record.model, '');
+  assert.equal(JSON.parse(record.response).endpoint, 'https://api.deepseek.com/v1/tools/search');
+  assert.doesNotMatch(record.response, /malformed|secret-test-key/);
+});
+
+test('simulation research records exactly one independent search call without a model wrapper', async () => {
+  const f = fixture();
+  let calls = 0;
+  const client = createDeepSeekResponsesClient({ apiKey: 'fixture-only-key', fetchImpl: async () => {
+    calls++;
+    return Response.json({ results: [{ title: '公开资料', url: 'https://example.org/reference', summary: '真实网页摘要' }] });
+  } });
+  await f.run(() => client.runWebSearch({ query: '测试资料' }));
+  assert.equal(calls, 1);
+  assert.deepEqual(f.records.map(record => record.status), ['RUNNING', 'SUCCEEDED']);
+  assert.equal(f.records[1].provider, 'DeepSeek');
+  assert.equal(f.records[1].operation, 'WEB_SEARCH');
+  assert.equal(f.records[1].model, '');
 });
 
 test('agent trace contexts keep parallel copy/image calls and stage updates isolated', async () => {

@@ -52,6 +52,8 @@ test('search lab browser: all provider controls, cancellation, copy jobs, diagno
     });
     await page.goto(origin); await page.locator('#retry-providers').waitFor(); await page.locator('#retry-providers').click();
     await page.waitForFunction(() => document.querySelectorAll('.provider-card').length === 13);
+    assert.equal(await page.getByRole('textbox', { name: 'DeepSeek（当前系统） 模型', exact: true }).count(), 0);
+    await page.getByText(/复用当前系统的独立 Search API/u).waitFor();
     assert.equal(await page.locator('#compare-button').isDisabled(), true);
     await page.locator('#query-input').fill('桌面整理');
     for (const provider of providerCatalogue) {
@@ -75,6 +77,7 @@ test('search lab browser: all provider controls, cancellation, copy jobs, diagno
     await page.locator('#compare-button').click();
     await page.waitForFunction(() => document.querySelectorAll('.result-card').length === 13 && !document.querySelector('#generate-all-button').disabled);
     assert.equal(searchInputs.length, 13); assert.equal(await page.evaluate(() => window.injected), undefined);
+    assert.equal(searchInputs.find(input => input.id === 'deepseek').model, null);
     assert.equal(await page.locator('.result-card.is-failed').count(), 1);
     assert.equal(await page.locator('.result-card script').count(), 0);
     const successfulCard = page.locator('.result-card').filter({ hasText: 'DeepSeek（当前系统）' });

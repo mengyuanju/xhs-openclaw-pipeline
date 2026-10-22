@@ -19,14 +19,18 @@ function Sections({ title, items, empty }: { title: string; items: Section[]; em
   </section>;
 }
 
-export function ModelRequestDetails({ detail }: { detail: { prompt?: string; request?: string; truncated: boolean } }) {
-  const view = summarizeModelRequest(detail);
+export function ModelRequestDetails({ detail, searchService = false }: {
+  detail: { prompt?: string; request?: string; truncated: boolean };
+  searchService?: boolean;
+}) {
+  const view = summarizeModelRequest({ ...detail, searchService });
   const versions = view.versions as Version[];
   const stageContext = view.stageContext as StageContext | null;
-  return <div className={styles.root} aria-label="实际模型请求明细">
+  return <div className={styles.root} aria-label={searchService ? '实际搜索请求明细' : '实际模型请求明细'}>
     <div className={styles.intro}>
       <strong>本次实际请求</strong><span className={styles.badge}>仅管理员 · 只读记录</span>
-      <p>按实际发送内容展示。业务提示词可在版本管理中修改；JSON 格式、字段限制和工具协议仍由程序校验。</p>
+      <p>{searchService ? '按实际发送内容展示搜索词和参数。独立搜索服务不执行业务提示词。'
+        : '按实际发送内容展示。业务提示词可在版本管理中修改；JSON 格式、字段限制和工具协议仍由程序校验。'}</p>
     </div>
     {stageContext && Object.keys(stageContext.details).length > 0 && <section className={styles.section}>
       <h4>本阶段触发原因</h4>
@@ -37,7 +41,7 @@ export function ModelRequestDetails({ detail }: { detail: { prompt?: string; req
         {Array.isArray(stageContext.details.preservedFields) && <><dt>保留内容</dt><dd>{stageContext.details.preservedFields.join('、')}</dd></>}
       </dl>
     </section>}
-    <section className={styles.section}>
+    {!searchService && <section className={styles.section}>
       <h4>业务提示词版本</h4>
       {versions.length ? <div className={styles.versions}>{versions.map((version, index) => <Disclosure className={styles.part} key={index}>
         <DisclosureTrigger><strong>{version.kind}</strong> · {version.version != null ? `版本 ${version.version}` : '未关联发布版本'}</DisclosureTrigger><DisclosureContent>
@@ -49,9 +53,9 @@ export function ModelRequestDetails({ detail }: { detail: { prompt?: string; req
         </dl>
       </DisclosureContent></Disclosure>)}</div> : <p className="model-call-note">此记录未关联可核实的提示词版本；不会用当前版本代替历史版本。</p>}
       {view.runtime && <Disclosure className={styles.part}><DisclosureTrigger>本次冻结的提示词配置</DisclosureTrigger><DisclosureContent><pre tabIndex={0}>{print(view.runtime)}</pre></DisclosureContent></Disclosure>}
-    </section>
-    <Sections title="业务提示词内容" items={view.business} empty="未单独标注业务规则，请查看完整提示词原文。" />
-    <Sections title="程序追加内容" items={view.program} empty="此记录未单独保存追加指令。" />
+    </section>}
+    {!searchService && <Sections title="业务提示词内容" items={view.business} empty="未单独标注业务规则，请查看完整提示词原文。" />}
+    {!searchService && <Sections title="程序追加内容" items={view.program} empty="此记录未单独保存追加指令。" />}
     <Sections title="任务数据" items={view.taskData} empty="未单独标注任务字段，请查看请求原文。" />
     <Sections title="参考案例与素材" items={view.references} empty="此请求未单独标注参考案例或附件；不会展示未发送的案例库内容。" />
     <Sections title="技术约束（只读）" items={view.constraints} empty="此记录未单独保存结构或工具约束，请查看请求原文。" />

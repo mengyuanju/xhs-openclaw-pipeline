@@ -310,7 +310,7 @@ test('task review separates the editing columns from expandable support details 
 
     const beforeCalls = await measurePrimaryContent(page);
     const trace = page.locator('.workbench-review-support .model-call-trace');
-    await trace.getByRole('button', { name: /模型调用链路/ }).click();
+    await trace.getByRole('button', { name: /模型与搜索调用链路/ }).click();
     await trace.getByText('共 3 次调用', { exact: true }).waitFor();
     assert.equal(await trace.locator('.model-call-card').count(), 3);
     const firstCall = trace.locator('.model-call-card').first();

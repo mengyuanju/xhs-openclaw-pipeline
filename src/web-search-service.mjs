@@ -32,7 +32,6 @@ export function withWebSearchProvider(client, { environment = process.env, fetch
       }
       return runDeepSeekWebSearch({
         apiKey: environment.DEEPSEEK_API_KEY,
-        model: configuration.model,
         timeoutMs: configuration.timeoutMs,
         fetchImpl,
       }, input);

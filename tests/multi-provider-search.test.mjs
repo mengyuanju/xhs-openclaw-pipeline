@@ -11,16 +11,9 @@ const environment = {
 
 function deepseekResponse() {
   return new Response(JSON.stringify({
-    status: 'completed',
-    output: [
-      { type: 'web_search_call', status: 'completed' },
-      { type: 'message', content: [{ type: 'output_text', text: JSON.stringify({
-        summary: '两个公开来源的摘要',
-        sources: [
-          { title: '资料甲', url: 'https://example.com/a', snippet: '详细资料甲', siteName: 'example.com' },
-          { title: '资料乙', url: 'https://example.com/b', snippet: '详细资料乙', siteName: 'example.com' },
-        ],
-      }) }] },
+    results: [
+      { title: '资料甲', url: 'https://example.com/a', summary: '详细资料甲', snippet: '资料甲', site_name: 'example.com' },
+      { title: '资料乙', url: 'https://example.com/b', summary: '详细资料乙', snippet: '资料乙', site_name: 'example.com' },
     ],
   }));
 }
@@ -104,9 +97,34 @@ test('a failed Custom Doubao request switches to DeepSeek without sending the Do
   ]);
   assert.equal(calls.length, 2);
   assert.equal(calls[0].url, 'https://open.feedcoopapi.com/search_api/web_search');
-  assert.equal(calls[1].url, 'https://api.deepseek.com/responses');
+  assert.equal(calls[1].url, 'https://api.deepseek.com/v1/tools/search');
+  assert.deepEqual(JSON.parse(calls[1].init.body), { query: '家庭收纳方法', count: 5, need_content: false });
   assert.equal(calls[1].init.headers.Authorization, `Bearer ${environment.DEEPSEEK_API_KEY}`);
   assert.doesNotMatch(calls[1].init.body + JSON.stringify(snapshot), /doubao-test-secret|deepseek-test-secret/u);
+});
+
+test('empty DeepSeek results fall through to the next provider without model search', async () => {
+  const calls = [];
+  const client = withWebSearchProvider({}, {
+    environment,
+    settings: { webSearchProviderOrder: ['DEEPSEEK', 'DOUBAO'] },
+    async fetchImpl(url, init) {
+      calls.push({ url, init });
+      return url.includes('deepseek') ? new Response(JSON.stringify({ results: [] })) : doubaoResponse();
+    },
+  });
+  const snapshot = await createResearchSnapshot({ client, query: '家庭收纳方法' });
+  assert.equal(snapshot.status, 'COMPLETED');
+  assert.equal(snapshot.provider, 'doubao');
+  assert.deepEqual(snapshot.attempts.map(({ provider, status }) => [provider, status]), [
+    ['deepseek', 'FAILED'], ['doubao', 'COMPLETED'],
+  ]);
+  assert.deepEqual(calls.map(({ url }) => url), [
+    'https://api.deepseek.com/v1/tools/search', 'https://open.feedcoopapi.com/search_api/global_search',
+  ]);
+  assert.deepEqual(JSON.parse(calls[0].init.body), { query: '家庭收纳方法', count: 5, need_content: false });
+  assert.equal(calls[0].init.headers.Authorization, `Bearer ${environment.DEEPSEEK_API_KEY}`);
+  assert.equal(calls[1].init.headers.Authorization, `Bearer ${environment.DOUBAO_SEARCH_API_KEY}`);
 });
 
 test('Codex backup uses the original client and never calls a disabled provider', async () => {

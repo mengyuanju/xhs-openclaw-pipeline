@@ -111,7 +111,7 @@ XHS_WEB_SEARCH_PROVIDER=DEEPSEEK
 DEEPSEEK_API_KEY=替换为本机实际使用的Key
 # 管理员把豆包加入搜索顺序时，在每台对应执行机配置：
 # DOUBAO_SEARCH_API_KEY=替换为本机实际使用的Key
-XHS_DEEPSEEK_SEARCH_MODEL=deepseek-v4-pro
+# DeepSeek Search API 不需要模型配置。
 XHS_DEEPSEEK_SEARCH_TIMEOUT_MS=120000
 ```
 
@@ -128,11 +128,13 @@ XHS_CODEX_IMAGE_CONCURRENCY=1
 1. 每台机器的 `EXECUTOR_NODE_ID` 必须唯一，重启后保持不变，例如 `xhs-executor-02`、`xhs-executor-03`。
 2. 文案生成使用 CODEX 或 DOTS；生成引擎固定为 Codex。
 3. 中心保存的生产配置优先于本机环境默认值。核对文案、搜索、模型和生成引擎；新配置不会改写已领取任务的旧快照。
-4. 选择 Dots 时补充本机 `XHS_DOTS_API_KEY`，以及与中心配置一致的地址和模型。选择 DeepSeek 时必须提供本机 `DEEPSEEK_API_KEY`。
+4. 选择 Dots 时补充本机 `XHS_DOTS_API_KEY`，以及与中心配置一致的地址和模型。选择 DeepSeek 时必须提供本机 `DEEPSEEK_API_KEY`；联网搜索直接使用独立 Search API，旧 `XHS_DEEPSEEK_SEARCH_MODEL` 不再生效，文案与审核模型配置仍独立使用。
 5. `npm run executor` 自动加载根目录 `.env`，不自动加载 `.env.local`。执行器所需配置放在 `.env` 或进程环境中；修改后重启执行器。
 6. `EXECUTOR_WORK_ROOT` 相对路径按启动时的当前目录解析，因此每次先进入 `C:\xhs`。也可以配置稳定的本地绝对路径。
 
-如果需要模型代理，可按实际网络追加 `XHS_MODEL_PROXY_URL` 和 `XHS_IMAGE_PROXY_URL`。其中 `127.0.0.1` 指新执行机自己，不能照搬旧电脑不存在的代理端口。DeepSeek 请求使用独立的 HTTPS 客户端，不使用这两个模型子进程代理字段。
+如果需要模型代理，可按实际网络追加 `XHS_MODEL_PROXY_URL` 和 `XHS_IMAGE_PROXY_URL`。其中 `127.0.0.1` 指新执行机自己，不能照搬旧电脑不存在的代理端口。DeepSeek 请求使用独立的 HTTPS 客户端访问 `https://api.deepseek.com/v1/tools/search`，不使用这两个模型子进程代理字段。
+
+从旧版模型搜索升级时，先暂停领取新任务并等待运行任务结束，再统一升级并重启执行机及对应服务。已保存的 `deepseekSearchModel` 仅保留兼容；历史成功研究快照继续复用，需要重新检索的任务使用 Search API。
 
 ## 6. 预检：连接与本地测试
 

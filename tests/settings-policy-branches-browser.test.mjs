@@ -150,7 +150,7 @@ test('central settings browser: primary and backup providers, XHS pacing, inspec
     // and the Custom/Global-only ICP controls use the actual central-page inputs.
     await web.getByRole('combobox', { name: '搜索服务', exact: true }).waitFor();
     assert.match(await web.getByRole('combobox', { name: '搜索服务', exact: true }).textContent(), /跟随执行机默认配置/u);
-    for (const [label, value] of [['Codex 联网搜索', 'CODEX'], ['DeepSeek 联网搜索', 'DEEPSEEK'], ['火山引擎豆包搜索', 'DOUBAO']]) {
+    for (const [label, value] of [['Codex 联网搜索', 'CODEX'], ['DeepSeek 独立搜索', 'DEEPSEEK'], ['火山引擎豆包搜索', 'DOUBAO']]) {
       await choose(web, '搜索服务', label);
       assert.equal((await save(web, '保存搜索配置', endpoints.search)).webSearchProvider, value);
     }
@@ -183,7 +183,7 @@ test('central settings browser: primary and backup providers, XHS pacing, inspec
     const inherited = await save(web, '保存搜索配置', endpoints.search);
     assert.ok(Object.values(inherited).every(value => value === null));
     assert.match(await web.getByRole('combobox', { name: '搜索服务', exact: true }).textContent(), /跟随执行机默认配置/u);
-    assert.equal(await web.getByLabel('DeepSeek 搜索模型', { exact: true }).isDisabled(), true);
+    assert.equal(await web.getByLabel('DeepSeek 搜索模型', { exact: true }).count(), 0);
     assert.equal(await web.getByLabel('API 搜索超时（毫秒）', { exact: true }).isDisabled(), true);
     assert.equal(await web.getByRole('combobox', { name: '豆包搜索模式', exact: true }).isDisabled(), true);
 

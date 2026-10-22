@@ -6,7 +6,7 @@
 npm run search:lab
 ```
 
-浏览器打开 `http://127.0.0.1:3077`。测试站独立监听本机地址，搜索比较可独立运行。选择服务商、输入相应产品的 API Key 和同一个 Query，即可并行对比资料摘要、最多 5 条公开来源、调用耗时和失败原因。每个服务商只对原始 Query 发起一次研究调用；当前 DeepSeek 适配器会沿用生产代码内部的错误恢复重试。搜索完成后可以使用各家的资料生成最终小红书文案。
+浏览器打开 `http://127.0.0.1:3077`。测试站独立监听本机地址，搜索比较可独立运行。选择服务商、输入相应产品的 API Key 和同一个 Query，即可并行对比资料摘要、最多 5 条公开来源、调用耗时和失败原因。每个服务商只对原始 Query 发起一次研究调用；DeepSeek 使用与生产相同的独立 Search API，网络错误、408、429 和 5xx 在同一超时预算内最多重试一次。搜索完成后可以使用各家的资料生成最终小红书文案。
 
 Key 仅随本次请求发送到本机测试站，再由服务端转发至所选服务商；页面不使用浏览器存储，服务端不写入文件或数据库，也不回显 Key。测试会实际调用第三方 API，可能产生费用。未提供 Key 时仍可启动网站和查看支持列表；真实效果必须提供已开通相应搜索服务的 Key 才能验证。
 
@@ -42,7 +42,7 @@ npm run search:lab
 
 | 选项 | 凭据 | 输出类型 | 官方文档 |
 | --- | --- | --- | --- |
-| DeepSeek（当前系统） | DeepSeek API Key | 模型联网回答 | [DeepSeek](https://api-docs.deepseek.com/) |
+| DeepSeek 搜索服务（当前系统） | DeepSeek API Key | 网页搜索摘要 | [DeepSeek Search API](https://api-docs.deepseek.com/zh-cn/api/search/) |
 | 阿里云 IQS | IQS API Key | 网页搜索摘要 | [IQS](https://help.aliyun.com/zh/document_detail/2883041.html) |
 | 阿里云 OpenSearch | OS Key、工作空间、公网 HTTPS 接入地址 | 网页搜索摘要 | [OpenSearch](https://help.aliyun.com/zh/open-search/search-platform/developer-reference/web-search) |
 | 阿里云百炼联网 | 百炼 API Key、业务空间 ID | 模型联网回答，来源通常没有逐条摘要 | [百炼](https://help.aliyun.com/zh/model-studio/web-search) |
@@ -57,6 +57,8 @@ npm run search:lab
 | MiniMax Coding Plan 搜索 | Token Plan 订阅 Key，选择对应地域 | 网页搜索摘要 | [MiniMax](https://platform.minimax.cn/docs/token-plan/mcp-guide) |
 
 阿里云的三项搜索产品使用不同的服务和 Key，不能互换。搜索 API 卡片展示服务商返回的网页摘要或片段，模型联网接口返回模型回答；页面会注明输出类型。来源 URL 沿用生产研究快照的公开地址校验和去重规则，快照包含 `status`、`query`、`searchedAt`、`provider`、`summary`、`attempts` 和 `sources`。若医疗、法律、金融等主题未通过当前系统的权威来源规则，测试页仍会展示经过相同公开 URL 过滤的服务商原始资料，并明确标为“未通过规则”。
+
+DeepSeek 不需要选择搜索模型，不发送资料检索提示词，也不额外调用模型归纳。请求为 `POST /v1/tools/search`，发送最多 128 个 Unicode 字符的搜索词、`count: 5` 和 `need_content: false`。网页长摘要 `summary` 优先作为来源摘录，缺失时使用 `snippet`；页面的“搜索结果摘录”由程序整理。原始 Query 保留在研究快照，接口空结果按证据不足展示；本期不使用 Fetch 全文抓取。
 
 豆包 Global 默认开启「仅国内ICP备案网站」，请求传入 `Filter.IcpHostOnly=true`，取消勾选可比较不限来源的搜索效果。该选项限制网站来源，国内网站仍可能包含国外案例；不会改写输入的 Query。旧页面没有发送该参数时也默认启用。参数含义见[Global 版官方接口文档](https://docs.volcengine.com/docs/Networkedsearch/doubao-search-global-edition?lang=zh)。
 

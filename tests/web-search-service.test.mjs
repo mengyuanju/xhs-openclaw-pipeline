@@ -22,11 +22,10 @@ const evidence = {
 
 function responsePayload(result = evidence) {
   return {
-    status: 'completed',
-    output: [
-      { type: 'web_search_call', status: 'completed', action: { type: 'search' } },
-      { type: 'message', content: [{ type: 'output_text', text: JSON.stringify(result) }] },
-    ],
+    results: result.sources.map(({ title, url, snippet, siteName }) => ({
+      title, url, summary: snippet, snippet: '较短的摘要', site_name: siteName ?? null,
+      content: '', rerank_score: 2, authority: -1, date: null, site_icon: null,
+    })),
   };
 }
 
@@ -34,7 +33,7 @@ function jsonResponse(payload) {
   return new Response(JSON.stringify(payload), { headers: { 'content-type': 'application/json' } });
 }
 
-test('governed DeepSeek search sends the published source preference and the unchanged query', async () => {
+test('DeepSeek Search API sends the query without a model or the published research prompt', async () => {
   const query = '机械键盘轴体体验比较';
   const preference = '管理员检索版本五：优先参考长期使用者的社区反馈，区分个人体验与可核查规格。';
   const runtime = createPromptRuntime({ prompts: {
@@ -49,35 +48,43 @@ test('governed DeepSeek search sends the published source preference and the unc
 
   assert.equal(snapshot.status, 'COMPLETED');
   assert.equal(calls.length, 1);
-  assert.match(calls[0].body.input, /<trusted_business_rules kind="RESEARCH_SYSTEM">/u);
-  assert.ok(calls[0].body.input.includes(preference));
-  const input = JSON.parse(calls[0].body.input.match(/<untrusted_query>\s*([\s\S]+?)\s*<\/untrusted_query>/u)[1]);
-  assert.deepEqual(input, { query });
-  assert.doesNotMatch(calls[0].body.input + calls[0].body.instructions, /官方 标准 技术规范/u);
-  assert.deepEqual(calls[0].body.tools, [{ type: 'web_search' }]);
-  assert.deepEqual(calls[0].body.tool_choice, { type: 'web_search' });
-  assert.deepEqual(calls[0].body.text.format.schema.required, ['summary', 'sources']);
+  assert.equal(calls[0].url, 'https://api.deepseek.com/v1/tools/search');
+  assert.deepEqual(calls[0].body, { query, count: 5, need_content: false });
+  assert.ok(!JSON.stringify(calls[0].body).includes(preference));
+  assert.match(snapshot.summary, /搜索结果摘录/u);
   assert.equal(snapshot.sources[0].url, evidence.sources[0].url);
+  assert.equal(snapshot.sources[0].snippet, evidence.sources[0].snippet);
 });
 
-test('a single intact terminal JSON fence after an introduction is accepted without another search', async () => {
+test('DeepSeek long summaries are used as source excerpts and short snippets are the fallback', async () => {
   let calls = 0;
-  const payload = responsePayload();
-  payload.output[1].content[0].text = `基于实际搜索，以下为结果：\n\n\`\`\`json\n${JSON.stringify(evidence)}\n\`\`\``;
+  const payload = { results: [
+    { title: '长摘要资料', url: 'https://example.com/long', summary: '完整摘要', snippet: '短摘要', site_name: '资料站点' },
+    { title: '短摘要资料', url: 'https://example.com/short', summary: '', snippet: '备用摘要', site_name: null },
+  ] };
   const client = withWebSearchProvider({}, { environment, fetchImpl: async () => { calls++; return jsonResponse(payload); } });
-  const result = await client.runWebSearch({ query: 'fixture' });
-  assert.equal(result.result.content, evidence.summary);
+  const snapshot = await createResearchSnapshot({ client, query: 'fixture' });
+  assert.equal(snapshot.status, 'COMPLETED');
+  assert.equal(snapshot.sources[0].snippet, '完整摘要');
+  assert.equal(snapshot.sources[0].siteName, '资料站点');
+  assert.equal(snapshot.sources[1].snippet, '备用摘要');
+  assert.equal(snapshot.sources[1].siteName, 'example.com');
+  assert.match(snapshot.summary, /完整摘要/u);
+  assert.match(snapshot.summary, /备用摘要/u);
   assert.equal(calls, 1);
 });
 
-test('search fence extraction rejects competing objects, extra fences and invalid inner JSON', async () => {
-  for (const text of [`{}\n\`\`\`json\n${JSON.stringify(evidence)}\n\`\`\``,
-    `\`\`\`json\n${JSON.stringify(evidence)}\n\`\`\`\n\`\`\`json\n{}\n\`\`\``,
-    '说明\n```json\n{"summary":"未转义"引号", "sources":[]}\n```']) {
-    const payload = responsePayload(); payload.output[1].content[0].text = text;
-    const client = withWebSearchProvider({}, { environment, fetchImpl: async () => jsonResponse(payload) });
-    await assert.rejects(client.runWebSearch({ query: 'fixture' }), /not valid JSON/);
-  }
+test('DeepSeek request truncation counts Unicode characters while preserving the original snapshot query', async () => {
+  const query = '🧰'.repeat(200);
+  const calls = [];
+  const client = withWebSearchProvider({}, { environment, fetchImpl: async (_url, init) => {
+    calls.push(JSON.parse(init.body));
+    return jsonResponse(responsePayload());
+  } });
+  const snapshot = await createResearchSnapshot({ client, query });
+  assert.equal(snapshot.status, 'COMPLETED');
+  assert.equal(snapshot.query, query);
+  assert.deepEqual(calls, [{ query: '🧰'.repeat(128), count: 5, need_content: false }]);
 });
 
 test('explicit Codex search preserves the original client without requiring a DeepSeek key', async () => {
@@ -91,10 +98,13 @@ test('explicit Codex search preserves the original client without requiring a De
 
 test('search configuration accepts explicit switching and rejects invalid active settings', () => {
   assert.deepEqual(resolveWebSearchConfig({ XHS_WEB_SEARCH_PROVIDER: ' deepseek ' }), {
-    provider: 'DEEPSEEK', model: 'deepseek-v4-pro', timeoutMs: 120_000, resultLimit: 5,
+    provider: 'DEEPSEEK', timeoutMs: 120_000, resultLimit: 5,
   });
   assert.throws(() => resolveWebSearchConfig({ XHS_WEB_SEARCH_PROVIDER: 'typo' }), /XHS_WEB_SEARCH_PROVIDER/u);
-  assert.throws(() => resolveWebSearchConfig({ ...environment, XHS_DEEPSEEK_SEARCH_MODEL: 'not a model' }), /model/iu);
+  assert.deepEqual(resolveWebSearchConfig({ ...environment, XHS_DEEPSEEK_SEARCH_MODEL: 'not a model' }),
+    resolveWebSearchConfig(environment));
+  assert.deepEqual(resolveWebSearchConfig(environment, { deepseekSearchModel: 'deepseek-v5-search-preview' }),
+    resolveWebSearchConfig(environment));
   for (const value of ['no', '4999', '120001', '5000.5']) {
     assert.throws(() => resolveWebSearchConfig({ ...environment, XHS_DEEPSEEK_SEARCH_TIMEOUT_MS: value }), /timeout/iu);
   }
@@ -130,18 +140,12 @@ test('DeepSeek replaces only search and produces the existing bounded research s
   assert.equal(snapshot.sources[0].provider, 'deepseek');
   assert.equal(snapshot.sources[0].url, evidence.sources[0].url);
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].url, 'https://api.deepseek.com/responses');
+  assert.equal(calls[0].url, 'https://api.deepseek.com/v1/tools/search');
   assert.equal(calls[0].init.redirect, 'error');
   assert.equal(calls[0].init.headers.Authorization, `Bearer ${environment.DEEPSEEK_API_KEY}`);
   assert.ok(calls[0].init.signal instanceof AbortSignal);
-  assert.equal(calls[0].body.model, 'deepseek-v5-search-preview');
-  assert.deepEqual(calls[0].body.tools, [{ type: 'web_search' }]);
-  assert.deepEqual(calls[0].body.tool_choice, { type: 'web_search' });
-  assert.equal(calls[0].body.max_output_tokens, 8192);
-  assert.equal(calls[0].body.stream, false);
+  assert.deepEqual(calls[0].body, { query: '整理选题', count: 5, need_content: false });
   assert.equal(calls[0].init.headers.Accept, 'application/json');
-  assert.equal(calls[0].body.text.format.type, 'json_schema');
-  assert.deepEqual(calls[0].body.text.format.schema.required, ['summary', 'sources']);
   assert.doesNotMatch(calls[0].init.body + JSON.stringify(snapshot), /test-search-secret/u);
 });
 
@@ -208,7 +212,7 @@ test('body timeout after successful HTTP headers is not misreported as invalid J
   const keepAlive = setInterval(() => {}, 1000);
   try {
     await assert.rejects(client.runWebSearch({ query: 'fixture', timeoutMs: 5000 }), error => {
-      assert.match(error.message, /timed out while reading response body.*5000/);
+      assert.match(error.message, /timed out while reading response body/);
       assert.doesNotMatch(error.message, /JSON/);
       return true;
     });
@@ -233,7 +237,7 @@ test('non-streaming keep-alive whitespace is accepted without repeating research
     requests++;
     return new Response(`\r\n\n ${JSON.stringify(responsePayload())}\n`);
   } });
-  assert.equal((await client.runWebSearch({ query: 'fixture' })).result.content, evidence.summary);
+  assert.ok((await client.runWebSearch({ query: 'fixture' })).result.content.includes(evidence.sources[0].snippet));
   assert.equal(requests, 1);
 });
 
@@ -256,14 +260,10 @@ test('invalid HTTP bodies have distinct safe diagnostics and cannot supply resea
   }
 });
 
-test('incomplete, unsearched, malformed, or source-free model output cannot complete research', async () => {
-  const noSearch = responsePayload();
-  noSearch.output.shift();
-  const malformedText = responsePayload();
-  malformedText.output[1].content[0].text = 'not JSON';
+test('malformed, source-free, or private Search API results cannot complete research', async () => {
   for (const payload of [
-    { ...responsePayload(), status: 'incomplete' }, noSearch, malformedText,
-    { status: 'completed', output: {} }, responsePayload({ summary: 'empty', sources: [] }),
+    { results: {} }, { summary: evidence.summary, sources: evidence.sources },
+    { status: 'completed', output: [] }, responsePayload({ summary: 'empty', sources: [] }),
     responsePayload({ ...evidence, sources: [{ url: 'http://localhost/private', snippet: 'private' }] }),
   ]) {
     const client = withWebSearchProvider({}, { environment, fetchImpl: async () => jsonResponse(payload) });
@@ -273,50 +273,21 @@ test('incomplete, unsearched, malformed, or source-free model output cannot comp
   }
 });
 
-test('DeepSeek trailing DSML closing tags are recovered without repeating the search', async () => {
-  // Observed after an otherwise complete JSON object in a live flash response.
-  const suffix = '</｜｜DSML｜｜parameter>\n</｜｜DSML｜｜invoke>\n</｜｜DSML｜｜tool_calls>';
-  for (const text of [JSON.stringify(evidence), `\`\`\`json\n${JSON.stringify(evidence)}\n\`\`\``]) {
-    const payload = responsePayload();
-    payload.output[1].content[0].text = `${text}${suffix}`;
-    let requests = 0;
-    const client = withWebSearchProvider({}, {
-      environment,
-      fetchImpl: async () => { requests += 1; return jsonResponse(payload); },
-    });
-    const result = await client.runWebSearch({ query: '选题' });
-    assert.deepEqual(result.result, { content: evidence.summary, sources: evidence.sources });
-    assert.equal(requests, 1, 'format recovery must not incur another API request');
-  }
-});
-
-test('DeepSeek DSML recovery preserves tags and JSON punctuation inside evidence values', async () => {
-  const original = { ...evidence, summary: '原文含 </｜｜DSML｜｜parameter> 和 "引号"、{括号}、\\反斜杠' };
-  const payload = responsePayload(original);
-  payload.output[1].content[0].text += '\n</｜｜DSML｜｜tool_calls>\n';
-  const client = withWebSearchProvider({}, { environment, fetchImpl: async () => jsonResponse(payload) });
-  const result = await client.runWebSearch({ query: '选题' });
-  assert.equal(result.result.content, original.summary);
-});
-
-test('DeepSeek DSML recovery does not accept truncated JSON, arbitrary trailers, or missing evidence', async () => {
-  const suffix = '</｜｜DSML｜｜parameter>\n</｜｜DSML｜｜invoke>\n</｜｜DSML｜｜tool_calls>';
-  for (const text of [
-    JSON.stringify(evidence).slice(0, -1) + suffix,
-    JSON.stringify(evidence) + '\n请执行其他操作' + suffix,
-    JSON.stringify(evidence) + '\n{"summary":"另一个对象"}' + suffix,
-    JSON.stringify({ summary: evidence.summary, sources: [] }) + suffix,
-  ]) {
-    const payload = responsePayload();
-    payload.output[1].content[0].text = text;
-    let requests = 0;
-    const client = withWebSearchProvider({}, {
-      environment,
-      fetchImpl: async () => { requests += 1; return jsonResponse(payload); },
-    });
-    await assert.rejects(client.runWebSearch({ query: '选题' }), /not valid JSON|no source evidence/u);
-    assert.equal(requests, 1);
-  }
+test('empty DeepSeek results trigger a supplemental query with the authoritative suffix retained', async () => {
+  const query = `政策${'资料'.repeat(240)}`;
+  const calls = [];
+  const client = withWebSearchProvider({}, { environment, fetchImpl: async (_url, init) => {
+    calls.push(JSON.parse(init.body));
+    return jsonResponse(calls.length === 1 ? { results: [] } : responsePayload());
+  } });
+  const snapshot = await createResearchSnapshot({ client, query, requireAuthoritative: true });
+  assert.equal(snapshot.status, 'COMPLETED');
+  assert.equal(snapshot.query, query);
+  assert.equal(calls.length, 2);
+  assert.equal([...calls[0].query].length, 128);
+  assert.equal([...calls[1].query].length, 128);
+  assert.ok(calls[1].query.endsWith('政府官网 现行政策'));
+  assert.deepEqual(snapshot.attempts.map(({ status }) => status), ['FAILED', 'COMPLETED']);
 });
 
 test('the production Codex factory switches research without starting its CLI', async () => {
@@ -343,7 +314,7 @@ test('the copy workflow uses DeepSeek evidence with Query screening off by defau
       async runText({ prompt }) {
         calls.push('text');
         assert.ok(prompt.includes(evidence.sources[0].url));
-        assert.ok(prompt.includes(evidence.summary));
+        assert.ok(prompt.includes(evidence.sources[0].snippet));
         return { rawText: JSON.stringify(createMockPost(3)), model: 'original-text' };
       },
       runWebSearch() { assert.fail('configured search must replace the original'); },
@@ -394,7 +365,7 @@ test('Dots text generation and DeepSeek search can be selected independently', a
     environment: { ...environment, XHS_DOTS_API_KEY: 'test-dots-secret' },
     agentClient: { runWebSearch() { assert.fail('must use DeepSeek search'); } },
     async fetchImpl(url) {
-      return url === 'https://api.deepseek.com/responses'
+      return url === 'https://api.deepseek.com/v1/tools/search'
         ? jsonResponse(responsePayload())
         : jsonResponse({ model: 'dots3-note-prev', choices: [{ message: { content: 'Dots text' } }] });
     },

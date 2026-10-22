@@ -8,7 +8,7 @@ import { Search, RotateCcw } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { apiRequest } from '../components/api-client';
-import { DEEPSEEK_MODEL_ID_PATTERN, DEFAULT_DEEPSEEK_SEARCH_MODEL, DEFAULT_WEB_SEARCH_PROVIDER, DEFAULT_WEB_SEARCH_TIMEOUT_MS, DEFAULT_WEB_SEARCH_RESULT_LIMIT } from '../../src/web-search-config.mjs';
+import { DEFAULT_WEB_SEARCH_PROVIDER, DEFAULT_WEB_SEARCH_TIMEOUT_MS, DEFAULT_WEB_SEARCH_RESULT_LIMIT } from '../../src/web-search-config.mjs';
 
 type SearchProvider = 'DOUBAO' | 'DEEPSEEK' | 'CODEX';
 type DoubaoSearchMode = 'GLOBAL' | 'CUSTOM';
@@ -24,7 +24,7 @@ type SearchSettings = {
 type SearchRecord = {
   settings: SearchSettings;
   scope: 'central' | 'local';
-  effective: { provider: SearchProvider; providers?: SearchProvider[]; model?: string;
+  effective: { provider: SearchProvider; providers?: SearchProvider[];
     timeoutMs?: number; resultLimit: number; doubaoSearchMode?: DoubaoSearchMode;
     doubaoIcpHostOnly?: boolean } | null;
   apiKeyConfigured: boolean | null;
@@ -37,7 +37,7 @@ const EMPTY_SETTINGS: SearchSettings = { webSearchProvider: null, webSearchProvi
 const INHERIT = 'INHERIT';
 const SEARCH_PROVIDERS: SearchProvider[] = ['DOUBAO', 'DEEPSEEK', 'CODEX'];
 const PROVIDER_LABELS: Record<SearchProvider, string> = {
-  DOUBAO: '火山引擎豆包搜索', DEEPSEEK: 'DeepSeek 联网搜索', CODEX: 'Codex 联网搜索',
+  DOUBAO: '火山引擎豆包搜索', DEEPSEEK: 'DeepSeek 独立搜索', CODEX: 'Codex 联网搜索',
 };
 
 export function WebSearchSettingsPanel({
@@ -96,8 +96,6 @@ export function WebSearchSettingsPanel({
     && (!Number.isInteger(settings.webSearchTimeoutMs) || settings.webSearchTimeoutMs < 5000 || settings.webSearchTimeoutMs > 120000);
   const invalidResultLimit = settings.webSearchResultLimit !== null
     && (!Number.isInteger(settings.webSearchResultLimit) || settings.webSearchResultLimit < 1 || settings.webSearchResultLimit > 10);
-  const invalidModel = settings.deepseekSearchModel !== null
-    && !DEEPSEEK_MODEL_ID_PATTERN.test(settings.deepseekSearchModel.trim());
   const hasChanges = record !== null && JSON.stringify(settings) !== JSON.stringify(record.settings);
   useEffect(() => {
     onDirtyChange?.(hasChanges);
@@ -111,7 +109,6 @@ export function WebSearchSettingsPanel({
   const doubaoMode = settings.doubaoSearchMode ?? 'CUSTOM';
   const savedProvider = record?.effective?.provider ?? record?.settings.webSearchProvider;
   const savedOrder = record?.settings.webSearchProviderOrder;
-  const savedModel = record?.effective?.model ?? record?.settings.deepseekSearchModel;
   const savedDoubaoMode = record?.effective?.doubaoSearchMode ?? record?.settings.doubaoSearchMode ?? 'CUSTOM';
   const savedProviderLabel = (provider: SearchProvider) => provider === 'DOUBAO'
     ? `${PROVIDER_LABELS.DOUBAO}（${savedDoubaoMode === 'CUSTOM' ? 'Custom' : 'Global'}）`
@@ -161,8 +158,8 @@ export function WebSearchSettingsPanel({
       {savedOrder ? savedOrder.map(savedProviderLabel).join(' → ')
         : savedProvider === 'CODEX' ? '默认生成引擎'
           : savedProvider === 'DOUBAO' ? savedProviderLabel('DOUBAO')
-            : savedProvider === 'DEEPSEEK' ? `DeepSeek · ${savedModel ?? `执行机模型（默认 ${DEFAULT_DEEPSEEK_SEARCH_MODEL}）`}`
-              : `继承执行机环境（项目默认 ${DEFAULT_DEEPSEEK_SEARCH_MODEL}）`}
+            : savedProvider === 'DEEPSEEK' ? PROVIDER_LABELS.DEEPSEEK
+              : `继承执行机环境（项目默认 ${PROVIDER_LABELS[DEFAULT_WEB_SEARCH_PROVIDER]}）`}
       {hasChanges && <span> · 有未保存的更改</span>}
     </p>}
     <div className="form-grid compact-settings-grid">
@@ -174,7 +171,7 @@ export function WebSearchSettingsPanel({
           <SelectContent>
             <SelectItem value={INHERIT}>跟随执行机默认配置</SelectItem>
             <SelectItem value="DOUBAO">火山引擎豆包搜索</SelectItem>
-            <SelectItem value="DEEPSEEK">DeepSeek 联网搜索</SelectItem>
+            <SelectItem value="DEEPSEEK">DeepSeek 独立搜索</SelectItem>
             <SelectItem value="CODEX">Codex 联网搜索</SelectItem>
           </SelectContent>
         </Select>
@@ -211,19 +208,6 @@ export function WebSearchSettingsPanel({
             onClick={() => setSettings((current) => ({ ...current, webSearchProviderOrder: null }))}>只用首选服务</Button>}
         </div>
         <small>最多配置 3 个不同的服务，依次尝试。启用多服务前，请先升级并重启所有执行机。</small>
-      </div>
-      <div className="field">
-        <label htmlFor="deepseek-search-model">DeepSeek 搜索模型</label>
-        <Input id="deepseek-search-model" className="input" type="text" maxLength={128}
-          disabled={disabled || !usesDeepSeek} value={settings.deepseekSearchModel ?? ''}
-          placeholder={`继承环境，默认 ${DEFAULT_DEEPSEEK_SEARCH_MODEL}`} autoComplete="off" spellCheck={false}
-          aria-invalid={invalidModel} onChange={(event) => {
-            setMessage('');
-            setSettings((current) => ({ ...current, deepseekSearchModel: event.target.value === '' ? null : event.target.value }));
-          }} />
-        <small>{invalidModel
-          ? '模型 ID 须以字母或数字开头，最多 128 个字符。'
-          : '留空继承执行机环境；可直接填写 DeepSeek 后续发布的新模型 ID。'}</small>
       </div>
       <div className="field">
         <label htmlFor="web-search-timeout">API 搜索超时（毫秒）</label>
@@ -286,6 +270,7 @@ export function WebSearchSettingsPanel({
           : '此选项控制 Global 的 IcpHostOnly 过滤；不能保证所有结果都来自境内。'}</small>
       </div>
     </div>
+    {usesDeepSeek && <p className="subtle">DeepSeek 直接使用独立联网搜索服务，无需选择模型。</p>}
     <p className="notice">API Key 由各执行机环境提供：豆包使用 <span className="mono">DOUBAO_SEARCH_API_KEY</span>，
       DeepSeek 使用 <span className="mono">DEEPSEEK_API_KEY</span>。中心不保存密钥。
       {record?.scope === 'central' ? ' 启用多服务前请升级并重启所有执行机，且确认每台执行机都已配置要启用的服务。'
@@ -297,14 +282,16 @@ export function WebSearchSettingsPanel({
     <div className="settings-actions">
       <Button unstyled type="button" className="button" disabled={disabled} onClick={() => {
         setSettings((current) => ({ ...current, webSearchProvider: DEFAULT_WEB_SEARCH_PROVIDER, webSearchProviderOrder: null,
-          deepseekSearchModel: DEFAULT_DEEPSEEK_SEARCH_MODEL, webSearchTimeoutMs: DEFAULT_WEB_SEARCH_TIMEOUT_MS }));
-        setMessage(`已选择 DeepSeek ${DEFAULT_DEEPSEEK_SEARCH_MODEL}，点击“保存搜索配置”后生效。`);
-      }}>使用 DeepSeek 默认模型</Button>
-      <Button unstyled type="button" className="button" disabled={disabled} onClick={() => { setSettings({ ...EMPTY_SETTINGS }); setMessage(''); }}>
+          webSearchTimeoutMs: DEFAULT_WEB_SEARCH_TIMEOUT_MS }));
+        setMessage('已选择 DeepSeek 独立搜索，点击“保存搜索配置”后生效。');
+      }}>使用 DeepSeek 独立搜索</Button>
+      <Button unstyled type="button" className="button" disabled={disabled} onClick={() => {
+        setSettings((current) => ({ ...EMPTY_SETTINGS, deepseekSearchModel: current.deepseekSearchModel })); setMessage('');
+      }}>
         <RotateCcw size={15} aria-hidden="true" />恢复环境配置
       </Button>
       {!record && !loading && <Button unstyled type="button" className="button" onClick={() => { void load(); }}>重新读取</Button>}
-      <Button unstyled type="button" className="button primary" disabled={disabled || !hasChanges || invalidModel || invalidTimeout || invalidResultLimit} onClick={save}>{busy ? '保存中…' : '保存搜索配置'}</Button>
+      <Button unstyled type="button" className="button primary" disabled={disabled || !hasChanges || invalidTimeout || invalidResultLimit} onClick={save}>{busy ? '保存中…' : '保存搜索配置'}</Button>
     </div>
   </section>;
 }

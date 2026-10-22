@@ -45,7 +45,7 @@ export async function updateWebSearchSettings(options, patch) {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)
     || Object.keys(patch).length === 0
     || Object.keys(patch).some((key) => !Object.hasOwn(DEFAULT_WEB_SEARCH_SETTINGS, key))) {
-    throw new TypeError('只允许修改搜索提供方、备用顺序、模型、超时、来源条数、豆包模式和范围');
+    throw new TypeError('只允许修改搜索提供方、备用顺序、超时、来源条数、豆包模式和范围，以及兼容的旧搜索模型字段');
   }
   const normalized = normalizeWebSearchSettings(patch);
   const current = options.controlPlane

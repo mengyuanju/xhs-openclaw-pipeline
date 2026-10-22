@@ -33,7 +33,7 @@ function redactedError(value) {
     .slice(0, 1_000);
 }
 
-function normalizedPublicUrl(value) {
+export function normalizedPublicUrl(value) {
   if (typeof value !== 'string' || value.length < 8 || value.length > 500) return null;
   let parsed;
   try {
@@ -113,8 +113,12 @@ function normalizeSources(result, provider, retrievedAt, limit = DEFAULT_WEB_SEA
       siteName: item.siteName ?? item.site_name ?? item.domain,
     });
   }
-  for (const url of urlsFromText(summary).slice(0, MAX_SUMMARY_URL_CANDIDATES)) {
-    candidates.push({ url });
+  // Structured search APIs enumerate their evidence explicitly. URLs mentioned
+  // inside an excerpt are not additional retrieved sources or authority proof.
+  if (result?.structuredSourcesOnly !== true) {
+    for (const url of urlsFromText(summary).slice(0, MAX_SUMMARY_URL_CANDIDATES)) {
+      candidates.push({ url });
+    }
   }
 
   const sources = [];
@@ -211,14 +215,22 @@ export function requiresAuthoritativeResearch(task) {
   return highRiskResearchKind(`${query} ${category}`) !== null;
 }
 
+const SUPPLEMENTAL_RESEARCH_SUFFIXES = Object.freeze({
+  MEDICAL: '卫健委 官方指南', LEGAL: '政府官网 现行规定', FINANCIAL: '监管机构 风险提示 官方资料',
+  POLICY: '政府官网 现行政策', DEFAULT: '官方帮助 使用指南',
+});
+
+export function supplementalResearchSuffix(query) {
+  return Object.values(SUPPLEMENTAL_RESEARCH_SUFFIXES).map(value => ` ${value}`)
+    .find(suffix => query.endsWith(suffix)) ?? '';
+}
+
 function supplementalResearchQuery(query, requireAuthoritative) {
   const kind = requireAuthoritative ? highRiskResearchKind(query) : null;
-  const suffix = kind === 'MEDICAL' ? '卫健委 官方指南'
-    : kind === 'LEGAL' ? '政府官网 现行规定'
-      : kind === 'FINANCIAL' ? '监管机构 风险提示 官方资料'
-        : kind === 'POLICY' ? '政府官网 现行政策'
-          : '官方帮助 使用指南';
-  return `${query} ${suffix}`.slice(0, 500);
+  const suffix = ` ${SUPPLEMENTAL_RESEARCH_SUFFIXES[kind] ?? SUPPLEMENTAL_RESEARCH_SUFFIXES.DEFAULT}`;
+  // Reserve space so a maximal query still gets a distinct supplemental search.
+  const prefix = query.slice(0, 500 - suffix.length).replace(/[\uD800-\uDBFF]$/u, '').trimEnd();
+  return `${prefix}${suffix}`;
 }
 
 function normalizedTimestamp(value, field) {

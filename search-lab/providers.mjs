@@ -7,10 +7,9 @@ const MAX_RESPONSE_BYTES = 2_000_000;
 
 export const providerCatalogue = Object.freeze([
   {
-    id: 'deepseek', label: 'DeepSeek（当前系统）', kind: 'model-answer', needsKey: true,
-    defaultModel: 'deepseek-v4-pro', hasModel: true,
-    description: '复用当前系统的 Responses 联网搜索与来源格式。需要 DeepSeek API Key。',
-    documentationUrl: 'https://api-docs.deepseek.com/',
+    id: 'deepseek', label: 'DeepSeek（当前系统）', kind: 'search-results', needsKey: true,
+    description: '复用当前系统的独立 Search API，展示网页摘要和来源，无需选择模型。需要 DeepSeek API Key。',
+    documentationUrl: 'https://api-docs.deepseek.com/zh-cn/api/search/',
   },
   {
     id: 'alibaba-iqs', label: '阿里云 IQS', kind: 'search-results', needsKey: true,
@@ -400,7 +399,7 @@ async function runMiniMax({ key, query, limit, options, fetchImpl }) {
 export async function runProviderSearch(input) {
   const { id, key, model, query, limit = 5, options = {}, fetchImpl = fetch } = input;
   switch (id) {
-    case 'deepseek': return runDeepSeekWebSearch({ apiKey: key, model, timeoutMs: TIMEOUT_MS, fetchImpl }, { query, limit });
+    case 'deepseek': return runDeepSeekWebSearch({ apiKey: key, timeoutMs: TIMEOUT_MS, fetchImpl }, { query, limit });
     case 'alibaba-iqs': return runAlibabaIqs({ key, query, limit, fetchImpl });
     case 'alibaba-opensearch': return runAlibabaOpenSearch({ key, query, limit, options, fetchImpl });
     case 'alibaba-bailian': return runAlibabaBailian({ key, model, query, limit, options, fetchImpl });

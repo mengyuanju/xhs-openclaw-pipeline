@@ -49,6 +49,17 @@ test('saved draft-only templates retain their actual default and are never mista
   assert.equal(template.catalog.usage, entry.usage);
 });
 
+test('search prompt metadata distinguishes model research from direct Search API calls', () => {
+  const research = PROMPT_CATALOG.find(item => item.kind === 'RESEARCH_SYSTEM');
+  assert.match(research.usage, /独立搜索接口.*不执行此提示词/u);
+  for (const kind of ['INTERNAL_SEARCH_TOOL_EXECUTION', 'INTERNAL_SEARCH_FINALIZATION', 'INTERNAL_SEARCH_FINAL_JSON']) {
+    const entry = PROMPT_CATALOG.find(item => item.kind === kind);
+    assert.equal(entry.executionStatus, 'RETIRED');
+    assert.deepEqual(entry.callSites, []);
+    assert.ok(defaultBusinessPrompt(kind).trim(), 'historical templates remain readable');
+  }
+});
+
 test('published layout supplements change the actual request, remain isolated and preserve injected data literally', async () => {
   const kind = 'INTERNAL_IMAGE_MANUAL_LAYOUT';
   const runtime = marker => createPromptRuntime({ settings: null, prompts: {

@@ -17,6 +17,7 @@ const patchSchema = z.object({
   webSearchProviderOrder: z.array(z.enum(['DOUBAO', 'DEEPSEEK', 'CODEX']))
     .min(1).max(3).refine((providers) => new Set(providers).size === providers.length,
       '搜索服务不能重复').nullable().optional(),
+  // Accept historical clients without using this field in standalone Search requests.
   deepseekSearchModel: z.string().trim().min(1).max(128)
     .regex(DEEPSEEK_MODEL_ID_PATTERN, 'DeepSeek 模型 ID 格式无效').nullable().optional(),
   webSearchTimeoutMs: z.number().int().min(5_000).max(120_000).nullable().optional(),

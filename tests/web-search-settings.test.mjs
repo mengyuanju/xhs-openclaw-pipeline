@@ -8,9 +8,9 @@ import { createProductionSettingsStore, initializeProductionSettingsSchema } fro
 import { readWebSearchSettings, updateWebSearchSettings } from '../src/admin/web-search-settings-service.mjs';
 import { createCopyGenerationClient } from '../src/copy-generation-client.mjs';
 
-test('unconfigured search defaults to the verified DeepSeek web-search model while explicit Codex remains available', () => {
+test('unconfigured search defaults to standalone DeepSeek search while explicit Codex remains available', () => {
   assert.deepEqual(resolveWebSearchConfig({}), {
-    provider: 'DEEPSEEK', model: 'deepseek-v4-pro', timeoutMs: 120_000, resultLimit: 5,
+    provider: 'DEEPSEEK', timeoutMs: 120_000, resultLimit: 5,
   });
   assert.equal(effectiveModelApiConfig({}, {}).webSearchProvider, 'DEEPSEEK');
   assert.deepEqual(resolveWebSearchConfig({}, { webSearchProvider: 'CODEX' }), { provider: 'CODEX', resultLimit: 5 });
@@ -18,7 +18,7 @@ test('unconfigured search defaults to the verified DeepSeek web-search model whi
   assert.equal(effectiveModelApiConfig({}, {}).webSearchResultLimit, 5);
 });
 
-test('clearing a saved search override restores the verified DeepSeek model without changing generation settings', async () => {
+test('clearing a saved search override restores standalone DeepSeek search without changing generation settings', async () => {
   const db = new DatabaseSync(':memory:');
   try {
     initializeProductionSettingsSchema(db);
@@ -28,7 +28,7 @@ test('clearing a saved search override restores the verified DeepSeek model with
     await updateWebSearchSettings(options, { webSearchProvider: 'CODEX' });
     assert.equal((await readWebSearchSettings(options)).effective.provider, 'CODEX');
     const restored = await updateWebSearchSettings(options, { webSearchProvider: null, deepseekSearchModel: null });
-    assert.deepEqual(restored.effective, { provider: 'DEEPSEEK', model: 'deepseek-v4-pro', timeoutMs: 120_000, resultLimit: 5 });
+    assert.deepEqual(restored.effective, { provider: 'DEEPSEEK', timeoutMs: 120_000, resultLimit: 5 });
     assert.equal(store.getProductionSettings().settings.modelApi.textModel, 'openai/gpt-5.6-sol');
     assert.equal(restored.apiKeyConfigured, false);
   } finally { db.close(); }
@@ -37,7 +37,7 @@ test('clearing a saved search override restores the verified DeepSeek model with
 test('saved search settings override executor environment and null restores inheritance', () => {
   const settings = normalizeModelApiSettings({ webSearchProvider: 'DEEPSEEK', deepseekSearchModel: 'deepseek-v5-search-preview', webSearchTimeoutMs: 15000 });
   const environment = { XHS_WEB_SEARCH_PROVIDER: 'CODEX', XHS_DEEPSEEK_SEARCH_MODEL: 'deepseek-v4-pro' };
-  assert.deepEqual(resolveWebSearchConfig(environment, settings), { provider: 'DEEPSEEK', model: 'deepseek-v5-search-preview', timeoutMs: 15000, resultLimit: 5 });
+  assert.deepEqual(resolveWebSearchConfig(environment, settings), { provider: 'DEEPSEEK', timeoutMs: 15000, resultLimit: 5 });
   assert.equal(effectiveModelApiConfig(settings, environment).webSearchProvider, 'DEEPSEEK');
   assert.equal(resolveWebSearchConfig(environment, { webSearchProvider: null }).provider, 'CODEX');
   assert.throws(() => normalizeModelApiSettings({ webSearchProvider: 'typo' }));
@@ -52,6 +52,18 @@ test('saved search settings override executor environment and null restores inhe
   assert.deepEqual(resolveWebSearchConfig({}, { webSearchProvider: 'CODEX', webSearchResultLimit: 9 }), {
     provider: 'CODEX', resultLimit: 9,
   });
+});
+
+test('standalone search ignores retired environment models and retains saved model metadata without mutating snapshots', () => {
+  const saved = { webSearchProvider: 'DEEPSEEK', deepseekSearchModel: 'historical-search-model' };
+  const original = structuredClone(saved);
+  const environment = { XHS_DEEPSEEK_SEARCH_MODEL: 'retired invalid model !' };
+  assert.deepEqual(resolveWebSearchConfig(environment, saved), {
+    provider: 'DEEPSEEK', timeoutMs: 120_000, resultLimit: 5,
+  });
+  assert.equal(effectiveModelApiConfig(saved, environment).deepseekSearchModel, 'historical-search-model');
+  assert.equal(effectiveModelApiConfig({}, environment).deepseekSearchModel, null);
+  assert.deepEqual(saved, original);
 });
 
 test('local search saves preserve generation settings and allow resetting to the environment', async () => {
@@ -113,16 +125,17 @@ test('saved search configuration reaches the production copy client independentl
     modelApi,
     environment: { XHS_WEB_SEARCH_PROVIDER: 'CODEX', DEEPSEEK_API_KEY: 'test-secret' },
     agentClient: { runWebSearch() { assert.fail('must use the saved provider'); } },
-    async fetchImpl(_url, init) {
+    async fetchImpl(url, init) {
+      assert.equal(url, 'https://api.deepseek.com/v1/tools/search');
       body = JSON.parse(init.body);
-      return new Response(JSON.stringify({ status: 'completed', output: [
-        { type: 'web_search_call', status: 'completed' },
-        { type: 'message', content: [{ type: 'output_text', text: JSON.stringify({ summary: '资料', sources: [{ url: 'https://example.gov/guide' }] }) }] },
+      return new Response(JSON.stringify({ results: [
+        { title: '官方资料', url: 'https://example.gov/guide', summary: '资料要点', site_name: '官方' },
       ] }));
     },
   });
   assert.equal((await client.runWebSearch({ query: '选题' })).provider, 'deepseek');
-  assert.equal(body.model, 'deepseek-v5-search-preview');
+  assert.equal(Object.hasOwn(body, 'model'), false);
+  assert.equal(body.query, '选题');
 });
 
 test('ordered providers retain legacy primary while resolving fallback configuration', () => {
@@ -136,7 +149,7 @@ test('ordered providers retain legacy primary while resolving fallback configura
   assert.equal(settings.webSearchProvider, 'DOUBAO');
   assert.deepEqual(resolveWebSearchConfig(environment, settings), {
     provider: 'DOUBAO', providers: ['DOUBAO', 'DEEPSEEK'],
-    model: 'deepseek-v5-search-preview', timeoutMs: 20_000, resultLimit: 5,
+    timeoutMs: 20_000, resultLimit: 5,
     doubaoSearchMode: 'GLOBAL',
     doubaoIcpHostOnly: false,
   });
